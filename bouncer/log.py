@@ -17,12 +17,19 @@ def _should_log(decision: str, cfg: dict) -> bool:
 def _maybe_prune_log(log_file: Path, max_entries: int | None) -> None:
     if not max_entries or not log_file.exists():
         return
-    data = log_file.read_bytes()
-    lines = data.split(b'\n')
-    if lines and not lines[-1]:
-        lines = lines[:-1]
-    if len(lines) > max_entries:
-        log_file.write_bytes(b'\n'.join(lines[-max_entries:]) + b'\n')
+
+    # Only prune if the file size suggests we're significantly over the limit.
+    # This avoids expensive rewrites on every single decision.
+    # 300 bytes is a safe upper bound for a JSONL log entry.
+    if log_file.stat().st_size < (max_entries * 300 * 1.2):
+        return
+
+    from collections import deque
+    with open(log_file, "rb") as f:
+        last_lines = deque(f, maxlen=max_entries)
+
+    with open(log_file, "wb") as f:
+        f.writelines(last_lines)
 
 
 def log_decision(

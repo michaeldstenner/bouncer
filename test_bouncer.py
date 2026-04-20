@@ -390,8 +390,12 @@ class TestLogging(unittest.TestCase):
     def test_prune_removes_oldest_entries(self):
         with tempfile.NamedTemporaryFile(mode="wb", delete=False) as f:
             path = Path(f.name)
+            # Use larger entries to exceed the size guard (max_entries * 300 * 1.2)
+            # 100 * 300 * 1.2 = 36,000 bytes. 
+            # 200 entries * 400 bytes = 80,000 bytes.
+            padding = "x" * 400
             for i in range(200):
-                f.write(f'{{"n":{i}}}\n'.encode())
+                f.write(f'{{"n":{i}, "pad":"{padding}"}}\n'.encode())
         try:
             _maybe_prune_log(path, 100)
             lines = [ln for ln in path.read_bytes().split(b"\n") if ln]

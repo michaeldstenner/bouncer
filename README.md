@@ -62,11 +62,11 @@ bouncer check --llm 'git push origin main'  # ask the LLM directly
 bouncer review          # interactive UNSURE decision review
 ```
 
-Use `bouncer -u <cmd>` to operate on user-level data instead of the project:
+Use `bouncer -g <cmd>` to operate on user-scope data instead of the project:
 
 ```sh
-bouncer -u log     # global log (all projects)
-bouncer -u review  # review user-level UNSURE decisions
+bouncer -g log     # global log (all projects)
+bouncer -g review  # review user-level UNSURE decisions
 ```
 
 ---
@@ -94,7 +94,7 @@ The more specific the policy, the fewer UNSURE verdicts you'll see.
 (`policy_mode: append`). Set `policy_mode: replace` if the project needs a
 completely different risk profile.
 
-**User-level policy** (`bouncer -u policy`) applies to all projects and is a
+**User-level policy** (`bouncer -g policy`) applies to all projects and is a
 good place for personal norms ("never touch my dotfiles", "no force-push ever").
 
 ---
@@ -236,10 +236,10 @@ bouncer review                interactive UNSURE decision review
 bouncer classify --hook                 internal: hook interface (stdin → stdout)
 bouncer classify --hook --format plain  plain-text output (allow/deny/ask + reason)
 
-bouncer -u config             edit user-level config.yaml
-bouncer -u policy             edit user-level policy.md
-bouncer -u log                view user-level log
-bouncer -u review             review user-level UNSURE decisions
+bouncer -g config             edit user-level config.yaml
+bouncer -g policy             edit user-level policy.md
+bouncer -g log                view user-level log
+bouncer -g review             review user-level UNSURE decisions
 ```
 
 `bouncer activity` options:
@@ -329,8 +329,8 @@ to target one harness, or omit `--harness` entirely to skip hook wiring.
 Settings and policy applied here apply to all bouncer-enabled projects:
 
 ```sh
-bouncer -u config   # ~/.config/bouncer/config.yaml
-bouncer -u policy   # ~/.config/bouncer/policy.md
+bouncer -g config   # ~/.config/bouncer/config.yaml
+bouncer -g policy   # ~/.config/bouncer/policy.md
 ```
 
 ---

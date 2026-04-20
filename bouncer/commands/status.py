@@ -74,7 +74,7 @@ def _cmd_status_verbose(config: dict, cwd: Path) -> None:
     if USER_CONFIG_FILE.exists():
         _print_config_summary(load_yaml_config(USER_CONFIG_FILE))
     else:
-        print(f"  {DIM}(not found — run 'bouncer -u config' to create){RESET}")
+        print(f"  {DIM}(not found — run 'bouncer -g config' to create){RESET}")
 
     print(f"{BOLD}User policy:{RESET}  {USER_POLICY_FILE}")
     user_policy = load_policy(USER_POLICY_FILE)
@@ -83,7 +83,7 @@ def _cmd_status_verbose(config: dict, cwd: Path) -> None:
         first = user_policy.splitlines()[0][:72]
         print(f"  {DIM}{wc} words — {first}{RESET}")
     else:
-        print(f"  {DIM}(empty — run 'bouncer -u policy'){RESET}")
+        print(f"  {DIM}(empty — run 'bouncer -g policy'){RESET}")
 
     print()
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..colors import RESET, BOLD, DIM, YELLOW, DECISION_COLORS, WHITE
 from ..activity import _append_activity_entry
-from ..config import USER_LOG_FILE, project_log_file
+from ..config import USER_LOG_FILE, project_log_file, project_has_bouncer
 
 
 def _parse_since(s: str | None) -> datetime | None:
@@ -118,12 +118,14 @@ def cmd_log(args):
     if getattr(args, "mark_break", False):
         try:
             hook_input = json.load(sys.stdin)
-            session_id = hook_input.get("session_id", "unknown")
-            _append_activity_entry(
-                {"d": "BREAK", "ts": datetime.now().isoformat()},
-                session_id,
-                width=50,
-            )
+            cwd = hook_input.get("cwd")
+            if project_has_bouncer(Path(cwd) if cwd else None):
+                session_id = hook_input.get("session_id", "unknown")
+                _append_activity_entry(
+                    {"d": "BREAK", "ts": datetime.now().isoformat()},
+                    session_id,
+                    width=50,
+                )
         except Exception:
             pass
         return

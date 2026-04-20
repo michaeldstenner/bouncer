@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..colors import RESET, BOLD, GREEN, YELLOW, DIM
+from ..colors import RESET, BOLD, GREEN, YELLOW, RED, DIM
 from ..config import (
     USER_LOG_FILE,
     USER_POLICY_FILE,
@@ -39,6 +39,12 @@ def cmd_review(args):
         print(f"{DIM}No log entries to review.{RESET}")
         return
 
+    target_decisions = ["UNSURE"]
+    if getattr(args, "all", False):
+        target_decisions = ["ALLOW", "DENY", "UNSURE"]
+    elif getattr(args, "deny", False):
+        target_decisions = ["DENY"]
+
     seen: set[str] = set()
     entries = []
     with open(log_file, encoding="utf-8") as f:
@@ -50,8 +56,11 @@ def cmd_review(args):
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if entry.get("decision") != "UNSURE":
+            
+            decision = entry.get("decision")
+            if decision not in target_decisions:
                 continue
+            
             cmd = _extract_command(entry.get("input_summary", ""))
             if cmd and cmd not in seen:
                 seen.add(cmd)
@@ -59,16 +68,17 @@ def cmd_review(args):
                 entries.append(entry)
 
     if not entries:
-        print(f"{GREEN}No UNSURE decisions to review.{RESET}")
+        print(f"{GREEN}No {', '.join(target_decisions)} decisions to review.{RESET}")
         return
 
-    print(f"{BOLD}Review UNSURE decisions{RESET} ({len(entries)} unique commands)")
+    print(f"{BOLD}Review {', '.join(target_decisions)} decisions{RESET} ({len(entries)} unique commands)")
     print(f"Policy file: {policy_path}\n")
 
     for entry in entries:
         cmd    = entry["_cmd"]
         reason = entry.get("reason", "")
-        print(f"  {YELLOW}UNSURE{RESET}  {cmd}")
+        dec    = entry.get("decision", "UNSURE")
+        print(f"  {YELLOW if dec == 'UNSURE' else RED if dec == 'DENY' else GREEN}{dec}{RESET}  {cmd}")
         print(f"  {DIM}{reason}{RESET}")
         print("  [n]ote  [e]dit policy.md  [s]kip  [q]uit: ", end="", flush=True)
         try:

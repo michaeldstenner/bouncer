@@ -19,7 +19,7 @@ def cmd_activity(args):
             cwd_path = Path(cwd_arg)
             if project_has_bouncer(cwd_path):
                 if _merged_config(cwd_path).get("enabled", True):
-                    print("\033[2m·\033[0m", end="")      # initialized + enabled, no activity yet
+                    print("\033[2m○\033[0m", end="")      # initialized + enabled, no activity yet
                 else:
                     print("\033[31m⊘\033[0m", end="")    # initialized but disabled (red)
             else:

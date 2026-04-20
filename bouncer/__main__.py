@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from .commands.init     import cmd_init
+from .commands.init     import cmd_init, cmd_global_init
 from .commands.lint     import cmd_lint
 from .commands.config   import cmd_config, cmd_policy
 from .commands.status   import cmd_status
@@ -12,23 +12,69 @@ from .commands.classify import cmd_classify
 from .commands.review   import cmd_review
 
 
+_AGENT_HELP = """\
+Bouncer is an LLM-powered permission classifier that intercepts tool calls
+from AI coding agents and decides ALLOW / DENY / UNSURE based on a plain-text
+project policy.
+
+── Overrides ────────────────────────────────────────────────────────────────
+For a one-time exception to a denial, prefix the command with an OVERRIDE
+comment explaining why it's necessary:
+
+    # OVERRIDE: clearing stale build artifacts before release
+    rm -rf dist/ build/
+
+Bouncer skips the LLM and escalates directly to the user. Use this for
+genuinely exceptional cases, not routine work.
+
+── Policy suggestions ───────────────────────────────────────────────────────
+If an operation is routine for this project but keeps getting denied, suggest
+a policy addition to the user. Policy is plain prose fed to an LLM — describe
+intent, scope, and expected effects rather than listing specific commands or
+paths. The bouncer LLM reasons about what a project legitimately does.
+
+Good:  "This project manages the user's shell environment and may read and
+        write files under ~/.config/ and ~/.local/share/."
+Poor:  "Allow rm, allow ~/.zshrc, allow pip install"
+
+To propose a policy change, tell the user what you'd add and why, then ask
+if they'd like you to append it to .bouncer/policy.md.
+
+── User-level policy ────────────────────────────────────────────────────────
+~/.config/bouncer/policy.md applies across all projects. Project-level policy
+is in .bouncer/policy.md and is appended by default (policy_mode: append).
+"""
+
+
+def _cmd_agent_help():
+    print(_AGENT_HELP)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="bouncer",
-        description="AI agent permission classifier and manager",
+        description="AI agent permission classifier and manager\n"
+                    "Coding agents: run 'bouncer --agent-help' for instructions.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "-u", "--user", action="store_true",
-        help="operate on user-scope config (~/.config/bouncer/)",
+        "--agent-help", action="store_true",
+        help="print instructions for AI coding agents and exit",
+    )
+    parser.add_argument(
+        "-g", "--global", dest="user", action="store_true",
+        help="operate on user-scope config (~/.config/bouncer/); "
+             "for 'init': also creates config/policy and wires harness hooks",
     )
 
     sub = parser.add_subparsers(dest="cmd_name", metavar="command")
 
-    p_init = sub.add_parser("init", help="create .bouncer template in current project")
+    p_init = sub.add_parser("init", help="create .bouncer template in current project  "
+                            "(-g: user-level setup + harness hooks)")
     p_init.add_argument(
         "--harness", metavar="NAME",
-        help="also wire the AI harness hooks: auto | claude_code | codex | opencode",
+        help="wire AI harness hooks: auto | all | claude_code | codex | opencode  "
+             "(comma-separated for multiple; -g only: prompts if omitted)",
     )
 
     p_lint = sub.add_parser("lint", help="validate config.yaml")
@@ -73,13 +119,23 @@ def main():
                              choices=["json", "plain"],
                              help="output format: json (default) or plain")
 
-    sub.add_parser("review", help="interactive review of UNSURE decisions")
+    p_review = sub.add_parser("review", help="interactive review of UNSURE decisions")
+    p_review.add_argument("--all", action="store_true", help="review all decisions (ALLOW, DENY, UNSURE)")
+    p_review.add_argument("--deny", action="store_true", help="review only DENY decisions")
 
     args = parser.parse_args()
+
+    if args.agent_help:
+        _cmd_agent_help()
+        return
 
     if not args.cmd_name:
         parser.print_help()
         sys.exit(0)
+
+    if args.user and args.cmd_name == "init":
+        cmd_global_init(args)
+        return
 
     dispatch = {
         "init":     cmd_init,

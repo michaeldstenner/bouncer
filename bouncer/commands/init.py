@@ -10,6 +10,11 @@ from ..config import (
     PROJECT_DIR_NAME,
     CONFIG_YAML_TEMPLATE,
     POLICY_MD_TEMPLATE,
+    USER_CONFIG_DIR,
+    USER_CONFIG_FILE,
+    USER_POLICY_FILE,
+    USER_CONFIG_YAML_TEMPLATE,
+    USER_POLICY_MD_TEMPLATE,
 )
 
 # ── hook wrapper (identical for claude_code and codex) ───────────────────────
@@ -131,7 +136,44 @@ _INSTALLERS = {
     "opencode":    _install_opencode,
 }
 
-# ── command ───────────────────────────────────────────────────────────────────
+_HARNESS_PROMPTS = {
+    "claude_code": "Add PreToolUse hook to ~/.claude/settings.json",
+    "codex":       "Copy bouncer_hook.py to ~/.codex/hooks/bouncer_hook.py",
+    "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugins/bouncer.ts",
+}
+
+
+def _is_installed_claude_code() -> bool:
+    hook_script = str(Path.home() / ".claude" / "hooks" / "bouncer_hook.py")
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return False
+    try:
+        settings = json.loads(settings_path.read_text())
+    except Exception:
+        return False
+    pre = settings.get("hooks", {}).get("PreToolUse", [])
+    return any(
+        any(x.get("command") == hook_script for x in h.get("hooks", []))
+        for h in pre
+    )
+
+
+def _is_installed_codex() -> bool:
+    return (Path.home() / ".codex" / "hooks" / "bouncer_hook.py").exists()
+
+
+def _is_installed_opencode() -> bool:
+    return (Path.home() / ".config" / "opencode" / "plugins" / "bouncer.ts").exists()
+
+
+_IS_INSTALLED = {
+    "claude_code": _is_installed_claude_code,
+    "codex":       _is_installed_codex,
+    "opencode":    _is_installed_opencode,
+}
+
+# ── commands ──────────────────────────────────────────────────────────────────
 
 def cmd_init(args):
     harness = getattr(args, "harness", None)
@@ -171,3 +213,65 @@ def cmd_init(args):
     if not harness:
         print(f"Wire a harness:   {BOLD}bouncer init --harness=auto{RESET}  "
               f"(or --harness=claude_code / codex / opencode)")
+
+
+def cmd_global_init(args):
+    harness_arg = getattr(args, "harness", None)
+
+    # ── user-level config and policy ──────────────────────────────────────────
+    USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    if USER_CONFIG_FILE.exists():
+        print(f"{YELLOW}Note:{RESET} {USER_CONFIG_FILE} already exists — skipping.")
+    else:
+        USER_CONFIG_FILE.write_text(USER_CONFIG_YAML_TEMPLATE, encoding="utf-8")
+        print(f"{GREEN}Created{RESET} {USER_CONFIG_FILE}")
+
+    if USER_POLICY_FILE.exists():
+        print(f"{YELLOW}Note:{RESET} {USER_POLICY_FILE} already exists — skipping.")
+    else:
+        USER_POLICY_FILE.write_text(USER_POLICY_MD_TEMPLATE, encoding="utf-8")
+        print(f"{GREEN}Created{RESET} {USER_POLICY_FILE}")
+
+    # ── harness wiring ────────────────────────────────────────────────────────
+    if harness_arg is None:
+        detected = _detect_harnesses()
+        if not detected:
+            print(f"\n{YELLOW}No supported AI harnesses detected.{RESET} "
+                  "Pass --harness=<name> to wire one explicitly.")
+        else:
+            for name in detected:
+                if _IS_INSTALLED[name]():
+                    print(f"\n  {name}: hook already installed — skipping.")
+                    continue
+                prompt = _HARNESS_PROMPTS[name]
+                try:
+                    answer = input(f"\n  {prompt}? [y/N] ").strip().lower()
+                except EOFError:
+                    answer = ""
+                if answer == "y":
+                    print(f"{BOLD}Wiring {name}{RESET}")
+                    _INSTALLERS[name]()
+    else:
+        if harness_arg in ("all", "auto"):
+            targets = _detect_harnesses()
+        else:
+            targets = [h.strip().replace("-", "_") for h in harness_arg.split(",")]
+
+        if not targets:
+            print(f"\n{YELLOW}No supported AI harnesses detected.{RESET}")
+        for name in targets:
+            if name not in _INSTALLERS:
+                print(f"{RED}Unknown harness:{RESET} {name!r}  "
+                      f"(valid: claude_code, codex, opencode)")
+                continue
+            if _IS_INSTALLED[name]():
+                print(f"\n  {name}: hook already installed — skipping.")
+                continue
+            print(f"\n{BOLD}Wiring {name}{RESET}")
+            _INSTALLERS[name]()
+
+    # ── next steps ────────────────────────────────────────────────────────────
+    print()
+    print(f"Edit user policy with: {BOLD}bouncer -g policy{RESET}")
+    print(f"Edit user config with: {BOLD}bouncer -g config{RESET}")
