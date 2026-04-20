@@ -71,15 +71,15 @@ export const BouncerPlugin = async () => {
         throw new Error(`bouncer: ${reason || "operation denied by policy"}`)
       }
 
-      // "ask" = bouncer is unsure; opencode has no mid-execution escalation UI.
-      // Block with an OVERRIDE hint so the agent can self-escalate.
+      // "ask" = bouncer needs user approval; opencode has no mid-execution
+      // escalation UI, so block with the reason (which bouncer's plain format
+      // already annotates with escalation guidance for the agent).
       // To get a plain deny instead, set on_unsure: deny_with_message in config.
       if (decision === "ask") {
         const cmd = (toolInput as { command?: string }).command ?? input.tool
         throw new Error(
-          `bouncer: unsure about "${cmd}"\n` +
-            `${reason ? reason + "\n" : ""}` +
-            `To proceed, prefix the command with: # OVERRIDE: <reason>`,
+          `bouncer: needs user approval for "${cmd}"\n` +
+            `${reason || "no reason provided"}`,
         )
       }
 

@@ -18,7 +18,7 @@ def get_classification(
     Pure logic: get decision and reason for a tool call.
     Returns (decision, reason, action_to_take).
     
-    decision: ALLOW | DENY | UNSURE | OVERRIDE | SKIP
+    decision: ALLOW | DENY | UNSURE | ESCALATE | SKIP
     reason:   text explanation
     action_to_take: ALLOW | DENY | ASK | None (if skipped/disabled)
     """
@@ -38,10 +38,10 @@ def get_classification(
             return "SKIP", f"tool {tool_name!r} not in intercepted list", None
 
     command = tool_input.get("command", "")
-    if command.lstrip().startswith("# OVERRIDE:"):
+    if command.lstrip().startswith("# ESCALATE:"):
         first_line      = command.split("\n")[0]
-        override_reason = first_line.replace("# OVERRIDE:", "").strip()
-        return "OVERRIDE", override_reason, "ASK"
+        escalate_reason = first_line.replace("# ESCALATE:", "").strip()
+        return "ESCALATE", escalate_reason, "ASK"
 
     decision, reason = call_llm(tool_name, tool_input, cwd_path, config)
     
@@ -96,14 +96,15 @@ def run_classify(
     activity_width = config.get("activity_width", 10)
     rid            = os.getpid()
 
-    # Special handling for OVERRIDE to match old behavior (logging before/after)
+    # ESCALATE bypasses the LLM, so we log a single entry (no PENDING) and
+    # return immediately.
     command = tool_input.get("command", "")
-    if command.lstrip().startswith("# OVERRIDE:"):
+    if command.lstrip().startswith("# ESCALATE:"):
         decision, reason, action = get_classification(tool_name, tool_input, cwd)
-        log_decision(tool_name, tool_input, cwd, "OVERRIDE", reason,
+        log_decision(tool_name, tool_input, cwd, "ESCALATE", reason,
                      config, proj_log)
-        _update_activity(tool_name, "OVERRIDE", session_id, activity_width)
-        _emit_hook_response(action, f"agent override requested: {reason}", fmt)
+        _update_activity(tool_name, "ESCALATE", session_id, activity_width)
+        _emit_hook_response(action, f"agent escalation requested: {reason}", fmt)
         return
 
     # Normal classification path

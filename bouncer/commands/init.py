@@ -39,6 +39,8 @@ _HARNESS_ROOTS = {
     "opencode":    Path.home() / ".config" / "opencode",
 }
 
+_SHIM_INSTALL_DIR = Path.home() / ".local" / "share" / "bouncer" / "shim"
+
 
 def _detect_harnesses():
     return [name for name, root in _HARNESS_ROOTS.items() if root.exists()]
@@ -130,16 +132,38 @@ def _install_opencode():
     print(f"  {GREEN}Patched{RESET}   {oc_json}")
 
 
+def _install_shim():
+    repo_shim = Path(__file__).parent.parent.parent / "bouncer-shim" / "bash"
+    _SHIM_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+
+    dst = _SHIM_INSTALL_DIR / "bash"
+    if repo_shim.exists():
+        shutil.copy2(repo_shim, dst)
+    else:
+        print(f"  {YELLOW}Warning:{RESET} shim source not found at {repo_shim}; skipping copy")
+        return
+    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    print(f"  {GREEN}Installed{RESET} {dst}")
+    print()
+    print("  To protect an agent that runs commands via the shell, launch it with:")
+    print(f'    {BOLD}PATH="{_SHIM_INSTALL_DIR}:$PATH" <your-agent-command>{RESET}')
+    print("  The shim gates 'bash -c' calls in any project with .bouncer/config.yaml.")
+    print("  It has no ASK channel — escalations come back as denials the agent relays.")
+
+
 _INSTALLERS = {
     "claude_code": _install_claude_code,
     "codex":       _install_codex,
     "opencode":    _install_opencode,
+    "shim":        _install_shim,
 }
 
 _HARNESS_PROMPTS = {
     "claude_code": "Add PreToolUse hook to ~/.claude/settings.json",
     "codex":       "Copy bouncer_hook.py to ~/.codex/hooks/bouncer_hook.py",
     "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugins/bouncer.ts",
+    "shim":        f"Install shell shim to {_SHIM_INSTALL_DIR}/bash (universal PATH-based gate)",
 }
 
 
@@ -167,10 +191,15 @@ def _is_installed_opencode() -> bool:
     return (Path.home() / ".config" / "opencode" / "plugins" / "bouncer.ts").exists()
 
 
+def _is_installed_shim() -> bool:
+    return (_SHIM_INSTALL_DIR / "bash").exists()
+
+
 _IS_INSTALLED = {
     "claude_code": _is_installed_claude_code,
     "codex":       _is_installed_codex,
     "opencode":    _is_installed_opencode,
+    "shim":        _is_installed_shim,
 }
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -234,26 +263,26 @@ def cmd_global_init(args):
         print(f"{GREEN}Created{RESET} {USER_POLICY_FILE}")
 
     # ── harness wiring ────────────────────────────────────────────────────────
+    # The shim is a universal gate, not a detected harness. Always offer it
+    # in interactive mode; include it in --harness=all.
     if harness_arg is None:
-        detected = _detect_harnesses()
-        if not detected:
-            print(f"\n{YELLOW}No supported AI harnesses detected.{RESET} "
-                  "Pass --harness=<name> to wire one explicitly.")
-        else:
-            for name in detected:
-                if _IS_INSTALLED[name]():
-                    print(f"\n  {name}: hook already installed — skipping.")
-                    continue
-                prompt = _HARNESS_PROMPTS[name]
-                try:
-                    answer = input(f"\n  {prompt}? [y/N] ").strip().lower()
-                except EOFError:
-                    answer = ""
-                if answer == "y":
-                    print(f"{BOLD}Wiring {name}{RESET}")
-                    _INSTALLERS[name]()
+        to_prompt = _detect_harnesses() + ["shim"]
+        for name in to_prompt:
+            if _IS_INSTALLED[name]():
+                print(f"\n  {name}: already installed — skipping.")
+                continue
+            prompt = _HARNESS_PROMPTS[name]
+            try:
+                answer = input(f"\n  {prompt}? [y/N] ").strip().lower()
+            except EOFError:
+                answer = ""
+            if answer == "y":
+                print(f"{BOLD}Wiring {name}{RESET}")
+                _INSTALLERS[name]()
     else:
-        if harness_arg in ("all", "auto"):
+        if harness_arg == "all":
+            targets = list(_INSTALLERS.keys())
+        elif harness_arg == "auto":
             targets = _detect_harnesses()
         else:
             targets = [h.strip().replace("-", "_") for h in harness_arg.split(",")]
@@ -263,10 +292,10 @@ def cmd_global_init(args):
         for name in targets:
             if name not in _INSTALLERS:
                 print(f"{RED}Unknown harness:{RESET} {name!r}  "
-                      f"(valid: claude_code, codex, opencode)")
+                      f"(valid: {', '.join(_INSTALLERS)})")
                 continue
             if _IS_INSTALLED[name]():
-                print(f"\n  {name}: hook already installed — skipping.")
+                print(f"\n  {name}: already installed — skipping.")
                 continue
             print(f"\n{BOLD}Wiring {name}{RESET}")
             _INSTALLERS[name]()

@@ -22,7 +22,7 @@ _ACTIVITY_COLORS = {
     "DENY":     "\033[30;41m",
     "BLOCK":    "\033[30;41m",
     "UNSURE":   "\033[33m",
-    "OVERRIDE": "\033[36m",
+    "ESCALATE": "\033[36m",
 }
 _ACTIVITY_RESET = "\033[0m"
 

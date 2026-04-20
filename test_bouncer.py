@@ -372,7 +372,7 @@ class TestProjectDiscovery(unittest.TestCase):
 class TestLogging(unittest.TestCase):
     def test_should_log_all_logs_everything(self):
         config = {"log": {"verbosity": "all"}}
-        for decision in ("ALLOW", "DENY", "UNSURE", "OVERRIDE"):
+        for decision in ("ALLOW", "DENY", "UNSURE", "ESCALATE"):
             self.assertTrue(_should_log(decision, config), decision)
 
     def test_should_log_deny_only(self):
@@ -541,13 +541,13 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("dangerous command", err)
 
-    def test_deny_stderr_includes_override_hint(self):
+    def test_deny_stderr_includes_escalate_hint(self):
         _, err, _ = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
             call_llm_result=("DENY", "bad"),
         )
-        self.assertIn("OVERRIDE", err)
+        self.assertIn("ESCALATE", err)
 
     def test_unsure_default_asks_human(self):
         out, _, code = _classify(
@@ -599,25 +599,25 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
 
-    def test_override_prefix_produces_ask(self):
+    def test_escalate_prefix_produces_ask(self):
         out, _, code = _classify(
-            self._hook(command="# OVERRIDE: needed for deploy\nrm -rf dist/"),
+            self._hook(command="# ESCALATE: needed for deploy\nrm -rf dist/"),
             config_yaml=_BASIC_CONFIG,
             call_llm_result=("DENY", "should not be called"),
         )
         self.assertEqual(code, 0)
         data = json.loads(out)
         reason = data["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("override", reason.lower())
+        self.assertIn("escalat", reason.lower())
 
-    def test_override_does_not_call_llm(self):
+    def test_escalate_does_not_call_llm(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _make_bouncer_dir(tmp_path, config_yaml=_BASIC_CONFIG)
             user_dir = tmp_path / "user"
             user_dir.mkdir()
             hook_input = dict(
-                self._hook(command="# OVERRIDE: test\nls"),
+                self._hook(command="# ESCALATE: test\nls"),
                 cwd=str(tmp_path),
             )
             with (
@@ -638,9 +638,9 @@ class TestClassify(unittest.TestCase):
                     pass
                 mock_llm.assert_not_called()
 
-    def test_override_reason_in_ask_message(self):
+    def test_escalate_reason_in_ask_message(self):
         out, _, _ = _classify(
-            self._hook(command="# OVERRIDE: deploy step\nrm -rf dist/"),
+            self._hook(command="# ESCALATE: deploy step\nrm -rf dist/"),
             config_yaml=_BASIC_CONFIG,
         )
         reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]

@@ -28,20 +28,23 @@ If the LLM is unreachable, the `on_unavailable` fallback applies (default: ask).
 
 Every decision is logged and shown in the statusline activity strip.
 
-### Override mechanism
+### Escalation mechanism
 
-If the agent wants to escalate a request to the user, it repeats the
-command and prefixes it with `# OVERRIDE:`:
+If the agent wants to bypass the LLM and send a request straight to the user,
+it repeats the command prefixed with `# ESCALATE:`:
 
 ```sh
-# OVERRIDE: clearing build artifacts before release
+# ESCALATE: clearing build artifacts before release
 rm -rf dist/ build/
 ```
 
-In such cases, bouncer skips the LLM entirely and escalates directly
-to the user. The override reason is shown and logged. This is how the
-agent signals "I know this looks sketchy — here's why I need it"
-without permanently widening the policy.
+Bouncer skips the LLM and forwards the request to the user with the stated
+reason. This is how the agent signals "I know this looks sketchy — here's
+why I need it" without permanently widening the policy.
+
+`ESCALATE` is a request, not an override: bouncer still defers to the user,
+and harnesses that have no ASK channel (the shell shim, for instance) will
+surface the escalation back as a denial for the agent to relay.
 
 ---
 
@@ -192,8 +195,7 @@ llm:
 |---|---|
 | `ask` | Escalate to the human (default) |
 | `allow` | Pass through silently |
-| `deny` | Block with the LLM's reason |
-| `deny_with_message` | Block with reason plus an `# OVERRIDE:` hint (recommended for opencode) |
+| `deny` | Block with the LLM's reason; bouncer appends an `# ESCALATE:` hint so the agent knows how to bring the question to the user |
 
 ### Config merge order
 
@@ -321,8 +323,10 @@ bouncer status                # confirm it's active
 ```
 
 `--harness=auto` detects whichever AI coding harnesses are installed and wires
-them automatically. Pass a specific name (`claude_code`, `codex`, `opencode`)
-to target one harness, or omit `--harness` entirely to skip hook wiring.
+them automatically. Pass a specific name (`claude_code`, `codex`, `opencode`,
+`shim`) to target one harness, or omit `--harness` entirely to skip hook
+wiring. `--harness=all` installs every known target, including the universal
+shim. See [Integrations](#integrations) for per-harness details.
 
 ### 3. User-level defaults (optional)
 
@@ -337,9 +341,10 @@ bouncer -g policy   # ~/.config/bouncer/policy.md
 
 ## Integrations
 
-Bouncer supports three AI coding harnesses. Integration files live in
-`integrations/<harness>/` in this repo. `bouncer init --harness=<name>` handles
-installation automatically; the details below are for manual setup or reference.
+Bouncer supports four integration targets. Harness-specific hooks live in
+`integrations/<harness>/` in this repo; the universal shell shim lives in
+`bouncer-shim/`. `bouncer init --harness=<name>` handles installation
+automatically; the details below are for manual setup or reference.
 
 ### Claude Code
 
@@ -418,7 +423,7 @@ Activity indicator — one character per recent decision, newest on the left:
 | Tool initial (B/W/E/R/G…) | green | ALLOW |
 | Tool initial | black on red | DENY |
 | Tool initial | yellow | UNSURE |
-| Tool initial | cyan | OVERRIDE |
+| Tool initial | cyan | ESCALATE |
 | `·` | dim | Prompt boundary |
 | `○` | dim | Bouncer active, no decisions yet |
 
@@ -462,9 +467,9 @@ Manual `~/.codex/hooks.json`:
 `apply_patch` maps to `Write` for the bouncer tools filter.
 
 **`ask` behavior:** opencode has no mid-execution escalation UI. When bouncer
-returns `ask` (UNSURE), the plugin blocks with a message asking the agent to
-re-run with `# OVERRIDE: <reason>`. For a plain deny, set `on_unsure: deny`;
-to include the OVERRIDE hint in the deny, set `on_unsure: deny_with_message`.
+returns `ask` (UNSURE), the plugin blocks with the reason, which bouncer's
+plain format annotates with guidance for the agent to relay to the user.
+Set `on_unsure: deny` if you want a plain deny instead.
 
 Manual `~/.config/opencode/opencode.json`:
 
@@ -473,6 +478,37 @@ Manual `~/.config/opencode/opencode.json`:
   "plugin": ["bouncer"]
 }
 ```
+
+### Shell shim (universal gate)
+
+For AI coding agents without a native hook system (Cline, Roo Code, Continue,
+Gemini CLI, etc.), bouncer ships a small bash shim that intercepts `bash -c
+"<command>"` invocations and routes them through `bouncer classify`.
+
+`bouncer -g init --harness=shim` installs the shim to
+`~/.local/share/bouncer/shim/bash`. Activate it per-agent by prefixing the
+launch command:
+
+```sh
+PATH="$HOME/.local/share/bouncer/shim:$PATH" <your-agent-command>
+```
+
+For a VS Code extension, launch VS Code itself with the prefixed PATH so the
+extension inherits it. The shim only intercepts `bash -c`; interactive
+subshells and non-`-c` invocations pass through unchanged. A per-process
+`BOUNCER_INTERNAL_ACTIVE` guard prevents recursion into subshells.
+
+**Scope:** only `bash -c "<command>"` is gated. Agent-invoked file writes or
+other non-shell tool calls are not intercepted — use a native integration if
+you need broader coverage.
+
+**No ASK channel:** the shim can't prompt the user from inside the shell.
+When bouncer returns `ask` (either from an UNSURE LLM verdict or an explicit
+`# ESCALATE:` request), the shim exits non-zero with the reason on stderr.
+The agent should relay that to the user and wait for approval before retrying.
+Tune `on_unsure` (and `on_unavailable`) in project/user config to match the
+environment's risk tolerance — `ask` and `deny_with_message` both surface a
+clear reason to the agent.
 
 ---
 
@@ -491,7 +527,7 @@ bouncer/
                         policy context, project discovery, templates
   log.py                log_decision(), pruning, verbosity filter
   activity.py           activity strip: tool-char map, update, render
-  hook.py               _emit_hook_response(), _handle_fallback() — hot path
+  hook.py               format_hook_response(), resolve_fallback() — hot path
   classify.py           run_classify() — core gate logic (no I/O, testable)
   providers/
     __init__.py         call_llm() dispatcher; _build_prompt, _parse_llm_text

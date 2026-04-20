@@ -1,0 +1,75 @@
+#!/bin/bash
+# bouncer shim — gates 'bash -c "<command>"' invocations through bouncer.
+#
+# Activate per-agent by prefixing PATH at invocation:
+#
+#   PATH="$HOME/.local/share/bouncer/shim:$PATH" <your-agent-command>
+#
+# See 'bouncer --agent-help' for how agents should respond to denials.
+
+# Recursion guard: once we've screened a process tree, subshells pass through.
+if [[ "$BOUNCER_INTERNAL_ACTIVE" == "1" ]]; then
+    exec /bin/bash "$@"
+fi
+
+# Only intercept 'bash -c "<command>"' — the form AI agents use.
+if [[ "$1" != "-c" ]]; then
+    exec /bin/bash "$@"
+fi
+
+# Only intercept when bouncer is active for this directory. We walk up
+# looking for .bouncer/config.yaml inline rather than invoking bouncer,
+# since this runs on every bash -c.
+_bouncer_active=""
+_d="$PWD"
+while :; do
+    if [[ -f "$_d/.bouncer/config.yaml" ]]; then
+        _bouncer_active=1
+        break
+    fi
+    [[ "$_d" == "/" || "$_d" == "$HOME" ]] && break
+    _d=$(dirname "$_d")
+done
+if [[ -z "$_bouncer_active" ]]; then
+    exec /bin/bash "$@"
+fi
+
+export BOUNCER_INTERNAL_ACTIVE=1
+
+# Build the hook payload via python3 so JSON escaping is correct for any
+# command (quotes, backslashes, newlines).
+JSON_INPUT=$(BOUNCER_CMD="$2" BOUNCER_CWD="$PWD" python3 -c '
+import json, os
+print(json.dumps({
+    "tool_name":  "Bash",
+    "tool_input": {"command": os.environ["BOUNCER_CMD"]},
+    "cwd":        os.environ["BOUNCER_CWD"],
+}))
+')
+
+RESULT=$(printf '%s' "$JSON_INPUT" | bouncer classify --hook --format plain 2>/dev/null)
+
+# Parse only the first line (plain format is single-line: "<verdict>\t<reason>").
+FIRST_LINE="${RESULT%%$'\n'*}"
+VERDICT="${FIRST_LINE%%$'\t'*}"
+REASON="${FIRST_LINE#*$'\t'}"
+[[ "$REASON" == "$VERDICT" ]] && REASON=""
+
+case "$VERDICT" in
+    allow)
+        exec /bin/bash "$@"
+        ;;
+    deny)
+        printf '\033[31mBouncer DENIED:\033[0m %s\n' "$REASON" >&2
+        exit 1
+        ;;
+    ask)
+        printf '\033[33mBouncer ASK:\033[0m %s\n' "$REASON" >&2
+        exit 1
+        ;;
+    *)
+        # bouncer unreachable or unknown response — fail open so the shell
+        # doesn't break when bouncer itself is broken.
+        exec /bin/bash "$@"
+        ;;
+esac

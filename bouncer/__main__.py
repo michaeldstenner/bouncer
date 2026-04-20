@@ -14,18 +14,26 @@ from .commands.review   import cmd_review
 
 _AGENT_HELP = """\
 Bouncer is an LLM-powered permission classifier that intercepts tool calls
-from AI coding agents and decides ALLOW / DENY / UNSURE based on a plain-text
-project policy.
+from AI coding agents. Each call is classified ALLOW / DENY / ASK against a
+plain-text project policy.
 
-── Overrides ────────────────────────────────────────────────────────────────
-For a one-time exception to a denial, prefix the command with an OVERRIDE
-comment explaining why it's necessary:
+── Escalating to the user ───────────────────────────────────────────────────
+When you need something the policy doesn't cover — or believe a denial is
+wrong — prefix the command with an ESCALATE comment explaining why:
 
-    # OVERRIDE: clearing stale build artifacts before release
+    # ESCALATE: clearing stale build artifacts before release
     rm -rf dist/ build/
 
-Bouncer skips the LLM and escalates directly to the user. Use this for
-genuinely exceptional cases, not routine work.
+Bouncer skips the LLM and forwards the request to the user for a decision.
+
+Harness behavior when bouncer asks (either from ESCALATE or an UNSURE LLM
+verdict):
+  * Claude Code / Codex / opencode — the user is prompted directly.
+  * Shell-shim and other harnesses without an ASK channel — the ASK comes
+    back as a denial. Relay the reason to the user, wait for their decision,
+    and only retry once you have approval.
+
+Use ESCALATE sparingly; it is not a way to force bouncer to approve something.
 
 ── Policy suggestions ───────────────────────────────────────────────────────
 If an operation is routine for this project but keeps getting denied, suggest
@@ -73,7 +81,7 @@ def main():
                             "(-g: user-level setup + harness hooks)")
     p_init.add_argument(
         "--harness", metavar="NAME",
-        help="wire AI harness hooks: auto | all | claude_code | codex | opencode  "
+        help="wire AI harness hooks: auto | all | claude_code | codex | opencode | shim  "
              "(comma-separated for multiple; -g only: prompts if omitted)",
     )
 

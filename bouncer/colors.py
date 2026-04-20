@@ -21,6 +21,6 @@ DECISION_COLORS = {
     "DENY":     RED,
     "BLOCK":    RED,
     "UNSURE":   YELLOW,
-    "OVERRIDE": CYAN,
+    "ESCALATE": CYAN,
     "PENDING":  DIM,
 }
