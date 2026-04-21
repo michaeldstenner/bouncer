@@ -48,7 +48,7 @@ def log_decision(
         "timestamp":     datetime.now().isoformat(),
         "tool":          tool_name,
         "cwd":           cwd,
-        "input_summary": str(tool_input)[:200],
+        "input_summary": json.dumps(tool_input, ensure_ascii=False)[:2000],
         "decision":      decision,
         "reason":        reason,
     }

@@ -27,6 +27,7 @@ from bouncer.config import (
 from bouncer.log import _should_log, _maybe_prune_log, log_decision
 from bouncer.commands.lint import cmd_lint
 from bouncer.commands.classify import cmd_classify
+from bouncer.commands.log import _extract_command
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +472,32 @@ class TestLogging(unittest.TestCase):
                              cfg=None, proj_log=proj_log)
             self.assertTrue(user_log.exists())
             self.assertTrue(proj_log.exists())
+
+
+# ---------------------------------------------------------------------------
+# _extract_command (commands/log.py)
+# ---------------------------------------------------------------------------
+
+class TestExtractCommand(unittest.TestCase):
+    def test_plain_command(self):
+        summary = json.dumps({"command": "ls -la"})
+        self.assertEqual(_extract_command(summary), "ls -la")
+
+    def test_command_with_single_quotes(self):
+        summary = json.dumps({"command": "echo \"fix user's bug\""})
+        self.assertEqual(_extract_command(summary), "echo \"fix user's bug\"")
+
+    def test_command_with_double_quotes(self):
+        summary = json.dumps({"command": 'grep "needle" file.txt'})
+        self.assertEqual(_extract_command(summary), 'grep "needle" file.txt')
+
+    def test_no_command_key(self):
+        summary = json.dumps({"path": "/tmp/foo", "content": "x"})
+        self.assertEqual(_extract_command(summary), summary)
+
+    def test_non_json_fallback(self):
+        legacy = "{'command': 'ls'}"
+        self.assertEqual(_extract_command(legacy), legacy)
 
 
 # ---------------------------------------------------------------------------

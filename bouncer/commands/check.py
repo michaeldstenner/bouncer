@@ -39,4 +39,4 @@ def cmd_check(args):
             color = DECISION_COLORS.get(decision, WHITE)
             print(f"  {color}{decision}{RESET} — {reason}")
     else:
-        print(f"  {DIM}(no fast-path rules — would call LLM; use --llm to test){RESET}")
+        print(f"  {DIM}(would call LLM; use --llm to test live){RESET}")

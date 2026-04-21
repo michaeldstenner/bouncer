@@ -51,7 +51,7 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "ask",
-                "permissionDecisionReason": reason,
+                "permissionDecisionReason": _join_reason(reason, _DENY_HINT),
             }
         }) + "\n"
         exit_code = 0

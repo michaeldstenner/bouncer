@@ -77,50 +77,42 @@ def run_classify(
     and EXITS the process.
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
-    
-    # 1. Quick check for project active
+
+    # Fast early exit for projects with no bouncer config at all. Avoids
+    # writing a stranded PENDING entry to the user log for every tool call
+    # in unrelated projects. The enabled / tools-filter SKIP checks are
+    # handled by get_classification below — single source of truth.
     if not project_has_bouncer(cwd_path):
         sys.exit(0)
-    config = _merged_config(cwd_path)
-    if not config.get("enabled", True):
-        sys.exit(0)
-    
-    # 2. Logic & Logging
-    tools = config.get("tools", ["Bash"])
-    if tools != "all":
-        tools_lower = [t.lower() for t in tools]
-        if tool_name.lower() not in tools_lower:
-            sys.exit(0)
 
+    config         = _merged_config(cwd_path)
     proj_log       = project_log_file(cwd_path)
     activity_width = config.get("activity_width", 10)
     rid            = os.getpid()
 
-    # ESCALATE bypasses the LLM, so we log a single entry (no PENDING) and
-    # return immediately.
+    # ESCALATE bypasses the LLM, so we log a single entry (no PENDING).
     command = tool_input.get("command", "")
     if command.lstrip().startswith("# ESCALATE:"):
         decision, reason, action = get_classification(tool_name, tool_input, cwd)
+        if decision == "SKIP":
+            sys.exit(0)
         log_decision(tool_name, tool_input, cwd, "ESCALATE", reason,
                      config, proj_log)
         _update_activity(tool_name, "ESCALATE", session_id, activity_width)
         _emit_hook_response(action, f"agent escalation requested: {reason}", fmt)
         return
 
-    # Normal classification path
     log_decision(tool_name, tool_input, cwd, "PENDING", "calling LLM",
                  None, proj_log, rid)
-    
-    decision, reason, action = get_classification(tool_name, tool_input, cwd)
-    
-    # Map 'SKIP' or other internal states to what logging expects
-    log_dec = decision
-    if decision == "SKIP": 
-        sys.exit(0) # Should have been caught by early checks, but for safety
 
-    log_decision(tool_name, tool_input, cwd, log_dec, reason,
+    decision, reason, action = get_classification(tool_name, tool_input, cwd)
+
+    if decision == "SKIP":
+        sys.exit(0)
+
+    log_decision(tool_name, tool_input, cwd, decision, reason,
                  config, proj_log, rid)
-    _update_activity(tool_name, log_dec, session_id, activity_width)
+    _update_activity(tool_name, decision, session_id, activity_width)
 
     if action:
         _emit_hook_response(action, reason, fmt)

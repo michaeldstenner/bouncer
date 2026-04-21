@@ -202,6 +202,32 @@ _IS_INSTALLED = {
     "shim":        _is_installed_shim,
 }
 
+
+def _resolve_harness_targets(arg: str | None) -> list[str]:
+    """Map --harness <arg> to a list of installer names. None → []."""
+    if arg is None:
+        return []
+    if arg == "all":
+        return list(_INSTALLERS.keys())
+    if arg == "auto":
+        return _detect_harnesses()
+    return [h.strip().replace("-", "_") for h in arg.split(",")]
+
+
+def _install_targets(targets: list[str]) -> None:
+    """Install the given harnesses, skipping already-installed ones."""
+    for name in targets:
+        if name not in _INSTALLERS:
+            print(f"{RED}Unknown harness:{RESET} {name!r}  "
+                  f"(valid: {', '.join(_INSTALLERS)})")
+            continue
+        if _IS_INSTALLED[name]():
+            print(f"\n  {name}: already installed — skipping.")
+            continue
+        print(f"\n{BOLD}Wiring {name}{RESET}")
+        _INSTALLERS[name]()
+
+
 # ── commands ──────────────────────────────────────────────────────────────────
 
 def cmd_init(args):
@@ -227,13 +253,11 @@ def cmd_init(args):
 
     # ── harness wiring ────────────────────────────────────────────────────────
     if harness:
-        targets = [harness] if harness != "auto" else _detect_harnesses()
+        targets = _resolve_harness_targets(harness)
         if not targets:
             print(f"{YELLOW}No supported AI harnesses detected.{RESET} "
                   "Pass --harness=<name> to wire one explicitly.")
-        for name in targets:
-            print(f"\n{BOLD}Wiring {name}{RESET}")
-            _INSTALLERS[name]()
+        _install_targets(targets)
 
     # ── next steps ────────────────────────────────────────────────────────────
     print()
@@ -280,25 +304,10 @@ def cmd_global_init(args):
                 print(f"{BOLD}Wiring {name}{RESET}")
                 _INSTALLERS[name]()
     else:
-        if harness_arg == "all":
-            targets = list(_INSTALLERS.keys())
-        elif harness_arg == "auto":
-            targets = _detect_harnesses()
-        else:
-            targets = [h.strip().replace("-", "_") for h in harness_arg.split(",")]
-
+        targets = _resolve_harness_targets(harness_arg)
         if not targets:
             print(f"\n{YELLOW}No supported AI harnesses detected.{RESET}")
-        for name in targets:
-            if name not in _INSTALLERS:
-                print(f"{RED}Unknown harness:{RESET} {name!r}  "
-                      f"(valid: {', '.join(_INSTALLERS)})")
-                continue
-            if _IS_INSTALLED[name]():
-                print(f"\n  {name}: already installed — skipping.")
-                continue
-            print(f"\n{BOLD}Wiring {name}{RESET}")
-            _INSTALLERS[name]()
+        _install_targets(targets)
 
     # ── next steps ────────────────────────────────────────────────────────────
     print()

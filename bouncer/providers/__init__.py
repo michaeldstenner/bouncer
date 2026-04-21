@@ -48,11 +48,12 @@ def _build_prompt(tool_name: str, tool_input: dict, cwd: Path, config: dict) -> 
 def _parse_llm_text(response_text: str) -> tuple[str, str]:
     decision, reason = "UNSURE", "No reason provided"
     for line in response_text.splitlines():
-        if line.upper().startswith("DECISION:"):
-            val = line.upper().split(":", 1)[1].strip()
+        upper = line.upper()
+        if upper.startswith("DECISION:"):
+            val = upper.split(":", 1)[1].strip()
             if val in ("ALLOW", "DENY", "UNSURE"):
                 decision = val
-        elif line.lower().startswith("reason:"):
+        elif upper.startswith("REASON:"):
             reason = line.split(":", 1)[1].strip()
     return decision, reason
 

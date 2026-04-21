@@ -30,12 +30,11 @@ def _parse_since(s: str | None) -> datetime | None:
 
 def _extract_command(summary: str) -> str:
     try:
-        if "'command': '" in summary:
-            return summary.split("'command': '")[1].split("'")[0]
-        if '"command": "' in summary:
-            return summary.split('"command": "')[1].split('"')[0]
-    except Exception:
-        pass
+        data = json.loads(summary)
+    except (json.JSONDecodeError, TypeError):
+        return summary
+    if isinstance(data, dict):
+        return data.get("command", summary)
     return summary
 
 
