@@ -82,7 +82,7 @@ Activity indicator — one character per recent decision, newest on the left:
 | Tool initial (B/W/E/R/G…) | green | ALLOW |
 | Tool initial | black on red | DENY |
 | Tool initial | yellow | UNSURE |
-| Tool initial | cyan | ESCALATE |
+| Tool initial | blue | ESCALATE |
 | `·` | dim | Prompt boundary |
 | `○` | dim | Bouncer active, no decisions yet |
 

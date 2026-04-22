@@ -23,13 +23,10 @@
 
 import { execFileSync } from "child_process"
 
-// opencode doesn't expose a session ID to plugins; derive a stable per-process ID.
-const SESSION_ID = `opencode-${process.pid}`
-
 export const BouncerPlugin = async () => {
   return {
     "tool.execute.before": async (
-      input: { tool: string; args?: Record<string, unknown> },
+      input: { tool: string; sessionID: string; callID: string; args?: Record<string, unknown> },
       output: { args?: Record<string, unknown> },
     ): Promise<void> => {
       const toolInput = {
@@ -42,7 +39,7 @@ export const BouncerPlugin = async () => {
         tool_name: input.tool,
         tool_input: toolInput,
         cwd: process.cwd(),
-        session_id: SESSION_ID,
+        session_id: input.sessionID,
         hook_event_name: "PreToolUse",
       })
 
