@@ -46,8 +46,12 @@ def _build_prompt(tool_name: str, tool_input: dict, cwd: Path, config: dict) -> 
 
 
 def _parse_llm_text(response_text: str) -> tuple[str, str]:
-    decision, reason = "UNSURE", "No reason provided"
-    for line in response_text.splitlines():
+    text = response_text.strip()
+    if not text:
+        return "UNSURE", "LLM output does not match expected format (empty response)"
+
+    decision, reason = None, None
+    for line in text.splitlines():
         upper = line.upper()
         if upper.startswith("DECISION:"):
             val = upper.split(":", 1)[1].strip()
@@ -55,6 +59,10 @@ def _parse_llm_text(response_text: str) -> tuple[str, str]:
                 decision = val
         elif upper.startswith("REASON:"):
             reason = line.split(":", 1)[1].strip()
+
+    if decision is None or reason is None:
+        return "UNSURE", "LLM output does not match expected format"
+
     return decision, reason
 
 

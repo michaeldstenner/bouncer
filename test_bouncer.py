@@ -24,10 +24,12 @@ from bouncer.config import (
     CONFIG_YAML_TEMPLATE,
     USER_CONFIG_YAML_TEMPLATE,
 )
-from bouncer.log import _should_log, _maybe_prune_log, log_decision
+from bouncer.log import _should_log, _maybe_prune_log, log_decision, log_llm_debug
 from bouncer.commands.lint import cmd_lint
 from bouncer.commands.classify import cmd_classify
 from bouncer.commands.log import _extract_command
+from bouncer.providers import _parse_llm_text
+from bouncer.providers.openai import _extract_response_text
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +47,7 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 
 
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok"),
-              config_yaml=None, policy_md=None):
+              config_yaml=None, policy_md=None, fmt="json"):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
@@ -74,7 +76,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok"),
         ):
             class _A:
                 hook = True
-                format = "json"
+                format = fmt
             try:
                 cmd_classify(_A())
             except SystemExit as e:
@@ -473,6 +475,30 @@ class TestLogging(unittest.TestCase):
             self.assertTrue(user_log.exists())
             self.assertTrue(proj_log.exists())
 
+    def test_log_llm_debug_redacts_authorization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bouncer_dir = tmp_path / ".bouncer"
+            bouncer_dir.mkdir()
+            debug_log = bouncer_dir / "llm_debug.jsonl"
+            with patch.object(cfg, "_find_bouncer_dir", return_value=bouncer_dir):
+                log_llm_debug(
+                    str(tmp_path),
+                    {"log": {"llm_debug": True}},
+                    "openai_compatible",
+                    "gpt-oss-120b",
+                    {
+                        "url": "https://example.test/v1/chat/completions",
+                        "headers": {"Authorization": "Bearer secret", "Content-Type": "application/json"},
+                        "body": {"model": "gpt-oss-120b"},
+                    },
+                    response_body={"choices": []},
+                    response_text="DECISION: ALLOW\nREASON: ok",
+                )
+            entry = json.loads(debug_log.read_text())
+            self.assertEqual(entry["request"]["headers"]["Authorization"], "Bearer ***REDACTED***")
+            self.assertEqual(entry["response_text"], "DECISION: ALLOW\nREASON: ok")
+
 
 # ---------------------------------------------------------------------------
 # _extract_command (commands/log.py)
@@ -585,6 +611,18 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
 
+    def test_unsure_plain_denies_when_ask_not_available(self):
+        out, _, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("UNSURE", "unclear"),
+            fmt="plain",
+        )
+        self.assertEqual(code, 2)
+        self.assertTrue(out.startswith("deny\tLLM unsure: unclear"))
+        self.assertIn("does not have ASK available", out)
+        self.assertNotIn("To escalate to the user", out)
+
     def test_unsure_on_unsure_allow(self):
         _, _, code = _classify(
             self._hook(),
@@ -673,6 +711,17 @@ class TestClassify(unittest.TestCase):
         reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("deploy step", reason)
 
+    def test_escalate_plain_denies_when_ask_not_available(self):
+        out, _, code = _classify(
+            self._hook(command="# ESCALATE: deploy step\nrm -rf dist/"),
+            config_yaml=_BASIC_CONFIG,
+            fmt="plain",
+        )
+        self.assertEqual(code, 2)
+        self.assertTrue(out.startswith("deny\tagent escalation requested: deploy step"))
+        self.assertIn("does not have ASK available", out)
+        self.assertNotIn("To escalate to the user", out)
+
     def test_invalid_stdin_fails_open(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -752,6 +801,48 @@ class TestLint(unittest.TestCase):
     def test_disabled_project_is_valid(self):
         _, code = _lint("enabled: false\n")
         self.assertEqual(code, 0)
+
+
+class TestParseLlmText(unittest.TestCase):
+    def test_strict_format_parses(self):
+        decision, reason = _parse_llm_text("DECISION: ALLOW\nREASON: harmless read")
+        self.assertEqual((decision, reason), ("ALLOW", "harmless read"))
+
+    def test_malformed_output_falls_back_to_unsure(self):
+        decision, reason = _parse_llm_text("pwd is allowed because it is read-only")
+        self.assertEqual(decision, "UNSURE")
+        self.assertIn("does not match expected format", reason)
+
+
+class TestOpenAIProvider(unittest.TestCase):
+    def test_extract_response_text_uses_message_content(self):
+        body = {
+            "choices": [{
+                "message": {
+                    "content": "DECISION: ALLOW\nREASON: harmless read",
+                    "reasoning_content": "internal reasoning",
+                }
+            }]
+        }
+        self.assertEqual(
+            _extract_response_text(body),
+            "DECISION: ALLOW\nREASON: harmless read",
+        )
+
+    def test_extract_response_text_ignores_reasoning_content(self):
+        body = {
+            "choices": [{
+                "message": {
+                    "content": None,
+                    "reasoning_content": "DECISION: ALLOW\nREASON: should not be used",
+                    "reasoning": "same here",
+                }
+            }]
+        }
+        with self.assertRaisesRegex(ValueError, "missing textual content"):
+            _extract_response_text(body)
+
+
 
 
 if __name__ == "__main__":

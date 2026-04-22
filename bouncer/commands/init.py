@@ -112,7 +112,7 @@ def _install_codex():
 
 def _install_opencode():
     repo_plugin = Path(__file__).parent.parent.parent / "integrations" / "opencode" / "bouncer_plugin.ts"
-    plugins_dir = Path.home() / ".config" / "opencode" / "plugins"
+    plugins_dir = Path.home() / ".config" / "opencode" / "plugin"
     plugins_dir.mkdir(parents=True, exist_ok=True)
 
     dst = plugins_dir / "bouncer.ts"
@@ -149,7 +149,7 @@ def _install_shim():
     print("  To protect an agent that runs commands via the shell, launch it with:")
     print(f'    {BOLD}PATH="{_SHIM_INSTALL_DIR}:$PATH" <your-agent-command>{RESET}')
     print("  The shim gates 'bash -c' calls in any project with .bouncer/config.yaml.")
-    print("  It has no ASK channel — escalations come back as denials the agent relays.")
+    print("  ASK is not available there — internal ASK/escalation outcomes are delivered as denials.")
 
 
 _INSTALLERS = {
@@ -162,7 +162,7 @@ _INSTALLERS = {
 _HARNESS_PROMPTS = {
     "claude_code": "Add PreToolUse hook to ~/.claude/settings.json",
     "codex":       "Copy bouncer_hook.py to ~/.codex/hooks/bouncer_hook.py",
-    "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugins/bouncer.ts",
+    "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugin/bouncer.ts",
     "shim":        f"Install shell shim to {_SHIM_INSTALL_DIR}/bash (universal PATH-based gate)",
 }
 
@@ -188,7 +188,7 @@ def _is_installed_codex() -> bool:
 
 
 def _is_installed_opencode() -> bool:
-    return (Path.home() / ".config" / "opencode" / "plugins" / "bouncer.ts").exists()
+    return (Path.home() / ".config" / "opencode" / "plugin" / "bouncer.ts").exists()
 
 
 def _is_installed_shim() -> bool:
@@ -246,10 +246,10 @@ def cmd_init(args):
         policy_target.write_text(POLICY_MD_TEMPLATE, encoding="utf-8")
         gitignore = bouncer_dir / ".gitignore"
         if not gitignore.exists():
-            gitignore.write_text("log.jsonl\nconfig.local.yaml\n", encoding="utf-8")
+            gitignore.write_text("log.jsonl\nllm_debug.jsonl\nconfig.local.yaml\n", encoding="utf-8")
         print(f"{GREEN}Created{RESET} {config_target}")
         print(f"{GREEN}Created{RESET} {policy_target}")
-        print(f"         {DIM}{gitignore}{RESET}  (protects log + config.local.yaml)")
+        print(f"         {DIM}{gitignore}{RESET}  (protects logs + config.local.yaml)")
 
     # ── harness wiring ────────────────────────────────────────────────────────
     if harness:

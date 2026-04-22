@@ -32,6 +32,49 @@ def _maybe_prune_log(log_file: Path, max_entries: int | None) -> None:
         f.writelines(last_lines)
 
 
+def llm_debug_log_file(cwd: str | Path | None = None) -> Path:
+    d = _config._find_bouncer_dir(Path(cwd) if cwd else None)
+    if d:
+        return d / "llm_debug.jsonl"
+    return _config.USER_LOG_FILE.with_name("llm_debug.jsonl")
+
+
+def log_llm_debug(
+    cwd: str,
+    cfg: dict,
+    provider: str,
+    model: str,
+    request_payload: dict,
+    response_body: dict | None = None,
+    response_text: str | None = None,
+    error: str | None = None,
+) -> None:
+    if not cfg.get("log", {}).get("llm_debug", False):
+        return
+
+    headers = dict(request_payload.get("headers", {}))
+    if "Authorization" in headers:
+        headers["Authorization"] = "Bearer ***REDACTED***"
+
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "provider": provider,
+        "model": model,
+        "request": {
+            **request_payload,
+            "headers": headers,
+        },
+        "response_body": response_body,
+        "response_text": response_text,
+        "error": error,
+    }
+
+    log_file = llm_debug_log_file(cwd)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "ab") as f:
+        f.write((json.dumps(entry) + "\n").encode())
+
+
 def log_decision(
     tool_name: str,
     tool_input: dict,

@@ -5,3 +5,5 @@ dist/
 build/
 .venv/
 *.egg
+.bouncer/
+.tp.conf

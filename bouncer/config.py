@@ -26,6 +26,7 @@ CONFIG_DEFAULTS: dict = {
     "log": {
         "verbosity":   "all",
         "max_entries": 10000,
+        "llm_debug":   False,
     },
 }
 
@@ -61,6 +62,7 @@ policy_mode: append
 #log:
 #  verbosity: all         # all | deny_only | off
 #  max_entries: 10000     # prune log when it exceeds this many entries
+#  llm_debug: false       # write redacted LLM request/response JSONL for debugging
 """
 
 POLICY_MD_TEMPLATE = """\
@@ -98,6 +100,7 @@ on_unavailable: ask
 log:
   verbosity: all
   max_entries: 10000
+  llm_debug: false
 """
 
 USER_POLICY_MD_TEMPLATE = """\

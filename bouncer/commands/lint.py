@@ -73,8 +73,10 @@ def cmd_lint(args):
         if v not in VALID_VERBOSITIES:
             errors.append(f"'log.verbosity' must be one of {VALID_VERBOSITIES}, got: {v!r}")
         me = log_cfg.get("max_entries")
+        dbg = log_cfg.get("llm_debug")
         print(f"  log:           verbosity={v}"
-              + (f", max_entries={me}" if me else ""))
+              + (f", max_entries={me}" if me else "")
+              + (f", llm_debug={dbg}" if dbg is not None else ""))
 
     for w in warnings:
         print(f"  {YELLOW}⚠{RESET}  {w}")

@@ -47,7 +47,7 @@ The LLM returns one of three decisions:
 |---|---|
 | **ALLOW** | Operation is within policy — harness approves without asking the user|
 | **DENY** | Operation is out of scope — harness blocks with an explanation to the requesting agent without asking the user|
-| **UNSURE** | LLM couldn't decide — escalated to the user to allow/deny |
+| **UNSURE** | LLM couldn't decide — internal ASK if available; otherwise delivered outward as a deny |
 
 If the LLM is unreachable, the `on_unavailable` fallback applies (default: ask).
 
@@ -55,8 +55,9 @@ Every decision is logged and shown in the statusline activity strip.
 
 ### Escalation mechanism
 
-If the agent wants to bypass the LLM and send a request straight to the user,
-it repeats the command prefixed with `# ESCALATE:`:
+If the harness has ASK available and the agent wants to bypass the LLM and send
+a request straight to the user, it repeats the command prefixed with
+`# ESCALATE:`:
 
 ```sh
 # ESCALATE: clearing build artifacts before release
@@ -67,9 +68,9 @@ Bouncer skips the LLM and forwards the request to the user with the stated
 reason. This is how the agent signals "I know this looks sketchy — here's
 why I need it" without permanently widening the policy.
 
-`ESCALATE` is a request, not an override: bouncer still defers to the user,
-and harnesses that have no ASK channel (the shell shim, for instance) will
-surface the escalation back as a denial for the agent to relay.
+`ESCALATE` is a request, not an override: bouncer still defers to the user.
+Harnesses that do not have ASK available (the shell shim and opencode, for
+instance) deliver the escalation outward as a denial instead.
 
 ---
 

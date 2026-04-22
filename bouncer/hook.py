@@ -2,14 +2,14 @@ import json
 import sys
 
 
-_DENY_HINT = (
+_DENY_HINT_WITH_ASK = (
     "To escalate to the user: prefix your command with `# ESCALATE: <reason>` and retry. "
     "Run 'bouncer --agent-help' if you haven't already."
 )
 
-_ASK_UNDELIVERED_HINT = (
-    "This harness cannot prompt the user directly; relay the reason above and "
-    "wait for the user's decision before retrying."
+_DENY_HINT_NO_ASK = (
+    "This harness does not have ASK available. Find another way or suggest a policy change. "
+    "Run 'bouncer --agent-help' if you haven't already."
 )
 
 
@@ -20,6 +20,10 @@ def _join_reason(reason: str, hint: str) -> str:
     return f"{reason.rstrip()}{sep}{hint}"
 
 
+def _ask_available(fmt: str) -> bool:
+    return fmt == "json"
+
+
 def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple[str, str, int]:
     """
     Format a hook response.
@@ -27,34 +31,37 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
     decision: ALLOW | DENY | ASK
     """
     stdout, stderr, exit_code = "", "", 0
+    ask_available = _ask_available(fmt)
+    deny_hint = _DENY_HINT_WITH_ASK if ask_available else _DENY_HINT_NO_ASK
 
     if fmt == "plain":
         # Plain format is a single tab-separated line, so hints get flattened
         # onto the reason field (no embedded newlines).
-        if decision == "DENY":
-            stdout = f"deny\t{_join_reason(reason, _DENY_HINT)}\n"
+        if decision in ("DENY", "ASK"):
+            stdout = f"deny\t{_join_reason(reason, deny_hint)}\n"
             exit_code = 2
-        elif decision == "ASK":
-            stdout = f"ask\t{_join_reason(reason, _ASK_UNDELIVERED_HINT)}\n"
-            exit_code = 0
         else:
             stdout = "allow\n"
             exit_code = 0
         return stdout, stderr, exit_code
 
-    # JSON (default — Claude Code / Codex hookSpecificOutput protocol)
+    # JSON (default — ASK-capable hookSpecificOutput protocol)
     if decision == "DENY":
-        stderr = f"{reason}\n{_DENY_HINT}\n"
+        stderr = f"{reason}\n{deny_hint}\n"
         exit_code = 2
     elif decision == "ASK":
-        stdout = json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "ask",
-                "permissionDecisionReason": _join_reason(reason, _DENY_HINT),
-            }
-        }) + "\n"
-        exit_code = 0
+        if ask_available:
+            stdout = json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": reason,
+                }
+            }) + "\n"
+            exit_code = 0
+        else:
+            stderr = f"{reason}\n{deny_hint}\n"
+            exit_code = 2
     else:  # ALLOW
         stdout = json.dumps({
             "hookSpecificOutput": {
@@ -81,7 +88,7 @@ def _emit_hook_response(decision: str, reason: str, fmt: str = "json") -> None:
 def resolve_fallback(action: str, reason: str) -> tuple[str, str]:
     """
     Map a fallback action (allow|deny|ask) to a canonical decision
-    (ALLOW|DENY|ASK) and final reason. The escalate/agent-help hint is
+    (ALLOW|DENY|ASK) and final reason. The harness-specific hint is
     appended by format_hook_response, so this returns the bare reason.
     """
     if action == "allow":

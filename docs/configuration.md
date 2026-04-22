@@ -91,9 +91,9 @@ llm:
 
 | Value | Meaning |
 |---|---|
-| `ask` | Escalate to the human (default) |
+| `ask` | Request human approval if ASK is available; otherwise delivered outward as a deny (default) |
 | `allow` | Pass through silently |
-| `deny` | Block with the LLM's reason; bouncer appends an `# ESCALATE:` hint so the agent knows how to bring the question to the user |
+| `deny` | Block with the LLM's reason; ASK-capable harnesses include an `# ESCALATE:` hint, while no-ASK harnesses tell the agent to find another way or suggest a policy change |
 
 ## Config merge order
 

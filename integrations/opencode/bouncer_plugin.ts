@@ -2,12 +2,12 @@
  * bouncer plugin for opencode
  *
  * Install:
- *   cp bouncer_plugin.ts ~/.config/opencode/plugins/bouncer.ts
+ *   cp bouncer_plugin.ts ~/.config/opencode/plugin/bouncer.ts
  *   # In ~/.config/opencode/opencode.json:
  *   #   { "plugin": ["bouncer"] }
  *
  * Or per-project:
- *   cp bouncer_plugin.ts <project>/.opencode/plugins/bouncer.ts
+ *   cp bouncer_plugin.ts <project>/.opencode/plugin/bouncer.ts
  *   # In <project>/.opencode/opencode.json:
  *   #   { "plugin": ["bouncer"] }
  *
@@ -30,9 +30,12 @@ export const BouncerPlugin = async () => {
   return {
     "tool.execute.before": async (
       input: { tool: string; args?: Record<string, unknown> },
-      _output: { args: Record<string, unknown> },
+      output: { args?: Record<string, unknown> },
     ): Promise<void> => {
-      const toolInput = input.args ?? {}
+      const toolInput = {
+        ...(input.args ?? {}),
+        ...(output.args ?? {}),
+      }
 
       // bouncer's tool filter is case-insensitive, so pass tool name as-is.
       const bouncerPayload = JSON.stringify({
@@ -71,10 +74,10 @@ export const BouncerPlugin = async () => {
         throw new Error(`bouncer: ${reason || "operation denied by policy"}`)
       }
 
-      // "ask" = bouncer needs user approval; opencode has no mid-execution
-      // escalation UI, so block with the reason (which bouncer's plain format
-      // already annotates with escalation guidance for the agent).
-      // To get a plain deny instead, set on_unsure: deny_with_message in config.
+      // Plain-format harnesses do not have ASK available. Bouncer currently
+      // delivers both DENY and internal ASK outcomes outward as "deny" here.
+      // Keep this branch as a defensive fallback in case an older bouncer
+      // still returns "ask".
       if (decision === "ask") {
         const cmd = (toolInput as { command?: string }).command ?? input.tool
         throw new Error(

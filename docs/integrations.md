@@ -118,17 +118,17 @@ Manual `~/.codex/hooks.json`:
 
 `bouncer init --harness=opencode` does the following:
 
-1. Copies `integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugins/bouncer.ts`
+1. Copies `integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugin/bouncer.ts`
 2. Adds `"bouncer"` to the `plugin` list in `~/.config/opencode/opencode.json`
 
 **Coverage:** opencode's `tool.execute.before` fires for all built-in tools
 (bash, read, edit, write, apply_patch) — broader than Codex's Bash-only scope.
 `apply_patch` maps to `Write` for the bouncer tools filter.
 
-**`ask` behavior:** opencode has no mid-execution escalation UI. When bouncer
-returns `ask` (UNSURE), the plugin blocks with the reason, which bouncer's
-plain format annotates with guidance for the agent to relay to the user.
-Set `on_unsure: deny` if you want a plain deny instead.
+**ASK availability:** opencode does not have ASK available. When bouncer's
+internal decision is ASK (from an UNSURE LLM verdict or `# ESCALATE:`), the
+plain-format hook delivers it outward as a deny with guidance to find another
+way or suggest a policy change.
 
 Manual `~/.config/opencode/opencode.json`:
 
@@ -155,10 +155,9 @@ bouncer returns `allow`. It also:
 - **Recursion guard** via `BOUNCER_INTERNAL_ACTIVE`: once a command has been
   classified, the sub-shells it spawns are not re-intercepted.
 
-The shim has no ASK channel — it cannot prompt the user mid-command. Both
-the UNSURE→ASK path and the `# ESCALATE:` path surface to the agent as a
-non-zero exit with the reason on stderr. Tune `on_unsure` / `on_unavailable`
-in config to match the environment's risk posture.
+The shim does not have ASK available — it cannot prompt the user mid-command.
+Both the internal UNSURE→ASK path and the `# ESCALATE:` path are delivered to
+the agent as denials with the reason on stderr.
 
 ### Install
 
@@ -209,8 +208,8 @@ PATH="$HOME/.local/share/bouncer/shim:$PATH" bash -c "rm -rf /"
 Expected:
 
 ```
-Bouncer DENIED: <reason>. To escalate to the user: prefix your command
-with `# ESCALATE: <reason>` and retry. Run 'bouncer --agent-help' if you
+Bouncer DENIED: <reason>. This harness does not have ASK available. Find
+another way or suggest a policy change. Run 'bouncer --agent-help' if you
 haven't already.
 ```
 
@@ -220,10 +219,9 @@ haven't already.
   that writes files directly via its own tool machinery (not through a
   shell) won't go through the shim — use a native integration for broader
   coverage.
-- **No ASK channel.** The shim cannot interactively prompt the user. If your
-  policy tends to produce UNSURE verdicts, configure `on_unsure: deny` (or
-  `deny_with_message`) so the agent gets a clean denial plus an `ESCALATE`
-  hint, and can then ask the user itself.
+- **ASK is not available.** The shim cannot interactively prompt the user.
+  Internal ASK outcomes are delivered outward as denials, so the agent should
+  find another way or suggest a policy change.
 - **Not a replacement for harness-level approval.** YOLO-mode agents
   benefit most: the shim substitutes bouncer for the (absent) user approval.
   In ask-first mode, the shim is a redundant second gate.

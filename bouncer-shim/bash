@@ -64,7 +64,7 @@ case "$VERDICT" in
         exit 1
         ;;
     ask)
-        printf '\033[33mBouncer ASK:\033[0m %s\n' "$REASON" >&2
+        printf '\033[31mBouncer DENIED:\033[0m %s\n' "$REASON" >&2
         exit 1
         ;;
     *)

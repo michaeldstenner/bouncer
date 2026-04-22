@@ -17,21 +17,30 @@ Bouncer is an LLM-powered permission classifier that intercepts tool calls
 from AI coding agents. Each call is classified ALLOW / DENY / ASK against a
 plain-text project policy.
 
-── Escalating to the user ───────────────────────────────────────────────────
+── Two workflow shapes ───────────────────────────────────────────────────────
+Some harnesses have ASK available, and some do not.
+
+- If ASK is available, bouncer uses a three-option workflow: ALLOW / DENY / ASK.
+  A DENY can be retried with `# ESCALATE:` to send the request to the user.
+- If ASK is not available, bouncer uses a delivered two-option workflow:
+  ALLOW / DENY. The LLM may still internally return ASK, but bouncer delivers
+  it outward as a DENY with guidance to find another way or suggest a policy
+  change.
+
+── Escalating to the user (only when ASK is available) ──────────────────────
 When you need something the policy doesn't cover — or believe a denial is
-wrong — prefix the command with an ESCALATE comment explaining why:
+wrong in an ASK-capable harness — prefix the command with an ESCALATE comment
+explaining why:
 
     # ESCALATE: clearing stale build artifacts before release
     rm -rf dist/ build/
 
 Bouncer skips the LLM and forwards the request to the user for a decision.
 
-Harness behavior when bouncer asks (either from ESCALATE or an UNSURE LLM
-verdict):
-  * Claude Code / Codex / opencode — the user is prompted directly.
-  * Shell-shim and other harnesses without an ASK channel — the ASK comes
-    back as a denial. Relay the reason to the user, wait for their decision,
-    and only retry once you have approval.
+Current harness behavior:
+  * Claude Code / Codex — ASK is available.
+  * opencode / shell shim — ASK is not available; outward ASKs are delivered
+    as denials.
 
 Use ESCALATE sparingly; it is not a way to force bouncer to approve something.
 
