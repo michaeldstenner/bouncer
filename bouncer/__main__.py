@@ -104,12 +104,15 @@ def main():
     p_status.add_argument("-v", "--verbose", action="store_true",
                           help="show full config breakdown")
 
-    p_activity = sub.add_parser("activity", help="print colored recent-decision indicator")
+    p_activity = sub.add_parser("activity", help="print recent-decision indicator")
     p_activity.add_argument("--session", metavar="ID", help="session ID (required)")
     p_activity.add_argument("--cwd", metavar="PATH",
                             help="project directory (for inactive indicator)")
     p_activity.add_argument("--width", metavar="N", type=int, default=10,
                             help="number of recent decisions to show (default: 10)")
+    p_activity.add_argument("--as", dest="as_format", metavar="FORMAT",
+                            choices=["plain", "ansi", "json"], default="plain",
+                            help="output format: plain (default), ansi, or json")
 
     p_log = sub.add_parser("log", help="view decision log")
     p_log.add_argument("--break", dest="mark_break", action="store_true",

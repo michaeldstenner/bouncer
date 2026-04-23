@@ -72,7 +72,7 @@ and pass them to `bouncer activity`:
 input=$(cat)
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 cwd=$(echo "$input" | jq -r '.cwd // empty')
-bouncer activity --session "$session_id" --cwd "$cwd" 2>/dev/null
+bouncer activity --session "$session_id" --cwd "$cwd" --as ansi 2>/dev/null
 ```
 
 Activity indicator — one character per recent decision, newest on the left:
@@ -80,7 +80,7 @@ Activity indicator — one character per recent decision, newest on the left:
 | Char | Color | Meaning |
 |------|-------|---------|
 | Tool initial (B/W/E/R/G…) | green | ALLOW |
-| Tool initial | black on red | DENY |
+| Tool initial | red | DENY |
 | Tool initial | yellow | UNSURE |
 | Tool initial | blue | ESCALATE |
 | `·` | dim | Prompt boundary |
@@ -88,6 +88,13 @@ Activity indicator — one character per recent decision, newest on the left:
 
 Tool characters: `B`=Bash, `W`=Write, `E`=Edit, `R`=Read, `G`=Glob/Grep,
 `T`=Task, `F`=WebFetch, `S`=WebSearch, `?`=unknown.
+
+`bouncer activity` supports three output formats via `--as <format>`:
+
+- `plain` (default) — bare ASCII, no color codes; safe for any context
+- `ansi` — ANSI escape codes; use this for Claude Code's `statusline.sh`
+- `json` — structured JSON array `[{"c":"B","d":"allow"},…]`; use this for
+  opencode's `commandStrip`, which maps decision values to theme colors
 
 ## OpenAI Codex CLI
 
@@ -137,6 +144,25 @@ Manual `~/.config/opencode/opencode.json`:
   "plugin": ["bouncer"]
 }
 ```
+
+### Activity strip
+
+opencode's layout system supports a `commandStrip` option that runs a shell
+command on an interval and displays the output in the bottom-right of the input
+area. Use `--as json` so opencode can render each character in the correct theme
+color:
+
+```jsonc
+// in your layout .jsonc file
+"commandStrip": {
+  "command": "bouncer activity --session {session_id} --cwd {cwd} --as json",
+  "intervalMs": 3000
+}
+```
+
+The JSON format emits `[{"c":"B","d":"allow"},…]`; opencode maps decision
+values to theme colors (`allow`→success, `deny`→error, `unsure`→warning,
+`escalate`→info, `break`/`muted`→textMuted).
 
 ## Shell shim (universal gate)
 

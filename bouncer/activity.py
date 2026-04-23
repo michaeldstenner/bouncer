@@ -16,7 +16,6 @@ _TOOL_CHARS = {
     "WebSearch": "S",
 }
 
-# Always emit ANSI — statusline.sh passes them through via echo -e even in non-TTY context
 _ACTIVITY_COLORS = {
     "ALLOW":    "\033[32m",
     "DENY":     "\033[30;41m",
@@ -32,18 +31,32 @@ def _tool_char(tool_name: str) -> str:
     return _TOOL_CHARS.get(key) or _TOOL_CHARS.get(tool_name, "?")
 
 
-def _render_activity(entries: list[dict]) -> str:
+def _render_activity(entries: list[dict], as_format: str = "plain") -> str:
+    if as_format == "json":
+        import json as _json
+        items = []
+        for e in entries:
+            decision = e.get("d", "?").upper()
+            if decision == "BREAK":
+                items.append({"c": "·", "d": "break"})
+            else:
+                items.append({"c": _tool_char(e.get("t", "?")), "d": decision.lower()})
+        return _json.dumps(items)
+
     parts = []
     for e in entries:
         decision = e.get("d", "?").upper()
         if decision == "BREAK":
-            parts.append("\033[2m·\033[0m")
+            parts.append("\033[2m·\033[0m" if as_format == "ansi" else "·")
             continue
         tool  = e.get("t", "?")
         char  = _tool_char(tool)
-        color = _ACTIVITY_COLORS.get(decision, "")
-        reset = _ACTIVITY_RESET if color else ""
-        parts.append(f"{color}{char}{reset}")
+        if as_format == "ansi":
+            color = _ACTIVITY_COLORS.get(decision, "")
+            reset = _ACTIVITY_RESET if color else ""
+            parts.append(f"{color}{char}{reset}")
+        else:
+            parts.append(char)
     return "".join(parts)
 
 

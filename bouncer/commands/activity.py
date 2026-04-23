@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from ..activity import _render_activity
@@ -8,6 +9,7 @@ def cmd_activity(args):
     width      = getattr(args, "width", 10)
     session_id = getattr(args, "session", None)
     cwd_arg    = getattr(args, "cwd", None)
+    as_format  = getattr(args, "as_format", "plain")
 
     if not session_id:
         return
@@ -19,11 +21,26 @@ def cmd_activity(args):
             cwd_path = Path(cwd_arg)
             if project_has_bouncer(cwd_path):
                 if _merged_config(cwd_path).get("enabled", True):
-                    print("\033[2m○\033[0m", end="")      # initialized + enabled, no activity yet
+                    if as_format == "ansi":
+                        print("\033[2m○\033[0m", end="")
+                    elif as_format == "json":
+                        print(json.dumps([{"c": "○", "d": "muted"}]), end="")
+                    else:
+                        print("○", end="")
                 else:
-                    print("\033[31m⊘\033[0m", end="")    # initialized but disabled (red)
+                    if as_format == "ansi":
+                        print("\033[31m⊘\033[0m", end="")
+                    elif as_format == "json":
+                        print(json.dumps([{"c": "⊘", "d": "error"}]), end="")
+                    else:
+                        print("⊘", end="")
             else:
-                print("\033[2m⊘\033[0m", end="")          # never initialized (dim)
+                if as_format == "ansi":
+                    print("\033[2m⊘\033[0m", end="")
+                elif as_format == "json":
+                    print(json.dumps([{"c": "⊘", "d": "muted"}]), end="")
+                else:
+                    print("⊘", end="")
         return
 
     try:
@@ -34,6 +51,6 @@ def cmd_activity(args):
 
     entries = entries[-width:]
     entries.reverse()
-    out = _render_activity(entries)
+    out = _render_activity(entries, as_format=as_format)
     if out:
         print(out, end="")
