@@ -13,7 +13,9 @@ def call_ollama(
     config: dict,
 ) -> tuple[str | None, str]:
     llm_cfg  = config.get("llm", {})
-    model    = llm_cfg.get("model", "qwen2.5:14b")
+    model    = llm_cfg.get("model")
+    if not model:
+        return None, "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml"
     base_url = llm_cfg.get("url", "http://localhost:11434").rstrip("/")
     timeout  = int(llm_cfg.get("timeout", 25))
 
@@ -23,6 +25,7 @@ def call_ollama(
         "prompt": "\n\n---\n\n".join([system_text, user_text]),
         "stream": False,
         "keep_alive": "60m",
+        "think": False,
         "options": {"temperature": 0, "num_predict": 80},
     }
     try:

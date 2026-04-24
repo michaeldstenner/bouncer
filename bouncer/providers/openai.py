@@ -50,7 +50,9 @@ def call_openai(
 ) -> tuple[str | None, str]:
     """OpenAI chat completions — also handles openai_compatible providers (Groq, LM Studio, etc.)."""
     llm_cfg  = config.get("llm", {})
-    model    = llm_cfg.get("model", "gpt-4o-mini")
+    model    = llm_cfg.get("model")
+    if not model:
+        return None, "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml"
     base_url = llm_cfg.get("url", "https://api.openai.com").rstrip("/")
     timeout  = int(llm_cfg.get("timeout", 25))
     api_key  = llm_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")

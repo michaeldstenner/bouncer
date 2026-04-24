@@ -14,7 +14,9 @@ def call_anthropic(
     config: dict,
 ) -> tuple[str | None, str]:
     llm_cfg  = config.get("llm", {})
-    model    = llm_cfg.get("model", "claude-haiku-4-5-20251001")
+    model    = llm_cfg.get("model")
+    if not model:
+        return None, "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml"
     base_url = llm_cfg.get("url", "https://api.anthropic.com").rstrip("/")
     timeout  = int(llm_cfg.get("timeout", 25))
     api_key  = llm_cfg.get("api_key") or os.environ.get("ANTHROPIC_API_KEY", "")

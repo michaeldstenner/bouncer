@@ -239,7 +239,7 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(config["on_unsure"], "ask")
         self.assertEqual(config["on_unavailable"], "ask")
         self.assertEqual(config["tools"], ["Bash"])
-        self.assertEqual(config["llm"]["model"], "qwen2.5:14b")
+        self.assertNotIn("model", config["llm"])  # no default; must be set in user config
 
     def test_merged_config_project_overrides_default(self):
         with tempfile.TemporaryDirectory() as tmp:

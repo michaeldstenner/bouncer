@@ -19,7 +19,7 @@ policy_mode: append
 # provider: ollama | openai | openai_compatible | anthropic
 llm:
   provider: ollama
-  model: qwen2.5:14b
+  model: qwen3:32b              # required — no built-in default; set in ~/.config/bouncer/config.yaml
   url: http://localhost:11434   # ollama / openai_compatible base URL
   timeout: 25                   # seconds
   # api_key: ...                # openai / anthropic (or use env var)
@@ -41,21 +41,25 @@ All settings are optional at the project level; unset keys inherit from user
 config or built-in defaults.
 
 **Edit:** `bouncer config` opens `.bouncer/config.yaml` in `$EDITOR`.
+`bouncer config -e` / `-d` enable or disable bouncer without opening the editor.
 
 ## LLM providers
 
-| `provider` | Default model | Notes |
-|---|---|---|
-| `ollama` | `qwen2.5:14b` | Local; model kept alive 60 min to avoid cold-start latency |
-| `openai` | `gpt-4o-mini` | Requires `OPENAI_API_KEY` env var or `api_key:` in config |
-| `openai_compatible` | `gpt-4o-mini` | Same as `openai`; set `url:` for Groq, LM Studio, Together, etc. |
-| `anthropic` | `claude-haiku-4-5-20251001` | Requires `ANTHROPIC_API_KEY` env var or `api_key:` in config |
+`model` is required — there is no built-in default. Set it in `~/.config/bouncer/config.yaml`
+so all projects inherit it, then override per-project as needed.
+
+| `provider` | Notes |
+|---|---|
+| `ollama` | Local; model kept alive 60 min to avoid cold-start latency |
+| `openai` | Requires `OPENAI_API_KEY` env var or `api_key:` in config |
+| `openai_compatible` | Same as `openai`; set `url:` for Groq, LM Studio, Together, etc. |
+| `anthropic` | Requires `ANTHROPIC_API_KEY` env var or `api_key:` in config |
 
 ```yaml
 # Ollama (default — local, no API key)
 llm:
   provider: ollama
-  model: qwen2.5:14b
+  model: qwen3:32b
   url: http://localhost:11434
 
 # OpenAI

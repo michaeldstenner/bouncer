@@ -17,7 +17,6 @@ CONFIG_DEFAULTS: dict = {
     "activity_width": 10,
     "llm": {
         "provider": "ollama",
-        "model": "qwen2.5:14b",
         "url": "http://localhost:11434",
         "timeout": 25,
     },
@@ -49,7 +48,7 @@ policy_mode: append
 # provider: ollama | openai | openai_compatible | anthropic
 #llm:
 #  provider: ollama
-#  model: qwen2.5:14b
+#  model: qwen3:32b              # required — no default; set in ~/.config/bouncer/config.yaml
 #  url: http://localhost:11434   # ollama / openai_compatible base URL
 #  timeout: 25
 #  api_key: ...                  # openai / anthropic (or use env var)
@@ -87,7 +86,7 @@ tools:
 # provider: ollama | openai | openai_compatible | anthropic
 llm:
   provider: ollama
-  model: qwen2.5:14b
+  model: qwen3:32b              # required — no default; pick a model you have installed
   url: http://localhost:11434   # ollama / openai_compatible base URL
   timeout: 25
   # api_key: ...                # openai / anthropic (or OPENAI_API_KEY / ANTHROPIC_API_KEY env var)
