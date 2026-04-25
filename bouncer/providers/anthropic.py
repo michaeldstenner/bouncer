@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -44,6 +45,8 @@ def call_anthropic(
             body = json.loads(resp.read())
         response_text = body["content"][0]["text"].strip()
         return _parse_llm_text(response_text)
+    except (TimeoutError, socket.timeout):
+        return None, f"Anthropic API timed out after {timeout}s — service may be slow or overloaded"
     except urllib.error.URLError:
         return None, "Anthropic endpoint unavailable"
     except Exception as e:

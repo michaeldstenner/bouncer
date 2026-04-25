@@ -55,9 +55,8 @@ Every decision is logged and shown in the statusline activity strip.
 
 ### Escalation mechanism
 
-If the harness has ASK available and the agent wants to bypass the LLM and send
-a request straight to the user, it repeats the command prefixed with
-`# ESCALATE:`:
+If the harness has ASK available and the agent receives a DENY it believes is
+wrong, it retries the exact same command prefixed with `# ESCALATE:`:
 
 ```sh
 # ESCALATE: clearing build artifacts before release
@@ -65,8 +64,8 @@ rm -rf dist/ build/
 ```
 
 Bouncer skips the LLM and forwards the request to the user with the stated
-reason. This is how the agent signals "I know this looks sketchy — here's
-why I need it" without permanently widening the policy.
+reason. This is a retry mechanism — the agent should submit normally first and
+only escalate after a denial, not preemptively.
 
 `ESCALATE` is a request, not an override: bouncer still defers to the user.
 Harnesses that do not have ASK available (the shell shim and opencode, for

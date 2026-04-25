@@ -28,9 +28,9 @@ Some harnesses have ASK available, and some do not.
   change.
 
 ── Escalating to the user (only when ASK is available) ──────────────────────
-When you need something the policy doesn't cover — or believe a denial is
-wrong in an ASK-capable harness — prefix the command with an ESCALATE comment
-explaining why:
+ESCALATE is a retry mechanism, not a preemptive one. Submit the command
+normally first. If bouncer DENYs it and you believe that denial is wrong,
+retry the exact same command with an ESCALATE comment explaining why:
 
     # ESCALATE: clearing stale build artifacts before release
     rm -rf dist/ build/
@@ -42,7 +42,9 @@ Current harness behavior:
   * opencode / shell shim — ASK is not available; outward ASKs are delivered
     as denials.
 
-Use ESCALATE sparingly; it is not a way to force bouncer to approve something.
+Do not use ESCALATE preemptively. Trying to anticipate what bouncer will
+decide wastes tokens and defeats the purpose of automated classification —
+most commands are allowed without user involvement.
 
 ── Policy suggestions ───────────────────────────────────────────────────────
 If an operation is routine for this project but keeps getting denied, suggest
@@ -55,7 +57,9 @@ Good:  "This project manages the user's shell environment and may read and
 Poor:  "Allow rm, allow ~/.zshrc, allow pip install"
 
 To propose a policy change, tell the user what you'd add and why, then ask
-if they'd like you to append it to .bouncer/policy.md.
+if they'd like you to append it to .bouncer/policy.md. Do not edit bouncer
+config or policy files directly — the agent cannot set its own permission
+scope.
 
 ── User-level policy ────────────────────────────────────────────────────────
 ~/.config/bouncer/policy.md applies across all projects. Project-level policy

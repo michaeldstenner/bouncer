@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -87,6 +88,10 @@ def call_openai(
         log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
                       request_payload, response_body=body, response_text=response_text)
         return _parse_llm_text(response_text)
+    except (TimeoutError, socket.timeout):
+        log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
+                      request_payload, error=f"OpenAI-compatible API timed out after {timeout}s")
+        return None, f"OpenAI-compatible API timed out after {timeout}s — service may be slow or overloaded"
     except urllib.error.URLError:
         log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
                       request_payload, error="OpenAI endpoint unavailable")

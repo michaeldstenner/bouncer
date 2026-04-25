@@ -1,9 +1,22 @@
 import json
+import socket
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 from . import _build_prompt, _parse_llm_text
+
+
+def _check_ollama_busy(base_url: str, model: str) -> bool:
+    """True if Ollama is up and the model is currently loaded (busy, not down)."""
+    try:
+        req = urllib.request.Request(base_url + "/api/ps")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+        loaded = [m.get("model", "") for m in data.get("models", [])]
+        return any(m == model or m.startswith(model.split(":")[0]) for m in loaded)
+    except Exception:
+        return False
 
 
 def call_ollama(
@@ -37,6 +50,10 @@ def call_ollama(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             response_text = json.loads(resp.read()).get("response", "").strip()
         return _parse_llm_text(response_text)
+    except (TimeoutError, socket.timeout):
+        if _check_ollama_busy(base_url, model):
+            return None, f"Ollama busy: model loaded but did not respond within {timeout}s — consider increasing llm.timeout"
+        return None, "Ollama timed out and model is not loaded — Ollama may be overloaded or restarting"
     except urllib.error.URLError:
         return None, "Ollama unavailable"
     except Exception as e:
