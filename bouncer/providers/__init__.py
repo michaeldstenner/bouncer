@@ -71,10 +71,12 @@ def call_llm(
     tool_input: dict,
     cwd: Path,
     config: dict,
-) -> tuple[str | None, str]:
-    """Classify a tool call. Returns (decision, reason).
+) -> tuple[str | None, str, int | None]:
+    """Classify a tool call. Returns (decision, reason, prompt_chars).
 
     decision is ALLOW / DENY / UNSURE, or None if the backend was unreachable.
+    prompt_chars is the combined length of system+user prompt text, or None on
+    failure paths where the prompt was never built.
     """
     provider = config.get("llm", {}).get("provider", "ollama")
     if provider == "ollama":
@@ -86,4 +88,4 @@ def call_llm(
     if provider == "anthropic":
         from .anthropic import call_anthropic
         return call_anthropic(tool_name, tool_input, cwd, config)
-    return None, f"Unknown LLM provider: {provider!r}"
+    return None, f"Unknown LLM provider: {provider!r}", None

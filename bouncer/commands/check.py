@@ -31,7 +31,7 @@ def cmd_check(args):
     print(f"Policy context: {DIM}{first}{'…' if len(ctx) > 72 else ''}{RESET}")
 
     if getattr(args, "llm", False):
-        decision, reason = call_llm("Bash", {"command": command}, cwd, config)
+        decision, reason, _ = call_llm("Bash", {"command": command}, cwd, config)
         if decision is None:
             action = config.get("on_unavailable", "ask")
             print(f"  {YELLOW}UNAVAILABLE{RESET} — {reason}  (on_unavailable → {action})")

@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -48,17 +49,18 @@ def call_openai(
     tool_input: dict,
     cwd: Path,
     config: dict,
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str, int | None]:
     """OpenAI chat completions — also handles openai_compatible providers (Groq, LM Studio, etc.)."""
     llm_cfg  = config.get("llm", {})
     model    = llm_cfg.get("model")
     if not model:
-        return None, "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml"
+        return None, "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml", None
     base_url = llm_cfg.get("url", "https://api.openai.com").rstrip("/")
     timeout  = int(llm_cfg.get("timeout", 25))
     api_key  = llm_cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
 
     system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
+    prompt_chars = len(system_text) + len(user_text)
     payload = {
         "model": model,
         "messages": [
@@ -76,6 +78,8 @@ def call_openai(
         "headers": headers,
         "body": payload,
     }
+    provider_name = llm_cfg.get("provider", "openai_compatible")
+    t0 = time.monotonic()
     try:
         req = urllib.request.Request(
             base_url + "/v1/chat/completions",
@@ -84,19 +88,26 @@ def call_openai(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read())
+        elapsed = time.monotonic() - t0
         response_text = _extract_response_text(body)
-        log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
-                      request_payload, response_body=body, response_text=response_text)
-        return _parse_llm_text(response_text)
+        log_llm_debug(str(cwd), config, provider_name, model,
+                      request_payload, response_body=body, response_text=response_text,
+                      elapsed_s=elapsed)
+        decision, reason = _parse_llm_text(response_text)
+        return decision, reason, prompt_chars
     except (TimeoutError, socket.timeout):
-        log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
-                      request_payload, error=f"OpenAI-compatible API timed out after {timeout}s")
-        return None, f"OpenAI-compatible API timed out after {timeout}s — service may be slow or overloaded"
+        elapsed = time.monotonic() - t0
+        msg = f"OpenAI-compatible API timed out after {timeout}s — service may be slow or overloaded"
+        log_llm_debug(str(cwd), config, provider_name, model,
+                      request_payload, error=msg, elapsed_s=elapsed)
+        return None, msg, prompt_chars
     except urllib.error.URLError:
-        log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
-                      request_payload, error="OpenAI endpoint unavailable")
-        return None, "OpenAI endpoint unavailable"
+        elapsed = time.monotonic() - t0
+        log_llm_debug(str(cwd), config, provider_name, model,
+                      request_payload, error="OpenAI endpoint unavailable", elapsed_s=elapsed)
+        return None, "OpenAI endpoint unavailable", prompt_chars
     except Exception as e:
-        log_llm_debug(str(cwd), config, llm_cfg.get("provider", "openai_compatible"), model,
-                      request_payload, error=f"Classifier error: {e}")
-        return None, f"Classifier error: {e}"
+        elapsed = time.monotonic() - t0
+        log_llm_debug(str(cwd), config, provider_name, model,
+                      request_payload, error=f"Classifier error: {e}", elapsed_s=elapsed)
+        return None, f"Classifier error: {e}", prompt_chars

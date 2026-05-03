@@ -46,7 +46,7 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
     return bd
 
 
-def _classify(hook_input, *, call_llm_result=("ALLOW", "ok"),
+def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None),
               config_yaml=None, policy_md=None, fmt="json"):
     """
     Run cmd_classify with patched stdin/paths/LLM.
@@ -538,14 +538,14 @@ class TestClassify(unittest.TestCase):
         return {"tool_name": tool, "tool_input": {"command": command}}
 
     def test_no_project_config_passes_through(self):
-        _, _, code = _classify(self._hook(), call_llm_result=("DENY", "bad"))
+        _, _, code = _classify(self._hook(), call_llm_result=("DENY", "bad", None))
         self.assertEqual(code, 0)
 
     def test_disabled_passes_through(self):
         _, _, code = _classify(
             self._hook(),
             config_yaml="enabled: false\n",
-            call_llm_result=("DENY", "bad"),
+            call_llm_result=("DENY", "bad", None),
         )
         self.assertEqual(code, 0)
 
@@ -553,7 +553,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             {"tool_name": "Write", "tool_input": {"path": "/f", "content": "x"}},
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "bad"),
+            call_llm_result=("DENY", "bad", None),
         )
         self.assertEqual(code, 0)
 
@@ -561,7 +561,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             {"tool_name": "Write", "tool_input": {}},
             config_yaml="enabled: true\ntools: all\n",
-            call_llm_result=("ALLOW", "fine"),
+            call_llm_result=("ALLOW", "fine", None),
         )
         self.assertEqual(code, 0)
 
@@ -569,7 +569,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml="enabled: true\ntools: []\n",
-            call_llm_result=("DENY", "bad"),
+            call_llm_result=("DENY", "bad", None),
         )
         self.assertEqual(code, 0)
 
@@ -577,7 +577,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("ALLOW", "looks fine"),
+            call_llm_result=("ALLOW", "looks fine", None),
         )
         self.assertEqual(code, 0)
         data = json.loads(out)
@@ -589,7 +589,7 @@ class TestClassify(unittest.TestCase):
         _, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "dangerous command"),
+            call_llm_result=("DENY", "dangerous command", None),
         )
         self.assertEqual(code, 2)
         self.assertIn("dangerous command", err)
@@ -598,7 +598,7 @@ class TestClassify(unittest.TestCase):
         _, err, _ = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "bad"),
+            call_llm_result=("DENY", "bad", None),
         )
         self.assertIn("ESCALATE", err)
 
@@ -606,7 +606,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("UNSURE", "unclear"),
+            call_llm_result=("UNSURE", "unclear", None),
         )
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
@@ -615,7 +615,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("UNSURE", "unclear"),
+            call_llm_result=("UNSURE", "unclear", None),
             fmt="plain",
         )
         self.assertEqual(code, 2)
@@ -627,7 +627,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unsure: allow\n",
-            call_llm_result=("UNSURE", "unclear"),
+            call_llm_result=("UNSURE", "unclear", None),
         )
         self.assertEqual(code, 0)
 
@@ -635,7 +635,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unsure: deny\n",
-            call_llm_result=("UNSURE", "unclear"),
+            call_llm_result=("UNSURE", "unclear", None),
         )
         self.assertEqual(code, 2)
 
@@ -643,7 +643,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=(None, "Ollama unreachable"),
+            call_llm_result=(None, "Ollama unreachable", None),
         )
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
@@ -652,7 +652,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unavailable: allow\n",
-            call_llm_result=(None, "Ollama unreachable"),
+            call_llm_result=(None, "Ollama unreachable", None),
         )
         self.assertEqual(code, 0)
 
@@ -660,7 +660,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unavailable: deny\n",
-            call_llm_result=(None, "Ollama unreachable"),
+            call_llm_result=(None, "Ollama unreachable", None),
         )
         self.assertEqual(code, 2)
 
@@ -668,7 +668,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(command="# ESCALATE: needed for deploy\nrm -rf dist/"),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "should not be called"),
+            call_llm_result=("DENY", "should not be called", None),
         )
         self.assertEqual(code, 0)
         data = json.loads(out)
@@ -721,6 +721,58 @@ class TestClassify(unittest.TestCase):
         self.assertTrue(out.startswith("deny\tagent escalation requested: deploy step"))
         self.assertIn("does not have ASK available", out)
         self.assertNotIn("To escalate to the user", out)
+
+    def test_log_decision_records_elapsed_and_prompt_chars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                log_decision("Bash", {"command": "ls"}, "/tmp",
+                             "ALLOW", "ok", cfg={"log": {}},
+                             elapsed_s=3.142, prompt_chars=1234)
+            entry = json.loads(log_path.read_text())
+        self.assertAlmostEqual(entry["elapsed_s"], 3.142, places=3)
+        self.assertEqual(entry["prompt_chars"], 1234)
+
+    def test_log_decision_omits_fields_when_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                log_decision("Bash", {"command": "ls"}, "/tmp",
+                             "ALLOW", "ok", cfg=None)
+            entry = json.loads(log_path.read_text())
+        self.assertNotIn("elapsed_s", entry)
+        self.assertNotIn("prompt_chars", entry)
+
+    def test_classify_writes_elapsed_to_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_dir = tmp_path / "user"
+            user_dir.mkdir()
+            _make_bouncer_dir(tmp_path, config_yaml=_BASIC_CONFIG)
+            hook_input = {"tool_name": "Bash", "tool_input": {"command": "ls"},
+                          "cwd": str(tmp_path)}
+            log_path = user_dir / "log.jsonl"
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
+                patch.object(cfg, "USER_LOG_FILE", log_path),
+                patch.object(classify_mod, "call_llm",
+                             return_value=("ALLOW", "fine", 500)),
+                patch("sys.stdin", io.StringIO(json.dumps(hook_input))),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(io.StringIO()),
+            ):
+                class _A:
+                    hook = True
+                    format = "json"
+                try:
+                    cmd_classify(_A())
+                except SystemExit:
+                    pass
+            lines = [json.loads(l) for l in log_path.read_text().splitlines() if l]
+            final = next(e for e in lines if e["decision"] != "PENDING")
+        self.assertIn("elapsed_s", final)
+        self.assertEqual(final["prompt_chars"], 500)
 
     def test_invalid_stdin_fails_open(self):
         with tempfile.TemporaryDirectory() as tmp:

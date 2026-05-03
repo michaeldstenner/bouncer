@@ -10,6 +10,7 @@ from .commands.log      import cmd_log
 from .commands.check    import cmd_check
 from .commands.classify import cmd_classify
 from .commands.review   import cmd_review
+from .commands.abort    import cmd_abort
 
 
 _AGENT_HELP = """\
@@ -150,6 +151,9 @@ def main():
     p_review.add_argument("--all", action="store_true", help="review all decisions (ALLOW, DENY, UNSURE)")
     p_review.add_argument("--deny", action="store_true", help="review only DENY decisions")
 
+    sub.add_parser("abort",
+                   help="abort pending LLM classification in this project → ALLOW")
+
     args = parser.parse_args()
 
     if args.agent_help:
@@ -175,6 +179,7 @@ def main():
         "check":    cmd_check,
         "classify": cmd_classify,
         "review":   cmd_review,
+        "abort":    cmd_abort,
     }
 
     dispatch[args.cmd_name](args)

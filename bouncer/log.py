@@ -48,6 +48,7 @@ def log_llm_debug(
     response_body: dict | None = None,
     response_text: str | None = None,
     error: str | None = None,
+    elapsed_s: float | None = None,
 ) -> None:
     if not cfg.get("log", {}).get("llm_debug", False):
         return
@@ -68,6 +69,8 @@ def log_llm_debug(
         "response_text": response_text,
         "error": error,
     }
+    if elapsed_s is not None:
+        entry["elapsed_s"] = round(elapsed_s, 3)
 
     log_file = llm_debug_log_file(cwd)
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +87,8 @@ def log_decision(
     cfg: dict | None = None,
     proj_log: Path | None = None,
     request_id: int | None = None,
+    elapsed_s: float | None = None,
+    prompt_chars: int | None = None,
 ) -> None:
     if cfg and decision != "PENDING" and not _should_log(decision, cfg):
         return
@@ -97,6 +102,10 @@ def log_decision(
     }
     if request_id is not None:
         entry["request_id"] = request_id
+    if elapsed_s is not None:
+        entry["elapsed_s"] = round(elapsed_s, 3)
+    if prompt_chars is not None:
+        entry["prompt_chars"] = prompt_chars
     line = (json.dumps(entry) + "\n").encode()
     user_log = _config.USER_LOG_FILE
     user_log.parent.mkdir(parents=True, exist_ok=True)
