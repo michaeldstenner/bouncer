@@ -29,7 +29,7 @@ from bouncer.commands.lint import cmd_lint
 from bouncer.commands.classify import cmd_classify
 from bouncer.commands.log import _extract_command
 from bouncer.providers import _parse_llm_text
-from llmclient.providers.openai import _extract_text as _extract_response_text
+from bouncer.llmclient.providers.openai import _extract_text as _extract_response_text
 
 
 # ---------------------------------------------------------------------------

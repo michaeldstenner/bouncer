@@ -100,7 +100,7 @@ def call_llm(
     prompt_chars is the combined length of system+user prompt text, or None on
     failure paths where the prompt was never built.
     """
-    from llmclient import LLMClient, LLMConfig
+    from ..llmclient import LLMClient, LLMConfig
     from .._abort import ABORT_EVENT
     from ..log import log_llm_debug
 
