@@ -25,10 +25,16 @@ classifiers = [
     "Topic :: Software Development",
     "Topic :: Security",
 ]
+dependencies = [
+    "llmclient",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["bouncer*"]
+
+[tool.uv.sources]
+llmclient = { path = "../../../Code/llmclient" }
 
 [project.scripts]
 bouncer = "bouncer.__main__:main"
