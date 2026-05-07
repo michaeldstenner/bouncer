@@ -4,13 +4,15 @@ Keys and endpoint resolution.
 Resolution order (first non-empty wins):
   1. Explicit value in LLMConfig
   2. Standard env var (ANTHROPIC_API_KEY, OPENAI_API_KEY)
-  3. ~/.config/llmclient/keys.yaml
+  3. ~/.config/bouncer/keys.yaml
+  4. ~/.config/llmclient/keys.yaml
 """
 import os
 from functools import lru_cache
 from pathlib import Path
 
-_KEYS_PATH = Path.home() / ".config" / "llmclient" / "keys.yaml"
+_BOUNCER_KEYS_PATH  = Path.home() / ".config" / "bouncer"    / "keys.yaml"
+_LLMCLIENT_KEYS_PATH = Path.home() / ".config" / "llmclient" / "keys.yaml"
 
 _DEFAULT_URLS = {
     "anthropic":        "https://api.anthropic.com",
@@ -44,14 +46,23 @@ def _parse_simple_yaml(text: str) -> dict:
     return result
 
 
-@lru_cache(maxsize=1)
-def _load_keys() -> dict:
-    if not _KEYS_PATH.exists():
-        return {}
+def _load_one(path: Path) -> dict:
     try:
-        return _parse_simple_yaml(_KEYS_PATH.read_text(encoding="utf-8"))
+        return _parse_simple_yaml(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+@lru_cache(maxsize=1)
+def _load_keys() -> dict:
+    base = _load_one(_LLMCLIENT_KEYS_PATH)
+    override = _load_one(_BOUNCER_KEYS_PATH)
+    for section, values in override.items():
+        if section in base and isinstance(base[section], dict):
+            base[section] = {**base[section], **values}
+        else:
+            base[section] = values
+    return base
 
 
 def resolve_url(provider: str, explicit: str) -> str:

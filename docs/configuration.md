@@ -2,18 +2,23 @@
 
 ## `config.yaml`
 
+All settings are optional at the project level. Unset keys inherit from
+user config (`~/.config/bouncer/config.yaml`) or built-in defaults.
+
 ```yaml
 # Master on/off switch — disables bouncer without removing config
-enabled: true
+#enabled: true
 
 # Tools to intercept. List specific tool names, or the string "all".
-tools:
-  - Bash
+# NOTE: setting this at the project level REPLACES the user-level list
+# entirely — it does not append to it.
+#tools:
+#  - Bash
 
 # How this project's policy.md combines with user-level policy.md:
 #   append  (default): project policy appended after user policy
 #   replace          : project policy fully replaces user policy
-policy_mode: append
+#policy_mode: append
 
 # LLM backend
 # provider: ollama | openai | openai_compatible | anthropic
@@ -37,8 +42,6 @@ log:
   max_entries: 10000        # prune log when it exceeds this many entries
 ```
 
-All settings are optional at the project level; unset keys inherit from user
-config or built-in defaults.
 
 **Edit:** `bouncer config` opens `.bouncer/config.yaml` in `$EDITOR`.
 `bouncer config -e` / `-d` enable or disable bouncer without opening the editor.
@@ -54,6 +57,21 @@ so all projects inherit it, then override per-project as needed.
 | `openai` | Requires `OPENAI_API_KEY` env var or `api_key:` in config |
 | `openai_compatible` | Same as `openai`; set `url:` for Groq, LM Studio, Together, etc. |
 | `anthropic` | Requires `ANTHROPIC_API_KEY` env var or `api_key:` in config |
+
+API keys and URLs can also be stored in `~/.config/bouncer/keys.yaml`
+(preferred) or `~/.config/llmclient/keys.yaml` (shared with other
+llmclient-based tools). The bouncer file takes precedence.
+
+```yaml
+# ~/.config/bouncer/keys.yaml
+openai:
+  api_key: sk-...
+anthropic:
+  api_key: sk-ant-...
+ollama:
+  url: http://localhost:11434
+  parallel_slots: 4
+```
 
 ```yaml
 # Ollama (default — local, no API key)
@@ -90,6 +108,10 @@ llm:
 | `["Bash", "Write"]` | Intercept Bash and Write |
 | `all` | Intercept every tool |
 | `[]` | Intercept nothing (bouncer inactive but config preserved) |
+
+**Replacement semantics:** setting `tools` at the project level replaces
+the user-level list entirely. There is no append/merge — whatever you
+write at the project level is the complete list for that project.
 
 ## `on_unsure` / `on_unavailable`
 

@@ -30,6 +30,8 @@ from bouncer.commands.classify import cmd_classify
 from bouncer.commands.log import _extract_command
 from bouncer.providers import _parse_llm_text
 from bouncer.llmclient.providers.openai import _extract_text as _extract_response_text
+from bouncer.llmclient.providers.ollama import _get_loaded_ctx, call_ollama
+from bouncer.llmclient import LLMConfig
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +158,7 @@ class TestMicroYAML(unittest.TestCase):
 
     def test_config_template_parses_cleanly(self):
         result = MicroYAML().load(CONFIG_YAML_TEMPLATE)
-        self.assertIsInstance(result, dict)
-        self.assertTrue(result.get("enabled"))
+        self.assertIsInstance(result, (dict, type(None)))
 
     def test_user_config_template_parses_cleanly(self):
         result = MicroYAML().load(USER_CONFIG_YAML_TEMPLATE)
@@ -864,6 +865,104 @@ class TestParseLlmText(unittest.TestCase):
         decision, reason = _parse_llm_text("pwd is allowed because it is read-only")
         self.assertEqual(decision, "UNSURE")
         self.assertIn("does not match expected format", reason)
+
+
+class TestOllamaProvider(unittest.TestCase):
+    def _make_ps_response(self, models):
+        body = json.dumps({"models": models}).encode()
+        return unittest.mock.MagicMock(
+            read=lambda: body,
+            __enter__=lambda s: s,
+            __exit__=lambda s, *a: False,
+        )
+
+    def test_get_loaded_ctx_returns_context_length(self):
+        resp = self._make_ps_response([
+            {"model": "qwen3:32b", "context_length": 8192}
+        ])
+        with patch("urllib.request.urlopen", return_value=resp):
+            result = _get_loaded_ctx("http://localhost:11434", "qwen3:32b")
+        self.assertEqual(result, 8192)
+
+    def test_get_loaded_ctx_matches_by_prefix(self):
+        resp = self._make_ps_response([
+            {"model": "qwen3:32b-instruct", "context_length": 4096}
+        ])
+        with patch("urllib.request.urlopen", return_value=resp):
+            result = _get_loaded_ctx("http://localhost:11434", "qwen3:32b")
+        self.assertEqual(result, 4096)
+
+    def test_get_loaded_ctx_returns_none_on_error(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("refused")):
+            result = _get_loaded_ctx("http://localhost:11434", "qwen3:32b")
+        self.assertIsNone(result)
+
+    def test_num_ctx_ratchet_keeps_larger_loaded_value(self):
+        cfg = LLMConfig(
+            provider="ollama", model="qwen3:32b",
+            extra_params={"num_ctx": 4096, "num_predict": 80},
+        )
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.endswith("/api/ps"):
+                body = json.dumps({
+                    "models": [{"model": "qwen3:32b", "context_length": 16384}]
+                }).encode()
+                return unittest.mock.MagicMock(
+                    read=lambda: body,
+                    __enter__=lambda s: s,
+                    __exit__=lambda s, *a: False,
+                )
+            # /api/generate
+            captured["payload"] = json.loads(req.data)
+            body = json.dumps({"response": "DECISION: ALLOW\nREASON: ok",
+                               "eval_count": 10, "prompt_eval_count": 50,
+                               "load_duration": 0, "eval_duration": 1e8}).encode()
+            return unittest.mock.MagicMock(
+                read=lambda: body,
+                __enter__=lambda s: s,
+                __exit__=lambda s, *a: False,
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            call_ollama("system", "user", cfg, "http://localhost:11434", None)
+
+        sent_ctx = captured["payload"]["options"]["num_ctx"]
+        self.assertEqual(sent_ctx, 16384)
+
+    def test_num_ctx_ratchet_keeps_requested_when_larger(self):
+        cfg = LLMConfig(
+            provider="ollama", model="qwen3:32b",
+            extra_params={"num_ctx": 32768, "num_predict": 80},
+        )
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.endswith("/api/ps"):
+                body = json.dumps({
+                    "models": [{"model": "qwen3:32b", "context_length": 8192}]
+                }).encode()
+                return unittest.mock.MagicMock(
+                    read=lambda: body,
+                    __enter__=lambda s: s,
+                    __exit__=lambda s, *a: False,
+                )
+            captured["payload"] = json.loads(req.data)
+            body = json.dumps({"response": "DECISION: ALLOW\nREASON: ok",
+                               "eval_count": 10, "prompt_eval_count": 50,
+                               "load_duration": 0, "eval_duration": 1e8}).encode()
+            return unittest.mock.MagicMock(
+                read=lambda: body,
+                __enter__=lambda s: s,
+                __exit__=lambda s, *a: False,
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            call_ollama("system", "user", cfg, "http://localhost:11434", None)
+
+        sent_ctx = captured["payload"]["options"]["num_ctx"]
+        self.assertEqual(sent_ctx, 32768)
 
 
 class TestOpenAIProvider(unittest.TestCase):

@@ -133,7 +133,7 @@ def _install_opencode():
 
 
 def _install_shim():
-    repo_shim = Path(__file__).parent.parent.parent / "bouncer-shim" / "bash"
+    repo_shim = Path(__file__).parent.parent / "shim" / "bash"
     _SHIM_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
     dst = _SHIM_INSTALL_DIR / "bash"

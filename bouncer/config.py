@@ -31,18 +31,21 @@ CONFIG_DEFAULTS: dict = {
 
 CONFIG_YAML_TEMPLATE = """\
 # bouncer project config
-# Commented-out settings inherit from user-level defaults.
+# All settings are optional — uncomment to override user-level defaults.
 
-enabled: true
+# Enable or disable bouncer for this project.
+#enabled: true
 
-# Tools to intercept. Use a list of tool names, or the string "all".
-tools:
-  - Bash
+# Tools to intercept.
+# NOTE: this REPLACES the user-level list entirely (no merging).
+# Use a list of tool names, or the string "all".
+#tools:
+#  - Bash
 
 # How this project's policy.md combines with user-level policy.md:
 #   append  (default): project policy appended after user policy
 #   replace          : project policy fully replaces user policy
-policy_mode: append
+#policy_mode: append
 
 # LLM backend — uncomment to override user defaults
 # provider: ollama | openai | openai_compatible | anthropic

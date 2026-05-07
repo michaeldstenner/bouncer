@@ -1,10 +1,10 @@
 # bouncer
 
+![bouncer](bouncer.png)
+
 LLM-powered permission classifier for AI coding agents. Intercepts
 requests for human approval to provide an LLM-driven risk analysis,
 based on project scope and operation.
-
-![bouncer demo](docs/demo.gif)
 
 Bouncer is **opt-in per project**: it only activates when `.bouncer/config.yaml`
 exists somewhere in the directory tree above the working directory.
@@ -84,13 +84,20 @@ bouncer --help   # verify
 
 Or run without installing: `python3 -m bouncer <command>`.
 
-Then, in your project:
+**One-time user setup** (creates `~/.config/bouncer/` and wires harness hooks):
+
+```sh
+bouncer -g init --harness=auto
+bouncer -g config   # set your LLM provider + model
+bouncer -g policy   # add any personal norms
+```
+
+**Per-project setup:**
 
 ```sh
 cd your-project
-bouncer init --harness=auto   # init .bouncer/ + auto-detect and wire harness hooks
+bouncer init --harness=auto   # create .bouncer/ + wire harness hooks
 bouncer policy                # describe the project for the LLM
-bouncer config                # adjust settings if needed
 bouncer status                # confirm it's active
 ```
 
@@ -99,15 +106,6 @@ them automatically. Pass a specific name (`claude_code`, `codex`, `opencode`,
 `shim`) to target one harness, or omit `--harness` entirely to skip hook
 wiring. `--harness=all` installs every known target, including the universal
 shim. See [docs/integrations.md](docs/integrations.md) for per-harness details.
-
-### User-level defaults (optional)
-
-Settings and policy applied here apply to all bouncer-enabled projects:
-
-```sh
-bouncer -g config   # ~/.config/bouncer/config.yaml
-bouncer -g policy   # ~/.config/bouncer/policy.md
-```
 
 ---
 
@@ -176,3 +174,19 @@ good place for personal norms ("never touch my dotfiles", "no force-push ever").
   manual setup (Claude Code, Codex, opencode, shell shim).
 - [docs/operations.md](docs/operations.md) — command reference, file
   layout, log format, internals, running tests.
+
+---
+
+## Releases
+
+### 0.1.0 (2026-05-07)
+
+Initial public release.
+
+- LLM-powered ALLOW/DENY/UNSURE classification for Bash and other tools
+- Claude Code, Codex, opencode, and universal shell shim integrations
+- Ollama, OpenAI, Anthropic, and OpenAI-compatible provider support
+- Per-project and user-level policy with `append`/`replace` modes
+- `bouncer log`, `bouncer review`, `bouncer abort`, `bouncer check`
+- Activity strip for Claude Code and opencode statuslines
+- Zero third-party dependencies
