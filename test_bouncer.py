@@ -665,6 +665,16 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
 
+    def test_bouncer_help_commands_skip_without_llm(self):
+        for cmd in ("bouncer --agent-help", "bouncer --help", "bouncer -h"):
+            with self.subTest(cmd=cmd):
+                _, _, code = _classify(
+                    self._hook(command=cmd),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("DENY", "should not be called", None),
+                )
+                self.assertEqual(code, 0)
+
     def test_escalate_prefix_produces_ask(self):
         out, _, code = _classify(
             self._hook(command="# ESCALATE: needed for deploy\nrm -rf dist/"),

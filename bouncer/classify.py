@@ -42,6 +42,10 @@ def get_classification(
             return "SKIP", f"tool {tool_name!r} not in intercepted list", None, None
 
     command = tool_input.get("command", "")
+
+    if command.strip() in ("bouncer --agent-help", "bouncer --help", "bouncer -h"):
+        return "SKIP", "bouncer help command", None, None
+
     if command.lstrip().startswith("# ESCALATE:"):
         first_line      = command.split("\n")[0]
         escalate_reason = first_line.replace("# ESCALATE:", "").strip()
