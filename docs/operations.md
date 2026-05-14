@@ -22,6 +22,7 @@ bouncer check --llm <cmd>     dry-run: actually calls the LLM
 bouncer review                interactive UNSURE decision review
 bouncer classify --hook                 internal: hook interface (stdin → stdout)
 bouncer classify --hook --format plain  plain-text output (allow/deny/ask + reason)
+bouncer classify --hook --format codex-permission  Codex PermissionRequest output
 
 bouncer -g config             edit user-level config.yaml
 bouncer -g policy             edit user-level policy.md
@@ -33,7 +34,16 @@ bouncer -g review             review user-level UNSURE decisions
 ```
 --session <id>    session ID (required for statusline use)
 --cwd <path>      project dir (enables inactive ○ indicator)
+--project         render recent decisions from the project log for --cwd
 --width <n>       number of recent decisions to show (default: 10)
+--as <format>     plain | ansi | json | tmux
+```
+
+For tmux status bars where the pane cwd usually matches the active project:
+
+```tmux
+set -g status-interval 2
+set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
 ```
 
 ## Files at a glance

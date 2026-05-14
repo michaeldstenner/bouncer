@@ -2,9 +2,9 @@
 
 ![bouncer](bouncer.png)
 
-LLM-powered permission classifier for AI coding agents. Intercepts
-requests for human approval to provide an LLM-driven risk analysis,
-based on project scope and operation.
+LLM-powered permission classifier for AI coding agents. Reviews pending
+approval requests against plain-English policy so routine, policy-compliant
+actions can proceed without repeatedly asking the user.
 
 Bouncer is **opt-in per project**: it only activates when `.bouncer/config.yaml`
 exists somewhere in the directory tree above the working directory.
@@ -14,10 +14,21 @@ exists somewhere in the directory tree above the working directory.
 ## What it's for
 
 The philosophy is "manage risk without nagging" — not "lock down the agent."
-Per-action prompts are safe but exhausting; blanket auto-approve is blind;
-sandboxing is provably safe but rules out real work. Bouncer aims for a
-middle: write your project's norms in plain English once, and let an LLM
-apply that context to each tool call as it arrives.
+Most coding harnesses already ask before operations they consider risky, and
+that conservative default is useful but exhausting. Bouncer is pre-triage for
+those approval prompts: write your project's norms in plain English once, and
+let an LLM apply that context to each pending tool call.
+
+Bouncer is not meant to make AI coding more restrictive than the harness would
+be on its own. It is meant to make the existing approval loop more efficient:
+policy-compliant actions can be approved automatically, policy-forbidden
+actions can be denied with an explanation, and genuinely ambiguous actions
+still go to the user when the harness supports an ask path.
+
+That matters for one-off commands that do not fit useful glob rules. A blanket
+approval for `pkill *` or arbitrary inline Python would be reckless, but a
+classifier can inspect the specific command, infer intent, compare that intent
+to policy, and avoid asking the user when the answer is already clear.
 
 Good fits:
 

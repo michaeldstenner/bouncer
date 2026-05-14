@@ -34,15 +34,47 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
     ask_available = _ask_available(fmt)
     deny_hint = _DENY_HINT_WITH_ASK if ask_available else _DENY_HINT_NO_ASK
 
-    if fmt == "plain":
+    if fmt in ("plain", "codex-pretool"):
         # Plain format is a single tab-separated line, so hints get flattened
-        # onto the reason field (no embedded newlines).
-        if decision in ("DENY", "ASK"):
-            stdout = f"deny\t{_join_reason(reason, deny_hint)}\n"
+        # onto the reason field (no embedded newlines). Codex PreToolUse does
+        # not support Claude's permissionDecision protocol; allow is silent
+        # exit 0, deny is exit 2, and ask abstains so Codex can continue.
+        if decision == "DENY":
+            if fmt == "codex-pretool":
+                stderr = f"{_join_reason(reason, deny_hint)}\n"
+            else:
+                stdout = f"deny\t{_join_reason(reason, deny_hint)}\n"
             exit_code = 2
+        elif decision == "ASK":
+            if fmt == "plain":
+                stdout = f"deny\t{_join_reason(reason, deny_hint)}\n"
+                exit_code = 2
+            else:
+                exit_code = 0
         else:
-            stdout = "allow\n"
+            if fmt == "plain":
+                stdout = "allow\n"
             exit_code = 0
+        return stdout, stderr, exit_code
+
+    if fmt == "codex-permission":
+        if decision == "ALLOW":
+            stdout = json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": "allow"},
+                }
+            }) + "\n"
+        elif decision == "DENY":
+            stdout = json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": "deny", "message": reason},
+                }
+            }) + "\n"
+        else:
+            # No decision lets Codex continue to its normal approval prompt.
+            stdout = ""
         return stdout, stderr, exit_code
 
     # JSON (default — ASK-capable hookSpecificOutput protocol)

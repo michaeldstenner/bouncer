@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the bouncer package."""
 
+import builtins
 import io
 import json
 import sys
@@ -12,6 +13,8 @@ from unittest.mock import patch
 
 import bouncer.config as cfg
 import bouncer.classify as classify_mod
+import bouncer.commands.init as init_mod
+import bouncer.providers as providers_mod
 from bouncer.yaml import MicroYAML
 from bouncer.config import (
     _deep_merge,
@@ -25,7 +28,9 @@ from bouncer.config import (
     USER_CONFIG_YAML_TEMPLATE,
 )
 from bouncer.log import _should_log, _maybe_prune_log, log_decision, log_llm_debug
+from bouncer.activity import _render_activity
 from bouncer.commands.lint import cmd_lint
+from bouncer.commands.activity import cmd_activity
 from bouncer.commands.classify import cmd_classify
 from bouncer.commands.log import _extract_command
 from bouncer.providers import _parse_llm_text
@@ -476,6 +481,28 @@ class TestLogging(unittest.TestCase):
             self.assertTrue(user_log.exists())
             self.assertTrue(proj_log.exists())
 
+    def test_log_decision_continues_if_user_log_write_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_log = tmp_path / "user.jsonl"
+            proj_log = tmp_path / "proj.jsonl"
+            real_open = builtins.open
+
+            def fake_open(path, *args, **kwargs):
+                if Path(path) == user_log:
+                    raise PermissionError("sandbox")
+                return real_open(path, *args, **kwargs)
+
+            with (
+                patch.object(cfg, "USER_LOG_FILE", user_log),
+                patch("builtins.open", fake_open),
+            ):
+                log_decision("Bash", {}, "/tmp", "ALLOW", "ok",
+                             cfg=None, proj_log=proj_log)
+
+            self.assertFalse(user_log.exists())
+            self.assertTrue(proj_log.exists())
+
     def test_log_llm_debug_redacts_authorization(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -499,6 +526,129 @@ class TestLogging(unittest.TestCase):
             entry = json.loads(debug_log.read_text())
             self.assertEqual(entry["request"]["headers"]["Authorization"], "Bearer ***REDACTED***")
             self.assertEqual(entry["response_text"], "DECISION: ALLOW\nREASON: ok")
+
+
+# ---------------------------------------------------------------------------
+# activity
+# ---------------------------------------------------------------------------
+
+class TestActivity(unittest.TestCase):
+    def test_render_activity_tmux_format(self):
+        out = _render_activity(
+            [
+                {"d": "ALLOW", "t": "Bash"},
+                {"d": "UNSURE", "t": "Bash"},
+                {"d": "DENY", "t": "Bash"},
+                {"d": "ESCALATE", "t": "Bash"},
+            ],
+            as_format="tmux",
+        )
+        self.assertIn("#[fg=green]B#[default]", out)
+        self.assertIn("#[fg=yellow]B#[default]", out)
+        self.assertIn("#[bg=red,fg=black,bold]B#[default]", out)
+        self.assertIn("#[fg=blue]B#[default]", out)
+
+    def test_project_activity_reads_project_log_newest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bouncer_dir = _make_bouncer_dir(
+                tmp_path,
+                config_yaml="enabled: true\ntools:\n  - Bash\n",
+            )
+            log_path = bouncer_dir / "log.jsonl"
+            rows = [
+                {"tool": "Bash", "decision": "ALLOW"},
+                {"tool": "Bash", "decision": "PENDING"},
+                {"tool": "Bash", "decision": "DENY"},
+                {"tool": "Bash", "decision": "UNSURE"},
+            ]
+            log_path.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+
+            class _A:
+                width = 2
+                session = None
+                cwd = str(tmp_path)
+                as_format = "plain"
+                project = True
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                cmd_activity(_A())
+
+        self.assertEqual(stdout_buf.getvalue(), "BB")
+
+    def test_project_activity_tmux_marker_for_active_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(tmp_path, config_yaml="enabled: true\n")
+
+            class _A:
+                width = 2
+                session = None
+                cwd = str(tmp_path)
+                as_format = "tmux"
+                project = True
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                cmd_activity(_A())
+
+        self.assertEqual(stdout_buf.getvalue(), "#[dim]○#[default]")
+
+
+# ---------------------------------------------------------------------------
+# init
+# ---------------------------------------------------------------------------
+
+class TestInit(unittest.TestCase):
+    def test_codex_install_uses_permission_request_not_pretool_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            codex_dir = home / ".codex"
+            hooks_dir = codex_dir / "hooks"
+            hooks_dir.mkdir(parents=True)
+            hooks_json = codex_dir / "hooks.json"
+            installed_hook = hooks_dir / "bouncer_hook.py"
+            hooks_json.write_text(
+                json.dumps({
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": str(installed_hook),
+                                        "timeout": 30,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(init_mod.Path, "home", return_value=home),
+                redirect_stdout(io.StringIO()),
+            ):
+                init_mod._install_codex()
+
+            cfg_data = json.loads(hooks_json.read_text(encoding="utf-8"))
+            hooks = cfg_data["hooks"]
+            self.assertNotIn("PreToolUse", hooks)
+            permission = hooks["PermissionRequest"]
+            self.assertEqual(permission[0]["matcher"], "Bash")
+            command = permission[0]["hooks"][0]["command"]
+            self.assertEqual(command, str(installed_hook))
+            self.assertIn(
+                "codex-permission",
+                installed_hook.read_text(encoding="utf-8"),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +774,68 @@ class TestClassify(unittest.TestCase):
         self.assertIn("does not have ASK available", out)
         self.assertNotIn("To escalate to the user", out)
 
+    def test_codex_pretool_allow_is_silent_exit_0(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("ALLOW", "looks fine", None),
+            fmt="codex-pretool",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
+
+    def test_codex_pretool_unsure_passes_through(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("UNSURE", "unclear", None),
+            fmt="codex-pretool",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
+
+    def test_codex_permission_allow_auto_approves(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("ALLOW", "looks fine", None),
+            fmt="codex-permission",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        data = json.loads(out)
+        output = data["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PermissionRequest")
+        self.assertEqual(output["decision"]["behavior"], "allow")
+
+    def test_codex_permission_deny_blocks_approval_request(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("DENY", "not in policy", None),
+            fmt="codex-permission",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        data = json.loads(out)
+        output = data["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PermissionRequest")
+        self.assertEqual(output["decision"]["behavior"], "deny")
+        self.assertEqual(output["decision"]["message"], "not in policy")
+
+    def test_codex_permission_unsure_abstains_so_codex_asks(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("UNSURE", "unclear", None),
+            fmt="codex-permission",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
+
     def test_unsure_on_unsure_allow(self):
         _, _, code = _classify(
             self._hook(),
@@ -731,7 +943,16 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertTrue(out.startswith("deny\tagent escalation requested: deploy step"))
         self.assertIn("does not have ASK available", out)
-        self.assertNotIn("To escalate to the user", out)
+
+    def test_escalate_codex_permission_abstains_so_codex_asks(self):
+        out, err, code = _classify(
+            self._hook(command="# ESCALATE: deploy step\nrm -rf dist/"),
+            config_yaml=_BASIC_CONFIG,
+            fmt="codex-permission",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
 
     def test_log_decision_records_elapsed_and_prompt_chars(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -875,6 +1096,45 @@ class TestParseLlmText(unittest.TestCase):
         decision, reason = _parse_llm_text("pwd is allowed because it is read-only")
         self.assertEqual(decision, "UNSURE")
         self.assertIn("does not match expected format", reason)
+
+
+class TestCallLlm(unittest.TestCase):
+    def test_llm_extra_params_override_classifier_defaults(self):
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, llm_cfg, abort_event=None):
+                captured["cfg"] = llm_cfg
+
+            def call(self, user, system=""):
+                class Result:
+                    text = "DECISION: ALLOW\nREASON: ok"
+                    outcome = "success"
+                    prompt_chars = len(user) + len(system)
+                    prompt_tokens = None
+                    call_s = 0.1
+                return Result()
+
+        config = {
+            "llm": {
+                "provider": "openai_compatible",
+                "model": "reasoning-test-model",
+                "extra_params": {
+                    "max_tokens": 4096,
+                    "temperature": 0.2,
+                },
+            }
+        }
+
+        with patch("bouncer.llmclient.LLMClient", FakeClient):
+            decision, reason, _ = providers_mod.call_llm(
+                "Bash", {"command": "pwd"}, Path("/tmp/project"), config,
+            )
+
+        self.assertEqual((decision, reason), ("ALLOW", "ok"))
+        self.assertEqual(captured["cfg"].extra_params["max_tokens"], 4096)
+        self.assertEqual(captured["cfg"].extra_params["num_predict"], 80)
+        self.assertEqual(captured["cfg"].extra_params["temperature"], 0.2)
 
 
 class TestOllamaProvider(unittest.TestCase):

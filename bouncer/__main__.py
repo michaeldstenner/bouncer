@@ -39,9 +39,11 @@ retry the exact same command with an ESCALATE comment explaining why:
 Bouncer skips the LLM and forwards the request to the user for a decision.
 
 Current harness behavior:
-  * Claude Code / Codex — ASK is available.
-  * opencode / shell shim — ASK is not available; outward ASKs are delivered
-    as denials.
+  * Claude Code — ASK is available.
+  * Codex PermissionRequest — ASK is available by abstaining and letting Codex
+    show its normal approval prompt.
+  * Codex PreToolUse / opencode / shell shim — ASK is not available; outward
+    ASKs are delivered as denials or pass-through depending on integration.
 
 Do not use ESCALATE preemptively. Trying to anticipate what bouncer will
 decide wastes tokens and defeats the purpose of automated classification —
@@ -113,14 +115,16 @@ def main():
                           help="show full config breakdown")
 
     p_activity = sub.add_parser("activity", help="print recent-decision indicator")
-    p_activity.add_argument("--session", metavar="ID", help="session ID (required)")
+    p_activity.add_argument("--session", metavar="ID", help="session ID")
+    p_activity.add_argument("--project", action="store_true",
+                            help="render recent decisions from the project log for --cwd")
     p_activity.add_argument("--cwd", metavar="PATH",
                             help="project directory (for inactive indicator)")
     p_activity.add_argument("--width", metavar="N", type=int, default=10,
                             help="number of recent decisions to show (default: 10)")
     p_activity.add_argument("--as", dest="as_format", metavar="FORMAT",
-                            choices=["plain", "ansi", "json"], default="plain",
-                            help="output format: plain (default), ansi, or json")
+                            choices=["plain", "ansi", "json", "tmux"], default="plain",
+                            help="output format: plain (default), ansi, json, or tmux")
 
     p_log = sub.add_parser("log", help="view decision log")
     p_log.add_argument("--break", dest="mark_break", action="store_true",
@@ -144,8 +148,8 @@ def main():
     p_classify.add_argument("--hook", action="store_true", required=True,
                              help="read hook JSON from stdin, write response to stdout")
     p_classify.add_argument("--format", dest="format", default="json",
-                             choices=["json", "plain"],
-                             help="output format: json (default) or plain")
+                             choices=["json", "plain", "codex-permission", "codex-pretool"],
+                             help="output format: json (default), plain, codex-permission, or codex-pretool")
 
     p_review = sub.add_parser("review", help="interactive review of UNSURE decisions")
     p_review.add_argument("--all", action="store_true", help="review all decisions (ALLOW, DENY, UNSURE)")

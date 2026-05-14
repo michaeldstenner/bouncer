@@ -113,6 +113,7 @@ def call_llm(
     system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
 
     extra: dict = {"max_tokens": 80, "num_predict": 80}
+    extra.update(llm_cfg.get("extra_params", {}) or {})
     if llm_cfg.get("num_ctx"):
         extra["num_ctx"] = llm_cfg["num_ctx"]
 

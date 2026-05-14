@@ -28,6 +28,8 @@ llm:
   url: http://localhost:11434   # ollama / openai_compatible base URL
   timeout: 25                   # seconds
   # api_key: ...                # openai / anthropic (or use env var)
+  # extra_params:               # optional provider-specific request params
+  #   max_tokens: 1000
 
 # Fallback behavior when the LLM is uncertain or unreachable
 on_unsure: ask              # ask | allow | deny | deny_with_message
@@ -97,7 +99,9 @@ llm:
   provider: openai_compatible
   model: llama-3.1-8b-instant
   url: https://api.groq.com/openai
-  # api_key: gsk_...   # or export OPENAI_API_KEY
+  # api_key: <groq-api-key>   # or export OPENAI_API_KEY
+  # extra_params:
+  #   max_tokens: 1000
 ```
 
 ## `tools`
@@ -117,7 +121,7 @@ write at the project level is the complete list for that project.
 
 | Value | Meaning |
 |---|---|
-| `ask` | Request human approval if ASK is available; otherwise delivered outward as a deny (default) |
+| `ask` | Request human approval if ASK is available; otherwise delivered outward as a deny or pass-through depending on the integration (default) |
 | `allow` | Pass through silently |
 | `deny` | Block with the LLM's reason; ASK-capable harnesses include an `# ESCALATE:` hint, while no-ASK harnesses tell the agent to find another way or suggest a policy change |
 

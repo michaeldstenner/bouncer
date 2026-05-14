@@ -1,9 +1,17 @@
 {
-  "hooks": [
-    {
-      "matcher": "tool == \"Bash\"",
-      "command": "~/.codex/hooks/bouncer_hook.py",
-      "timeout": 30
-    }
-  ]
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.codex/hooks/bouncer_hook.py",
+            "timeout": 30,
+            "statusMessage": "Checking approval request"
+          }
+        ]
+      }
+    ]
+  }
 }

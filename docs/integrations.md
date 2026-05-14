@@ -89,35 +89,70 @@ Activity indicator — one character per recent decision, newest on the left:
 Tool characters: `B`=Bash, `W`=Write, `E`=Edit, `R`=Read, `G`=Glob/Grep,
 `T`=Task, `F`=WebFetch, `S`=WebSearch, `?`=unknown.
 
-`bouncer activity` supports three output formats via `--as <format>`:
+`bouncer activity` supports four output formats via `--as <format>`:
 
 - `plain` (default) — bare ASCII, no color codes; safe for any context
 - `ansi` — ANSI escape codes; use this for Claude Code's `statusline.sh`
 - `json` — structured JSON array `[{"c":"B","d":"allow"},…]`; use this for
   opencode's `commandStrip`, which maps decision values to theme colors
+- `tmux` — tmux style segments (`#[fg=green]B#[default]`), suitable for
+  `status-left` / `status-right`
+
+For Codex, which does not currently expose a statusline hook, tmux can render
+the project log for the current pane:
+
+```tmux
+set -g status-interval 2
+set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
+```
 
 ## OpenAI Codex CLI
 
 `bouncer init --harness=codex` does the following:
 
 1. Copies `integrations/codex/bouncer_hook.py` to `~/.codex/hooks/`
-2. Patches `~/.codex/hooks.json` with a `PreToolUse` entry for Bash
+2. Patches `~/.codex/hooks.json` with a `PermissionRequest` entry for Bash
+3. Removes bouncer's older default `PreToolUse` entry if present
 
-**Limitation:** Codex only fires `PreToolUse` for Bash; file-write tools are
-not intercepted. There is no Codex equivalent of `UserPromptSubmit` or the
-statusline.
+Codex `PermissionRequest` runs when Codex is already about to ask the user for
+approval. That matches bouncer's primary purpose: pre-triage approval prompts,
+auto-approve policy-compliant actions, deny policy-forbidden actions, and
+abstain on UNSURE so Codex shows its normal approval prompt.
+
+The default Codex wrapper uses `bouncer classify --hook --format
+codex-permission`:
+
+- ALLOW → auto-approve the Codex approval request
+- DENY → deny the Codex approval request with bouncer's reason
+- UNSURE/unavailable/ESCALATE → emit no decision so Codex asks the user
+
+Codex `PreToolUse` is not installed by default because it would classify many
+commands before Codex decides whether approval is needed, and then classify
+again for commands that do need approval. It is available as an optional hard
+guard via `integrations/codex/bouncer_pre_tool_use.py`; because `PreToolUse`
+cannot ask the user, its UNSURE path passes through and DENY blocks.
+
+There is no Codex equivalent of `UserPromptSubmit` or the statusline.
 
 Manual `~/.codex/hooks.json`:
 
 ```json
 {
-  "hooks": [
-    {
-      "matcher": "tool == \"Bash\"",
-      "command": "~/.codex/hooks/bouncer_hook.py",
-      "timeout": 30
-    }
-  ]
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.codex/hooks/bouncer_hook.py",
+            "timeout": 30,
+            "statusMessage": "Checking approval request"
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
 

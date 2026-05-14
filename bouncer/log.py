@@ -73,9 +73,12 @@ def log_llm_debug(
         entry["elapsed_s"] = round(elapsed_s, 3)
 
     log_file = llm_debug_log_file(cwd)
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_file, "ab") as f:
-        f.write((json.dumps(entry) + "\n").encode())
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "ab") as f:
+            f.write((json.dumps(entry) + "\n").encode())
+    except OSError:
+        pass
 
 
 def log_decision(
@@ -108,15 +111,32 @@ def log_decision(
         entry["prompt_chars"] = prompt_chars
     line = (json.dumps(entry) + "\n").encode()
     user_log = _config.USER_LOG_FILE
-    user_log.parent.mkdir(parents=True, exist_ok=True)
-    with open(user_log, "ab") as f:
-        f.write(line)
-    if proj_log:
-        proj_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(proj_log, "ab") as f:
+    wrote_user_log = False
+    try:
+        user_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(user_log, "ab") as f:
             f.write(line)
+        wrote_user_log = True
+    except OSError:
+        pass
+    wrote_proj_log = False
+    if proj_log:
+        try:
+            proj_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(proj_log, "ab") as f:
+                f.write(line)
+            wrote_proj_log = True
+        except OSError:
+            pass
     if cfg and decision != "PENDING":
         max_entries = cfg.get("log", {}).get("max_entries")
-        _maybe_prune_log(user_log, max_entries)
-        if proj_log:
-            _maybe_prune_log(proj_log, max_entries)
+        if wrote_user_log:
+            try:
+                _maybe_prune_log(user_log, max_entries)
+            except OSError:
+                pass
+        if proj_log and wrote_proj_log:
+            try:
+                _maybe_prune_log(proj_log, max_entries)
+            except OSError:
+                pass

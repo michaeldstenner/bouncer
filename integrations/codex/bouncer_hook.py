@@ -5,20 +5,17 @@ Codex CLI → bouncer bridge.
 Install:  cp bouncer_hook.py ~/.codex/hooks/bouncer_hook.py
           chmod +x ~/.codex/hooks/bouncer_hook.py
 
-Codex sends a PreToolUse JSON payload on stdin; its schema is identical to
-Claude Code's, so this wrapper is a straight pass-through to bouncer classify.
-
-Codex interprets the same hookSpecificOutput protocol as Claude Code:
-  permissionDecision "allow"  → skip Codex's own prompt
-  permissionDecision "deny"   → block (also exit 2 with reason on stderr)
-  permissionDecision "ask"    → escalate to Codex's built-in approval UI
+Codex sends a PermissionRequest JSON payload on stdin when it is about to ask
+the user for approval. Bouncer pre-triages that approval request:
+ALLOW auto-approves, DENY blocks, and UNSURE emits no decision so Codex asks
+the user normally.
 """
 
 import subprocess
 import sys
 
 result = subprocess.run(
-    ["bouncer", "classify", "--hook"],
+    ["bouncer", "classify", "--hook", "--format", "codex-permission"],
     input=sys.stdin.read(),
     capture_output=True,
     text=True,

@@ -25,6 +25,15 @@ _ACTIVITY_COLORS = {
 }
 _ACTIVITY_RESET = "\033[0m"
 
+_TMUX_COLORS = {
+    "ALLOW":    "#[fg=green]",
+    "DENY":     "#[bg=red,fg=black,bold]",
+    "BLOCK":    "#[bg=red,fg=black,bold]",
+    "UNSURE":   "#[fg=yellow]",
+    "ESCALATE": "#[fg=blue]",
+}
+_TMUX_RESET = "#[default]"
+
 
 def _tool_char(tool_name: str) -> str:
     key = tool_name.capitalize()
@@ -47,13 +56,22 @@ def _render_activity(entries: list[dict], as_format: str = "plain") -> str:
     for e in entries:
         decision = e.get("d", "?").upper()
         if decision == "BREAK":
-            parts.append("\033[2m·\033[0m" if as_format == "ansi" else "·")
+            if as_format == "ansi":
+                parts.append("\033[2m·\033[0m")
+            elif as_format == "tmux":
+                parts.append("#[dim]·#[default]")
+            else:
+                parts.append("·")
             continue
         tool  = e.get("t", "?")
         char  = _tool_char(tool)
         if as_format == "ansi":
             color = _ACTIVITY_COLORS.get(decision, "")
             reset = _ACTIVITY_RESET if color else ""
+            parts.append(f"{color}{char}{reset}")
+        elif as_format == "tmux":
+            color = _TMUX_COLORS.get(decision, "")
+            reset = _TMUX_RESET if color else ""
             parts.append(f"{color}{char}{reset}")
         else:
             parts.append(char)

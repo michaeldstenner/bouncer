@@ -101,10 +101,49 @@ def _install_codex():
 
     hooks_json = Path.home() / ".codex" / "hooks.json"
     cfg = json.loads(hooks_json.read_text()) if hooks_json.exists() else {}
-    hook_list = cfg.setdefault("hooks", [])
-    dst_str = "~/.codex/hooks/bouncer_hook.py"
-    if not any(h.get("command") == dst_str for h in hook_list):
-        hook_list.append({"matcher": "tool == \"Bash\"", "command": dst_str, "timeout": 30})
+    hooks = cfg.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        cfg["hooks"] = hooks
+
+    dst_str = str(dst)
+    legacy_dst_str = "~/.codex/hooks/bouncer_hook.py"
+
+    # Older bouncer installs used PreToolUse. Codex cannot ask from that hook,
+    # so default installs remove bouncer's old PreToolUse entry and use
+    # PermissionRequest instead to pre-triage native Codex approvals.
+    pre = hooks.get("PreToolUse", [])
+    if isinstance(pre, list):
+        cleaned = []
+        for group in pre:
+            handlers = [
+                h for h in group.get("hooks", [])
+                if h.get("command") not in (dst_str, legacy_dst_str)
+            ]
+            if handlers:
+                new_group = dict(group)
+                new_group["hooks"] = handlers
+                cleaned.append(new_group)
+        if cleaned:
+            hooks["PreToolUse"] = cleaned
+        else:
+            hooks.pop("PreToolUse", None)
+
+    req = hooks.setdefault("PermissionRequest", [])
+    if not any(
+        group.get("matcher") == "Bash"
+        and any(h.get("command") in (dst_str, legacy_dst_str) for h in group.get("hooks", []))
+        for group in req
+    ):
+        req.append({
+            "matcher": "Bash",
+            "hooks": [{
+                "type": "command",
+                "command": dst_str,
+                "timeout": 30,
+                "statusMessage": "Checking approval request",
+            }],
+        })
     hooks_json.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     print(f"  {GREEN}Installed{RESET} {dst}")
     print(f"  {GREEN}Patched{RESET}   {hooks_json}")
@@ -161,7 +200,7 @@ _INSTALLERS = {
 
 _HARNESS_PROMPTS = {
     "claude_code": "Add PreToolUse hook to ~/.claude/settings.json",
-    "codex":       "Copy bouncer_hook.py to ~/.codex/hooks/bouncer_hook.py",
+    "codex":       "Add PermissionRequest hook to ~/.codex/hooks.json",
     "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugin/bouncer.ts",
     "shim":        f"Install shell shim to {_SHIM_INSTALL_DIR}/bash (universal PATH-based gate)",
 }
@@ -184,7 +223,22 @@ def _is_installed_claude_code() -> bool:
 
 
 def _is_installed_codex() -> bool:
-    return (Path.home() / ".codex" / "hooks" / "bouncer_hook.py").exists()
+    hook_script = str(Path.home() / ".codex" / "hooks" / "bouncer_hook.py")
+    hooks_json = Path.home() / ".codex" / "hooks.json"
+    if not hooks_json.exists():
+        return False
+    try:
+        cfg = json.loads(hooks_json.read_text())
+    except Exception:
+        return False
+    hooks = cfg.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
+    req = hooks.get("PermissionRequest", [])
+    return any(
+        any(h.get("command") == hook_script for h in group.get("hooks", []))
+        for group in req
+    )
 
 
 def _is_installed_opencode() -> bool:

@@ -7,3 +7,4 @@ build/
 *.egg
 .bouncer/
 .tp.conf
+bouncer-test/work/

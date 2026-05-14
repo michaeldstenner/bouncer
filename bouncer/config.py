@@ -55,6 +55,8 @@ CONFIG_YAML_TEMPLATE = """\
 #  url: http://localhost:11434   # ollama / openai_compatible base URL
 #  timeout: 25
 #  api_key: ...                  # openai / anthropic (or use env var)
+#  extra_params:                 # optional provider-specific request params
+#    max_tokens: 1000
 
 # Fallback behavior when LLM is uncertain or unreachable (ask | allow | deny)
 #on_unsure: ask
@@ -93,6 +95,8 @@ llm:
   url: http://localhost:11434   # ollama / openai_compatible base URL
   timeout: 25
   # api_key: ...                # openai / anthropic (or OPENAI_API_KEY / ANTHROPIC_API_KEY env var)
+  # extra_params:               # optional provider-specific request params
+  #   max_tokens: 1000
 
 # Fallback behavior when LLM is uncertain or unreachable (ask | allow | deny)
 on_unsure: ask
