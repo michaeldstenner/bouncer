@@ -66,18 +66,30 @@ def _parse_llm_text(response_text: str) -> tuple[str, str]:
     return decision, reason
 
 
-def _outcome_to_error(outcome: str, provider: str, llm_cfg: dict) -> str:
+def _outcome_to_error(
+    outcome: str,
+    provider: str,
+    llm_cfg: dict,
+    queue_snapshot: list[dict] | None = None,
+) -> str:
     timeout    = int(llm_cfg.get("timeout", 30))
     ftt        = llm_cfg.get("first_token_timeout", 5)
     gt         = llm_cfg.get("generation_timeout") or timeout
-    qt         = llm_cfg.get("queue_timeout", 8)
+    qt         = llm_cfg.get("queue_timeout")        # None if not configured
+    qst        = llm_cfg.get("queue_stall_timeout")  # None if not configured
     label      = "Ollama" if provider == "ollama" else provider.capitalize()
     if outcome == "aborted":
         return "user aborted"
     if outcome == "circuit_open":
         return "LLM circuit open — skipping after repeated timeouts"
     if outcome == "timeout:queue_wait":
-        return f"Ollama queue full — no slot within {qt}s"
+        if qt is not None:
+            return f"Ollama queue full — no slot within {qt}s"
+        return "Ollama queue full — no slot acquired"
+    if outcome == "timeout:queue_stall":
+        if qst is not None:
+            return f"Ollama queue stalled — no completion within {qst}s"
+        return "Ollama queue stalled — no inference progress detected"
     if outcome == "timeout:first_token":
         return f"Ollama busy — no response start within {ftt}s"
     if outcome == "timeout:generation":
@@ -104,8 +116,8 @@ def call_llm(
     tool_input: dict,
     cwd: Path,
     config: dict,
-) -> tuple[str | None, str, int | None]:
-    """Classify a tool call. Returns (decision, reason, prompt_chars).
+) -> tuple[str | None, str, int | None, list[dict] | None]:
+    """Classify a tool call. Returns (decision, reason, prompt_chars, queue_snapshot).
 
     decision is ALLOW / DENY / UNSURE, or None if the backend was unreachable.
     prompt_chars is the combined length of system+user prompt text, or None on
@@ -128,6 +140,17 @@ def call_llm(
     if llm_cfg.get("num_ctx"):
         extra["num_ctx"] = llm_cfg["num_ctx"]
 
+    _fail_fast_triggers = (
+        "timeout:queue_wait",
+        "timeout:queue_stall",
+        "timeout:first_token",
+        "error:unreachable",
+    )
+    raw_triggers = llm_cfg.get("circuit_triggers")
+    circuit_triggers = (
+        tuple(raw_triggers) if raw_triggers is not None else _fail_fast_triggers
+    )
+
     cfg = LLMConfig(
         provider=provider,
         model=model,
@@ -137,10 +160,14 @@ def call_llm(
         keep_alive=llm_cfg.get("keep_alive", "60m"),
         queue_mode="cooperative" if provider == "ollama" else "off",
         queue_timeout=llm_cfg.get("queue_timeout"),
+        queue_stall_timeout=llm_cfg.get("queue_stall_timeout"),
+        priority=int(llm_cfg.get("priority", 80)),
+        caller_max=int(llm_cfg.get("caller_max", 4)),
         first_token_timeout=llm_cfg.get("first_token_timeout"),
         generation_timeout=llm_cfg.get("generation_timeout"),
         circuit_n=int(llm_cfg.get("circuit_n", 2)),
         circuit_cooldown_s=float(llm_cfg.get("circuit_cooldown_s", 120.0)),
+        circuit_triggers=circuit_triggers,
         log_caller="bouncer",
         extra_params=extra,
     )
@@ -153,6 +180,7 @@ def call_llm(
         response_text=result.text,
         error=None if result.outcome == "success" else result.outcome,
         elapsed_s=result.call_s,
+        queue_snapshot=result.queue_snapshot,
     )
 
     if result.outcome != "success":
@@ -160,9 +188,11 @@ def call_llm(
                       result.outcome == "circuit_open")
         return (
             "TIMEOUT" if is_timeout else None,
-            _outcome_to_error(result.outcome, provider, llm_cfg),
+            _outcome_to_error(result.outcome, provider, llm_cfg,
+                              result.queue_snapshot),
             result.prompt_chars,
+            result.queue_snapshot,
         )
 
     decision, reason = _parse_llm_text(result.text or "")
-    return decision, reason, result.prompt_chars
+    return decision, reason, result.prompt_chars, None

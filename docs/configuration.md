@@ -26,8 +26,28 @@ llm:
   provider: ollama
   model: qwen3:32b              # required — no built-in default; set in ~/.config/bouncer/config.yaml
   url: http://localhost:11434   # ollama / openai_compatible base URL
-  timeout: 25                   # seconds
+  timeout: 30                   # overall request timeout (seconds)
   # api_key: ...                # openai / anthropic (or use env var)
+
+  # Ollama queue management (ignored for non-ollama providers)
+  # queue_timeout: 30           # max seconds to wait for a queue slot
+  # queue_stall_timeout: 15     # bail if nothing has completed within this window
+  # priority: 80                # higher = served first (default: 80)
+  # caller_max: 4               # max concurrent bouncer calls in the queue
+
+  # Two-phase timeouts (Ollama streaming)
+  # first_token_timeout: 8      # seconds to wait for first response token
+  # generation_timeout: 30      # seconds for full response after first token
+
+  # Circuit breaker — prevents hammering an unresponsive LLM
+  # circuit_n: 2                # consecutive failures before opening circuit
+  # circuit_cooldown_s: 60      # seconds before attempting recovery
+  # circuit_triggers:           # which outcomes count as failures
+  #   - timeout:queue_wait
+  #   - timeout:queue_stall
+  #   - timeout:first_token
+  #   - error:unreachable
+
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
 

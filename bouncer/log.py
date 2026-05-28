@@ -49,8 +49,9 @@ def log_llm_debug(
     response_text: str | None = None,
     error: str | None = None,
     elapsed_s: float | None = None,
+    queue_snapshot: list[dict] | None = None,
 ) -> None:
-    if not cfg.get("log", {}).get("llm_debug", False):
+    if not cfg.get("log", {}).get("llm_debug", False) and not queue_snapshot:
         return
 
     headers = dict(request_payload.get("headers", {}))
@@ -71,6 +72,8 @@ def log_llm_debug(
     }
     if elapsed_s is not None:
         entry["elapsed_s"] = round(elapsed_s, 3)
+    if queue_snapshot is not None:
+        entry["queue_snapshot"] = queue_snapshot
 
     log_file = llm_debug_log_file(cwd)
     try:
@@ -92,6 +95,7 @@ def log_decision(
     request_id: int | None = None,
     elapsed_s: float | None = None,
     prompt_chars: int | None = None,
+    queue_snapshot: list[dict] | None = None,
 ) -> None:
     if cfg and decision != "PENDING" and not _should_log(decision, cfg):
         return
@@ -109,6 +113,8 @@ def log_decision(
         entry["elapsed_s"] = round(elapsed_s, 3)
     if prompt_chars is not None:
         entry["prompt_chars"] = prompt_chars
+    if queue_snapshot is not None:
+        entry["queue_snapshot"] = queue_snapshot
     line = (json.dumps(entry) + "\n").encode()
     user_log = _config.USER_LOG_FILE
     wrote_user_log = False

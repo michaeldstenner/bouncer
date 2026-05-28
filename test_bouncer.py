@@ -53,7 +53,7 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
     return bd
 
 
-def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None),
+def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
               config_yaml=None, policy_md=None, fmt="json"):
     """
     Run cmd_classify with patched stdin/paths/LLM.
@@ -284,7 +284,7 @@ class TestConfigLoading(unittest.TestCase):
                 config = _merged_config(tmp_path)
         self.assertEqual(config["llm"]["model"], "llama3")
         self.assertEqual(config["llm"]["provider"], "ollama")  # default preserved
-        self.assertEqual(config["llm"]["timeout"], 25)
+        self.assertEqual(config["llm"]["timeout"], 30)
 
 
 # ---------------------------------------------------------------------------
@@ -689,14 +689,14 @@ class TestClassify(unittest.TestCase):
         return {"tool_name": tool, "tool_input": {"command": command}}
 
     def test_no_project_config_passes_through(self):
-        _, _, code = _classify(self._hook(), call_llm_result=("DENY", "bad", None))
+        _, _, code = _classify(self._hook(), call_llm_result=("DENY", "bad", None, None))
         self.assertEqual(code, 0)
 
     def test_disabled_passes_through(self):
         _, _, code = _classify(
             self._hook(),
             config_yaml="enabled: false\n",
-            call_llm_result=("DENY", "bad", None),
+            call_llm_result=("DENY", "bad", None, None),
         )
         self.assertEqual(code, 0)
 
@@ -704,7 +704,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             {"tool_name": "Write", "tool_input": {"path": "/f", "content": "x"}},
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "bad", None),
+            call_llm_result=("DENY", "bad", None, None),
         )
         self.assertEqual(code, 0)
 
@@ -712,7 +712,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             {"tool_name": "Write", "tool_input": {}},
             config_yaml="enabled: true\ntools: all\n",
-            call_llm_result=("ALLOW", "fine", None),
+            call_llm_result=("ALLOW", "fine", None, None),
         )
         self.assertEqual(code, 0)
 
@@ -720,7 +720,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml="enabled: true\ntools: []\n",
-            call_llm_result=("DENY", "bad", None),
+            call_llm_result=("DENY", "bad", None, None),
         )
         self.assertEqual(code, 0)
 
@@ -728,7 +728,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("ALLOW", "looks fine", None),
+            call_llm_result=("ALLOW", "looks fine", None, None),
         )
         self.assertEqual(code, 0)
         data = json.loads(out)
@@ -740,7 +740,7 @@ class TestClassify(unittest.TestCase):
         _, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "dangerous command", None),
+            call_llm_result=("DENY", "dangerous command", None, None),
         )
         self.assertEqual(code, 2)
         self.assertIn("dangerous command", err)
@@ -749,7 +749,7 @@ class TestClassify(unittest.TestCase):
         _, err, _ = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "bad", None),
+            call_llm_result=("DENY", "bad", None, None),
         )
         self.assertIn("ESCALATE", err)
 
@@ -757,7 +757,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("UNSURE", "unclear", None),
+            call_llm_result=("UNSURE", "unclear", None, None),
         )
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
@@ -766,7 +766,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("UNSURE", "unclear", None),
+            call_llm_result=("UNSURE", "unclear", None, None),
             fmt="plain",
         )
         self.assertEqual(code, 2)
@@ -778,7 +778,7 @@ class TestClassify(unittest.TestCase):
         out, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("ALLOW", "looks fine", None),
+            call_llm_result=("ALLOW", "looks fine", None, None),
             fmt="codex-pretool",
         )
         self.assertEqual(code, 0)
@@ -789,7 +789,7 @@ class TestClassify(unittest.TestCase):
         out, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("UNSURE", "unclear", None),
+            call_llm_result=("UNSURE", "unclear", None, None),
             fmt="codex-pretool",
         )
         self.assertEqual(code, 0)
@@ -800,7 +800,7 @@ class TestClassify(unittest.TestCase):
         out, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("ALLOW", "looks fine", None),
+            call_llm_result=("ALLOW", "looks fine", None, None),
             fmt="codex-permission",
         )
         self.assertEqual(code, 0)
@@ -814,7 +814,7 @@ class TestClassify(unittest.TestCase):
         out, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "not in policy", None),
+            call_llm_result=("DENY", "not in policy", None, None),
             fmt="codex-permission",
         )
         self.assertEqual(code, 0)
@@ -829,7 +829,7 @@ class TestClassify(unittest.TestCase):
         out, err, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("UNSURE", "unclear", None),
+            call_llm_result=("UNSURE", "unclear", None, None),
             fmt="codex-permission",
         )
         self.assertEqual(code, 0)
@@ -840,7 +840,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unsure: allow\n",
-            call_llm_result=("UNSURE", "unclear", None),
+            call_llm_result=("UNSURE", "unclear", None, None),
         )
         self.assertEqual(code, 0)
 
@@ -848,7 +848,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unsure: deny\n",
-            call_llm_result=("UNSURE", "unclear", None),
+            call_llm_result=("UNSURE", "unclear", None, None),
         )
         self.assertEqual(code, 2)
 
@@ -856,7 +856,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=(None, "Ollama unreachable", None),
+            call_llm_result=(None, "Ollama unreachable", None, None),
         )
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
@@ -865,7 +865,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unavailable: allow\n",
-            call_llm_result=(None, "Ollama unreachable", None),
+            call_llm_result=(None, "Ollama unreachable", None, None),
         )
         self.assertEqual(code, 0)
 
@@ -873,7 +873,7 @@ class TestClassify(unittest.TestCase):
         _, _, code = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG + "on_unavailable: deny\n",
-            call_llm_result=(None, "Ollama unreachable", None),
+            call_llm_result=(None, "Ollama unreachable", None, None),
         )
         self.assertEqual(code, 2)
 
@@ -883,7 +883,7 @@ class TestClassify(unittest.TestCase):
                 _, _, code = _classify(
                     self._hook(command=cmd),
                     config_yaml=_BASIC_CONFIG,
-                    call_llm_result=("DENY", "should not be called", None),
+                    call_llm_result=("DENY", "should not be called", None, None),
                 )
                 self.assertEqual(code, 0)
 
@@ -891,7 +891,7 @@ class TestClassify(unittest.TestCase):
         out, _, code = _classify(
             self._hook(command="# ESCALATE: needed for deploy\nrm -rf dist/"),
             config_yaml=_BASIC_CONFIG,
-            call_llm_result=("DENY", "should not be called", None),
+            call_llm_result=("DENY", "should not be called", None, None),
         )
         self.assertEqual(code, 0)
         data = json.loads(out)
@@ -989,7 +989,7 @@ class TestClassify(unittest.TestCase):
                 patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
                 patch.object(cfg, "USER_LOG_FILE", log_path),
                 patch.object(classify_mod, "call_llm",
-                             return_value=("ALLOW", "fine", 500)),
+                             return_value=("ALLOW", "fine", 500, None)),
                 patch("sys.stdin", io.StringIO(json.dumps(hook_input))),
                 redirect_stdout(io.StringIO()),
                 redirect_stderr(io.StringIO()),
@@ -1113,6 +1113,7 @@ class TestCallLlm(unittest.TestCase):
                     prompt_chars = len(user) + len(system)
                     prompt_tokens = None
                     call_s = 0.1
+                    queue_snapshot = None
                 return Result()
 
         config = {
@@ -1127,7 +1128,7 @@ class TestCallLlm(unittest.TestCase):
         }
 
         with patch("bouncer.llmclient.LLMClient", FakeClient):
-            decision, reason, _ = providers_mod.call_llm(
+            decision, reason, _, _snap = providers_mod.call_llm(
                 "Bash", {"command": "pwd"}, Path("/tmp/project"), config,
             )
 

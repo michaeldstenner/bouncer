@@ -16,10 +16,10 @@ def get_classification(
     tool_name: str,
     tool_input: dict,
     cwd: str,
-) -> tuple[str, str, str | None, int | None]:
+) -> tuple[str, str, str | None, int | None, list[dict] | None]:
     """
     Pure logic: get decision and reason for a tool call.
-    Returns (decision, reason, action_to_take, prompt_chars).
+    Returns (decision, reason, action_to_take, prompt_chars, queue_snapshot).
 
     decision: ALLOW | DENY | UNSURE | ESCALATE | SKIP
     reason:   text explanation
@@ -29,29 +29,29 @@ def get_classification(
     cwd_path = Path(cwd) if cwd else Path.cwd()
 
     if not project_has_bouncer(cwd_path):
-        return "SKIP", "no project config", None, None
+        return "SKIP", "no project config", None, None, None
 
     config = _merged_config(cwd_path)
     if not config.get("enabled", True):
-        return "SKIP", "bouncer disabled in config", None, None
+        return "SKIP", "bouncer disabled in config", None, None, None
 
     tools = config.get("tools", ["Bash"])
     if tools != "all":
         tools_lower = [t.lower() for t in tools]
         if tool_name.lower() not in tools_lower:
-            return "SKIP", f"tool {tool_name!r} not in intercepted list", None, None
+            return "SKIP", f"tool {tool_name!r} not in intercepted list", None, None, None
 
     command = tool_input.get("command", "")
 
     if command.strip() in ("bouncer --agent-help", "bouncer --help", "bouncer -h"):
-        return "SKIP", "bouncer help command", None, None
+        return "SKIP", "bouncer help command", None, None, None
 
     if command.lstrip().startswith("# ESCALATE:"):
         first_line      = command.split("\n")[0]
         escalate_reason = first_line.replace("# ESCALATE:", "").strip()
-        return "ESCALATE", escalate_reason, "ASK", None
+        return "ESCALATE", escalate_reason, "ASK", None, None
 
-    decision, reason, prompt_chars = call_llm(tool_name, tool_input, cwd_path, config)
+    decision, reason, prompt_chars, snap = call_llm(tool_name, tool_input, cwd_path, config)
 
     if decision is None or decision == "TIMEOUT":
         display_dec = decision or "UNSURE"
@@ -60,10 +60,10 @@ def get_classification(
             fallback_action,
             f"LLM unavailable: {reason}"
         )
-        return display_dec, final_reason, final_dec, prompt_chars
+        return display_dec, final_reason, final_dec, prompt_chars, snap
 
     if decision in ("ALLOW", "DENY"):
-        return decision, reason, decision, prompt_chars
+        return decision, reason, decision, prompt_chars, None
 
     # UNSURE
     fallback_action = config.get("on_unsure", "ask")
@@ -71,7 +71,7 @@ def get_classification(
         fallback_action,
         f"LLM unsure: {reason}"
     )
-    return "UNSURE", final_reason, final_dec, prompt_chars
+    return "UNSURE", final_reason, final_dec, prompt_chars, None
 
 
 def run_classify(
@@ -102,7 +102,7 @@ def run_classify(
     # ESCALATE bypasses the LLM, so we log a single entry (no PENDING).
     command = tool_input.get("command", "")
     if command.lstrip().startswith("# ESCALATE:"):
-        decision, reason, action, _ = get_classification(tool_name, tool_input, cwd)
+        decision, reason, action, _, _snap = get_classification(tool_name, tool_input, cwd)
         if decision == "SKIP":
             sys.exit(0)
         log_decision(tool_name, tool_input, cwd, "ESCALATE", reason,
@@ -117,7 +117,7 @@ def run_classify(
                  None, proj_log, rid)
 
     t0 = time.monotonic()
-    decision, reason, action, prompt_chars = get_classification(tool_name, tool_input, cwd)
+    decision, reason, action, prompt_chars, snap = get_classification(tool_name, tool_input, cwd)
     elapsed = time.monotonic() - t0
 
     if decision == "SKIP":
@@ -128,7 +128,8 @@ def run_classify(
 
     log_decision(tool_name, tool_input, cwd, decision, reason,
                  config, proj_log, rid,
-                 elapsed_s=elapsed, prompt_chars=prompt_chars)
+                 elapsed_s=elapsed, prompt_chars=prompt_chars,
+                 queue_snapshot=snap)
     _update_activity(tool_name, decision, session_id, activity_width)
 
     if action:
