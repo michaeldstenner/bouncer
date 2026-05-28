@@ -88,6 +88,17 @@ Describe this project for the LLM classifier:
 - What operations are routine vs. risky?
 """
 
+# Sentinel that splits the unified policy editor tempfile into committed
+# (policy.md) and local (policy.local.md) sections.
+POLICY_LOCAL_SENTINEL = "<!-- bouncer:local -->"
+
+POLICY_LOCAL_MD_TEMPLATE = """\
+# Local Policy Additions (gitignored)
+
+Add any local-only context here — paths, credentials, personal workflow
+notes, or anything you don't want committed.
+"""
+
 USER_CONFIG_YAML_TEMPLATE = """\
 # bouncer user config — applies to all projects
 
@@ -204,11 +215,29 @@ def _build_policy_context(cwd: Path | None = None, config: dict | None = None) -
     user_policy = load_policy(USER_POLICY_FILE)
     d = _find_bouncer_dir(cwd)
     proj_policy = load_policy(d / "policy.md") if d else ""
+    proj_local = load_policy(d / "policy.local.md") if d else ""
     policy_mode = config.get("policy_mode", "append")
-    if policy_mode == "replace" and proj_policy:
-        return proj_policy
-    parts = [p for p in (user_policy, proj_policy) if p]
+    if policy_mode == "replace" and (proj_policy or proj_local):
+        parts = [p for p in (proj_policy, proj_local) if p]
+        return "\n\n".join(parts)
+    parts = [p for p in (user_policy, proj_policy, proj_local) if p]
     return "\n\n".join(parts) if parts else "(no policy configured)"
+
+
+def split_policy_tempfile(text: str) -> tuple[str, str]:
+    """Split a unified editor tempfile into (committed, local) policy text."""
+    sentinel = POLICY_LOCAL_SENTINEL
+    if sentinel in text:
+        before, _, after = text.partition(sentinel)
+        return before.strip(), after.strip()
+    return text.strip(), ""
+
+
+def build_policy_tempfile(committed: str, local: str) -> str:
+    """Build the unified tempfile content from committed and local policy text."""
+    committed_block = committed if committed else POLICY_MD_TEMPLATE.strip()
+    local_block = local if local else POLICY_LOCAL_MD_TEMPLATE.strip()
+    return f"{committed_block}\n\n{POLICY_LOCAL_SENTINEL}\n{local_block}\n"
 
 
 def project_log_file(cwd: Path | None = None) -> Path | None:

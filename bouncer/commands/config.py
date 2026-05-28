@@ -3,6 +3,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from ..colors import RESET, GREEN, YELLOW
@@ -14,6 +15,9 @@ from ..config import (
     USER_POLICY_MD_TEMPLATE,
     POLICY_MD_TEMPLATE,
     _find_bouncer_dir,
+    load_policy,
+    build_policy_tempfile,
+    split_policy_tempfile,
 )
 from .lint import cmd_lint
 
@@ -66,15 +70,50 @@ def cmd_policy(args):
         if not path.exists():
             path.write_text(USER_POLICY_MD_TEMPLATE, encoding="utf-8")
             print(f"{GREEN}Created{RESET} {path}")
-    else:
-        d = _find_bouncer_dir()
-        if d is None:
-            print(f"{YELLOW}No .bouncer directory found.{RESET} Run 'bouncer init' first.")
-            sys.exit(1)
-        path = d / "policy.md"
-        if not path.exists():
-            path.write_text(POLICY_MD_TEMPLATE, encoding="utf-8")
-            print(f"{GREEN}Created{RESET} {path}")
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "vi"))
+        subprocess.run(shlex.split(editor) + [str(path)])
+        return
 
+    d = _find_bouncer_dir()
+    if d is None:
+        print(f"{YELLOW}No .bouncer directory found.{RESET} Run 'bouncer init' first.")
+        sys.exit(1)
+
+    committed_path = d / "policy.md"
+    local_path = d / "policy.local.md"
+    committed = load_policy(committed_path)
+    local = load_policy(local_path)
+
+    tempfile_content = build_policy_tempfile(committed, local)
     editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "vi"))
-    subprocess.run(shlex.split(editor) + [str(path)])
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", prefix="bouncer-policy-",
+        delete=False, encoding="utf-8"
+    ) as tf:
+        tf.write(tempfile_content)
+        tf_path = Path(tf.name)
+
+    try:
+        subprocess.run(shlex.split(editor) + [str(tf_path)])
+        new_content = tf_path.read_text(encoding="utf-8")
+    finally:
+        tf_path.unlink(missing_ok=True)
+
+    new_committed, new_local = split_policy_tempfile(new_content)
+
+    if new_committed:
+        committed_path.write_text(new_committed + "\n", encoding="utf-8")
+        if not committed:
+            print(f"{GREEN}Created{RESET} {committed_path}")
+    elif committed_path.exists():
+        committed_path.unlink()
+        print(f"{YELLOW}Removed{RESET} {committed_path} (empty)")
+
+    if new_local:
+        local_path.write_text(new_local + "\n", encoding="utf-8")
+        if not local:
+            print(f"{GREEN}Created{RESET} {local_path}")
+    elif local_path.exists():
+        local_path.unlink()
+        print(f"{YELLOW}Removed{RESET} {local_path} (empty)")
