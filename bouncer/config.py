@@ -20,7 +20,7 @@ CONFIG_DEFAULTS: dict = {
         "url":                "http://localhost:11434",
         "timeout":            30,
         "queue_timeout":      8,
-        "first_token_timeout": 5,
+        "first_token_timeout": 30,
         "generation_timeout": 30,
         "circuit_n":          2,
         "circuit_cooldown_s": 120,
