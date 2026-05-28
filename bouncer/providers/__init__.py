@@ -67,16 +67,27 @@ def _parse_llm_text(response_text: str) -> tuple[str, str]:
 
 
 def _outcome_to_error(outcome: str, provider: str, llm_cfg: dict) -> str:
-    timeout = int(llm_cfg.get("timeout", 25))
-    label = "Ollama" if provider == "ollama" else provider.capitalize()
+    timeout    = int(llm_cfg.get("timeout", 30))
+    ftt        = llm_cfg.get("first_token_timeout", 5)
+    gt         = llm_cfg.get("generation_timeout") or timeout
+    qt         = llm_cfg.get("queue_timeout", 8)
+    label      = "Ollama" if provider == "ollama" else provider.capitalize()
     if outcome == "aborted":
         return "user aborted"
+    if outcome == "circuit_open":
+        return "LLM circuit open — skipping after repeated timeouts"
+    if outcome == "timeout:queue_wait":
+        return f"Ollama queue full — no slot within {qt}s"
+    if outcome == "timeout:first_token":
+        return f"Ollama busy — no response start within {ftt}s"
+    if outcome == "timeout:generation":
+        return f"Ollama slow — inference exceeded {gt}s"
+    # legacy outcomes
     if outcome == "timeout:model_loaded_but_slow":
         return (f"Ollama busy: model loaded but did not respond within "
-                f"{timeout}s — consider increasing llm.timeout")
+                f"{timeout}s")
     if outcome == "timeout:model_not_loaded":
-        return ("Ollama timed out and model is not loaded — "
-                "Ollama may be overloaded or restarting")
+        return "Ollama timed out and model is not loaded"
     if outcome == "timeout":
         return f"{label} timed out after {timeout}s"
     if outcome == "error:unreachable":
@@ -121,10 +132,16 @@ def call_llm(
         provider=provider,
         model=model,
         url=llm_cfg.get("url", ""),
-        timeout=int(llm_cfg.get("timeout", 25)),
+        timeout=int(llm_cfg.get("timeout", 30)),
         api_key=llm_cfg.get("api_key", ""),
         keep_alive=llm_cfg.get("keep_alive", "60m"),
         queue_mode="cooperative" if provider == "ollama" else "off",
+        queue_timeout=llm_cfg.get("queue_timeout"),
+        first_token_timeout=llm_cfg.get("first_token_timeout"),
+        generation_timeout=llm_cfg.get("generation_timeout"),
+        circuit_n=int(llm_cfg.get("circuit_n", 2)),
+        circuit_cooldown_s=float(llm_cfg.get("circuit_cooldown_s", 120.0)),
+        log_caller="bouncer",
         extra_params=extra,
     )
     client  = LLMClient(cfg, abort_event=ABORT_EVENT)
@@ -139,7 +156,13 @@ def call_llm(
     )
 
     if result.outcome != "success":
-        return None, _outcome_to_error(result.outcome, provider, llm_cfg), result.prompt_chars
+        is_timeout = (result.outcome.startswith("timeout") or
+                      result.outcome == "circuit_open")
+        return (
+            "TIMEOUT" if is_timeout else None,
+            _outcome_to_error(result.outcome, provider, llm_cfg),
+            result.prompt_chars,
+        )
 
     decision, reason = _parse_llm_text(result.text or "")
     return decision, reason, result.prompt_chars

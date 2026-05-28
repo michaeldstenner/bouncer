@@ -53,13 +53,14 @@ def get_classification(
 
     decision, reason, prompt_chars = call_llm(tool_name, tool_input, cwd_path, config)
 
-    if decision is None:
+    if decision is None or decision == "TIMEOUT":
+        display_dec = decision or "UNSURE"
         fallback_action = config.get("on_unavailable", "ask")
         final_dec, final_reason = resolve_fallback(
             fallback_action,
             f"LLM unavailable: {reason}"
         )
-        return "UNSURE", final_reason, final_dec, prompt_chars
+        return display_dec, final_reason, final_dec, prompt_chars
 
     if decision in ("ALLOW", "DENY"):
         return decision, reason, decision, prompt_chars

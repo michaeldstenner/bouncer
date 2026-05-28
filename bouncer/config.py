@@ -16,9 +16,14 @@ CONFIG_DEFAULTS: dict = {
     "policy_mode": "append",
     "activity_width": 10,
     "llm": {
-        "provider": "ollama",
-        "url": "http://localhost:11434",
-        "timeout": 25,
+        "provider":           "ollama",
+        "url":                "http://localhost:11434",
+        "timeout":            30,
+        "queue_timeout":      8,
+        "first_token_timeout": 5,
+        "generation_timeout": 30,
+        "circuit_n":          2,
+        "circuit_cooldown_s": 120,
     },
     "on_unsure":      "ask",
     "on_unavailable": "ask",
@@ -51,9 +56,14 @@ CONFIG_YAML_TEMPLATE = """\
 # provider: ollama | openai | openai_compatible | anthropic
 #llm:
 #  provider: ollama
-#  model: qwen3:32b              # required — no default; set in ~/.config/bouncer/config.yaml
+#  model: qwen3:32b              # required — no default
 #  url: http://localhost:11434   # ollama / openai_compatible base URL
-#  timeout: 25
+#  timeout: 30                   # fallback / non-streaming timeout (s)
+#  queue_timeout: 8              # max seconds to wait for an ollama slot
+#  first_token_timeout: 5        # max seconds until ollama starts responding
+#  generation_timeout: 30        # max seconds for full inference
+#  circuit_n: 2                  # trip after N consecutive queue/first-token failures
+#  circuit_cooldown_s: 120       # seconds to stay open; then one probe attempt
 #  api_key: ...                  # openai / anthropic (or use env var)
 #  extra_params:                 # optional provider-specific request params
 #    max_tokens: 1000
@@ -91,10 +101,15 @@ tools:
 # provider: ollama | openai | openai_compatible | anthropic
 llm:
   provider: ollama
-  model: qwen3:32b              # required — no default; pick a model you have installed
+  model: qwen3:32b              # required — no default
   url: http://localhost:11434   # ollama / openai_compatible base URL
-  timeout: 25
-  # api_key: ...                # openai / anthropic (or OPENAI_API_KEY / ANTHROPIC_API_KEY env var)
+  timeout: 30                   # fallback / non-streaming timeout (s)
+  queue_timeout: 8              # max seconds to wait for an ollama slot
+  first_token_timeout: 5        # max seconds until ollama starts responding
+  generation_timeout: 30        # max seconds for full inference
+  circuit_n: 2                  # trip after N consecutive queue/first-token failures
+  circuit_cooldown_s: 120       # seconds to stay open; then one probe attempt
+  # api_key: ...                # openai / anthropic (or env var)
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
 

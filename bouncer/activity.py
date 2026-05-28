@@ -20,7 +20,8 @@ _ACTIVITY_COLORS = {
     "ALLOW":    "\033[32m",
     "DENY":     "\033[30;41m",
     "BLOCK":    "\033[30;41m",
-    "UNSURE":   "\033[33m",
+    "UNSURE":   "\033[35m",
+    "TIMEOUT":  "\033[30;45m",
     "ESCALATE": "\033[34m",
 }
 _ACTIVITY_RESET = "\033[0m"
