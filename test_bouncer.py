@@ -33,6 +33,7 @@ from bouncer.commands.lint import cmd_lint
 from bouncer.commands.activity import cmd_activity
 from bouncer.commands.classify import cmd_classify
 from bouncer.commands.log import _extract_command
+from bouncer.commands.check import cmd_check
 from bouncer.providers import _parse_llm_text
 from bouncer.llmclient.providers.openai import _extract_text as _extract_response_text
 from bouncer.llmclient.providers.ollama import _get_loaded_ctx, call_ollama
@@ -1136,6 +1137,64 @@ class TestCallLlm(unittest.TestCase):
         self.assertEqual(captured["cfg"].extra_params["max_tokens"], 4096)
         self.assertEqual(captured["cfg"].extra_params["num_predict"], 80)
         self.assertEqual(captured["cfg"].extra_params["temperature"], 0.2)
+
+    def test_openai_compatible_classifier_uses_larger_default_token_budget(self):
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, llm_cfg, abort_event=None):
+                captured["cfg"] = llm_cfg
+
+            def call(self, user, system=""):
+                class Result:
+                    text = "DECISION: ALLOW\nREASON: ok"
+                    outcome = "success"
+                    prompt_chars = len(user) + len(system)
+                    prompt_tokens = None
+                    call_s = 0.1
+                    queue_snapshot = None
+                return Result()
+
+        config = {
+            "llm": {
+                "provider": "openai_compatible",
+                "model": "reasoning-test-model",
+            }
+        }
+
+        with patch("bouncer.llmclient.LLMClient", FakeClient):
+            decision, reason, _, _snap = providers_mod.call_llm(
+                "Bash", {"command": "pwd"}, Path("/tmp/project"), config,
+            )
+
+        self.assertEqual((decision, reason), ("ALLOW", "ok"))
+        self.assertEqual(captured["cfg"].extra_params["max_tokens"], 1024)
+        self.assertEqual(captured["cfg"].extra_params["num_predict"], 80)
+
+
+class TestCheckCommand(unittest.TestCase):
+    def test_check_llm_accepts_current_call_llm_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(tmp_path, config_yaml="llm:\n  model: test-model\n")
+
+            class _A:
+                cmd = "pwd"
+                llm = True
+
+            stdout_buf = io.StringIO()
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", tmp_path / "no_user.yaml"),
+                patch("bouncer.commands.check.call_llm",
+                      return_value=("ALLOW", "ok", 12, None)),
+                patch("pathlib.Path.cwd", return_value=tmp_path),
+                redirect_stdout(stdout_buf),
+            ):
+                cmd_check(_A())
+
+        output = stdout_buf.getvalue()
+        self.assertIn("ALLOW", output)
+        self.assertIn("ok", output)
 
 
 class TestOllamaProvider(unittest.TestCase):

@@ -135,7 +135,15 @@ def call_llm(
 
     system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
 
-    extra: dict = {"max_tokens": 80, "num_predict": 80}
+    # Ollama uses num_predict and does not need a large completion budget for
+    # the strict two-line classifier response. OpenAI-compatible reasoning
+    # models may spend hidden tokens before emitting final text, so keep their
+    # default max_tokens high enough to avoid empty completions.
+    extra: dict = {"num_predict": 80}
+    if provider in ("openai", "openai_compatible"):
+        extra["max_tokens"] = 1024
+    else:
+        extra["max_tokens"] = 80
     extra.update(llm_cfg.get("extra_params", {}) or {})
     if llm_cfg.get("num_ctx"):
         extra["num_ctx"] = llm_cfg["num_ctx"]
