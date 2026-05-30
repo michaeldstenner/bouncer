@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field, replace as _dc_replace
 import threading
 
+from ._config import configure
+
 _RETRYABLE = {
     "timeout:generation", "error:unreachable",
     # legacy names kept for any surviving callers
@@ -177,7 +179,7 @@ class LLMClient:
                 )
             finally:
                 if queue_id is not None:
-                    release(queue_id)
+                    release(queue_id, cfg.model)
 
             result = LLMResult(
                 text=pr.text,
@@ -240,7 +242,7 @@ class LLMClient:
             pr = dispatch_embed(text, cfg, self._url, self._api_key)
         finally:
             if queue_id is not None:
-                release(queue_id)
+                release(queue_id, cfg.model)
 
         result = EmbedResult(
             vector=pr.vector,
@@ -298,6 +300,20 @@ class LLMClient:
         )
 
     @classmethod
+    def claude_p(
+        cls,
+        model: str = "",
+        *,
+        abort_event: threading.Event | None = None,
+        **kwargs,
+    ) -> "LLMClient":
+        """Alias for claude_code(); preferred name — 'claude -p' (print mode)."""
+        return cls(
+            LLMConfig(provider="claude_p", model=model, queue_mode="off", **kwargs),
+            abort_event=abort_event,
+        )
+
+    @classmethod
     def claude_code(
         cls,
         model: str = "",
@@ -305,6 +321,7 @@ class LLMClient:
         abort_event: threading.Event | None = None,
         **kwargs,
     ) -> "LLMClient":
+        """Kept for backwards compatibility; prefer claude_p()."""
         return cls(
             LLMConfig(provider="claude_code", model=model, queue_mode="off", **kwargs),
             abort_event=abort_event,

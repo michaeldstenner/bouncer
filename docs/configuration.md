@@ -97,12 +97,24 @@ so all projects inherit it, then override per-project as needed.
 | `openai_compatible` | Same as `openai`; set `url:` for Groq, LM Studio, Together, etc. |
 | `anthropic` | Requires `ANTHROPIC_API_KEY` env var or `api_key:` in config |
 
-API keys and URLs can also be stored in `~/.config/bouncer/keys.yaml`
-(preferred) or `~/.config/llmclient/keys.yaml` (shared with other
-llmclient-based tools). The bouncer file takes precedence.
+API keys and URLs do not have to live in the `llm:` block. When they are not
+set there, bouncer resolves them through the vendored llmclient library, which
+reads provider-keyed sections from a layered set of files. Resolution order
+(first non-empty wins):
+
+1. The `llm.api_key` / `llm.url` you set directly in your bouncer config
+2. The standard env var (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`)
+3. Provider sections in `~/.config/bouncer/config.yaml` (bouncer points
+   llmclient here, so it overlays the global file)
+4. Provider sections in `~/.config/llmclient/config.yaml` (shared with other
+   llmclient-based tools)
+5. `~/.config/llmclient/keys.yaml` (legacy filename, still read)
+
+Provider sections live alongside the rest of your bouncer config and use the
+provider name as the top-level key:
 
 ```yaml
-# ~/.config/bouncer/keys.yaml
+# ~/.config/bouncer/config.yaml  (same file as your llm:/tools: settings)
 openai:
   api_key: sk-...
 anthropic:
@@ -111,6 +123,11 @@ ollama:
   url: http://localhost:11434
   parallel_slots: 4
 ```
+
+> Earlier alpha builds read `~/.config/bouncer/keys.yaml`; that bespoke path is
+> gone. The capability now lives in llmclient via `llmclient.configure()`, and
+> bouncer points it at `~/.config/bouncer/`. Move any provider sections from
+> `keys.yaml` into `config.yaml` (or the global llmclient files above).
 
 ```yaml
 # Ollama (default — local, no API key)

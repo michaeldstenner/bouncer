@@ -39,7 +39,8 @@ from bouncer.commands.check import cmd_check
 from bouncer.providers import _parse_llm_text
 from bouncer.llmclient.providers.openai import _extract_text as _extract_response_text
 from bouncer.llmclient.providers.ollama import _get_loaded_ctx, call_ollama
-from bouncer.llmclient import LLMConfig
+from bouncer.llmclient import LLMConfig, configure as llmclient_configure
+from bouncer.llmclient._keys import resolve_api_key, resolve_url
 
 
 # ---------------------------------------------------------------------------
@@ -1372,6 +1373,59 @@ class TestLint(unittest.TestCase):
     def test_invalid_log_verbosity(self):
         _, code = _lint("log:\n  verbosity: verbose\n")
         self.assertEqual(code, 1)
+
+    def test_provider_section_not_flagged_unknown(self):
+        # Provider-keyed sections are consumed by the vendored llmclient for
+        # key/URL resolution; they must lint clean, not warn as unknown keys.
+        out, code = _lint("openai:\n  api_key: sk-x\nollama:\n  url: http://x\n")
+        self.assertEqual(code, 0)
+        self.assertNotIn("Unknown key", out)
+
+
+# ---------------------------------------------------------------------------
+# llmclient configure() wiring
+# ---------------------------------------------------------------------------
+
+class TestLLMClientConfigure(unittest.TestCase):
+    def tearDown(self):
+        llmclient_configure(config_dir=None)  # reset to global-only
+
+    def test_config_dir_overlays_key_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = Path(tmp)
+            (cfg_dir / "config.yaml").write_text(
+                "openai:\n  api_key: sk-app\nollama:\n  url: http://app:11434\n",
+                encoding="utf-8",
+            )
+            llmclient_configure(config_dir=cfg_dir)
+            self.assertEqual(resolve_api_key("openai", ""), "sk-app")
+            self.assertEqual(resolve_url("ollama", ""), "http://app:11434")
+
+    def test_explicit_value_beats_config_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_dir = Path(tmp)
+            (cfg_dir / "config.yaml").write_text(
+                "openai:\n  api_key: sk-app\n", encoding="utf-8")
+            llmclient_configure(config_dir=cfg_dir)
+            self.assertEqual(resolve_api_key("openai", "sk-explicit"), "sk-explicit")
+
+    def test_main_points_llmclient_at_user_config_dir(self):
+        # bouncer's entry point must call configure() with its user config dir
+        # so keys resolve from ~/.config/bouncer before the global llmclient files.
+        import bouncer.__main__ as main_mod
+        from bouncer.llmclient._config import get_config_files
+        with (
+            patch("sys.argv", ["bouncer"]),
+            patch.object(cfg, "USER_CONFIG_DIR", Path("/tmp/bouncer-cfgdir-test")),
+            redirect_stdout(io.StringIO()),
+        ):
+            try:
+                main_mod.main()
+            except SystemExit:
+                pass
+        self.assertEqual(get_config_files()[0],
+                         Path("/tmp/bouncer-cfgdir-test") / "config.yaml")
+        llmclient_configure(config_dir=None)
 
     def test_valid_log_settings(self):
         _, code = _lint("log:\n  verbosity: deny_only\n  max_entries: 5000\n")

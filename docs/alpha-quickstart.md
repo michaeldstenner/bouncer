@@ -44,9 +44,8 @@ This modifies local harness config under your home directory, such as
 Replace or add the files provided by the maintainer:
 
 ```text
-~/.config/bouncer/config.yaml
+~/.config/bouncer/config.yaml       # incl. any provider api_key/url sections
 ~/.config/bouncer/policy.md
-~/.config/bouncer/keys.yaml        # if provided
 ~/.config/bouncer/system_prompt.txt # if provided
 ```
 

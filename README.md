@@ -155,8 +155,8 @@ instruct model such as `qwen3:4b` pulls faster and works fine for a first
 try — just set `llm.model` to match (step 3).
 
 **Hosted (OpenAI / Anthropic / OpenAI-compatible):** skip Ollama entirely. Set
-the `llm:` section to your provider and supply an API key via env var or
-`~/.config/bouncer/keys.yaml`. See
+the `llm:` section to your provider and supply an API key via env var,
+`llm.api_key`, or a provider section in `~/.config/bouncer/config.yaml`. See
 [docs/configuration.md](docs/configuration.md#llm-providers).
 
 ### 3. One-time user setup

@@ -113,14 +113,16 @@ bouncer/
   providers/
     __init__.py         call_llm() dispatcher; _build_prompt, _parse_llm_text
   llmclient/            vendored copy of the llmclient library
-    __init__.py         LLMClient class; LLMConfig; call dispatch
-    _keys.py            API key + URL resolution (~/.config/bouncer/keys.yaml)
+    __init__.py         LLMClient class; LLMConfig; configure(); call dispatch
+    _config.py          configure(): app config_dir + queue_db redirection
+    _keys.py            layered API key + URL resolution (config.yaml files)
     _queue.py           cooperative Ollama request queue
     _log.py             LLM call JSONL debug logging
     providers/
       ollama.py         Ollama /api/generate (polling loop, abort support)
-      openai.py         OpenAI chat completions (also openai_compatible)
+      openai.py         OpenAI chat completions + embeddings (also openai_compatible)
       anthropic.py      Anthropic /v1/messages
+      claude_code.py    claude_code / claude_p provider (shells out to `claude -p`)
   commands/
     __init__.py         empty
     init.py             bouncer init [--harness]
@@ -143,8 +145,17 @@ unified provider dispatch, and JSONL debug logging. Vendored to preserve
 the zero-external-dependency guarantee — the `bin/bouncer` launcher
 resolves paths via symlink and works from any CWD without a venv.
 
-To update: copy the upstream `llmclient/` directory over
-`bouncer/llmclient/` and run the tests.
+`bouncer/__main__.py` calls `llmclient.configure(config_dir=USER_CONFIG_DIR)`
+once at startup so API keys / URLs / `parallel_slots` resolve from
+`~/.config/bouncer/config.yaml` as an overlay on the global llmclient files.
+The queue DB is left at the llmclient default so bouncer shares Ollama slot
+management with other llmclient-based tools.
+
+To update: copy the upstream module files (`*.py` and `providers/*.py`) over
+`bouncer/llmclient/` and run the tests. Skip the upstream `cli/` package —
+bouncer does not ship the `llmc` CLI. The vendored copy is now a clean,
+unpatched mirror of upstream (the old `_keys.py` dual-path patch was retired
+in favor of `configure()`), so future syncs are a straight copy.
 
 ### Hot path
 

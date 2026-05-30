@@ -39,7 +39,7 @@ def dispatch(
     if provider == "anthropic":
         from .anthropic import call_anthropic
         return call_anthropic(system, user, cfg, resolved_url, resolved_api_key)
-    if provider == "claude_code":
+    if provider in ("claude_p", "claude_code"):
         from .claude_code import call_claude_code
         return call_claude_code(system, user, cfg, abort_event)
     return _ProviderResult(
@@ -50,10 +50,18 @@ def dispatch(
     )
 
 
-def dispatch_embed(text: str, cfg, resolved_url: str) -> _EmbedProviderResult:
+def dispatch_embed(
+    text: str,
+    cfg,
+    resolved_url: str,
+    resolved_api_key: str,
+) -> _EmbedProviderResult:
     if cfg.provider == "ollama":
         from .ollama import embed_ollama
         return embed_ollama(text, cfg, resolved_url)
+    if cfg.provider in ("openai", "openai_compatible"):
+        from .openai import embed_openai
+        return embed_openai(text, cfg, resolved_url, resolved_api_key)
     return _EmbedProviderResult(
         vector=None,
         outcome=f"embed_unsupported:{cfg.provider!r}",

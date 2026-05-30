@@ -85,7 +85,8 @@ def _probe_llm(config: dict) -> None:
             print(f"  api key:      {GREEN}✓{RESET} found")
         else:
             print(f"  api key:      {RED}✗{RESET} not found "
-                  f"{DIM}(set env var or ~/.config/bouncer/keys.yaml){RESET}")
+                  f"{DIM}(set env var, llm.api_key, or a provider section "
+                  f"in ~/.config/bouncer/config.yaml){RESET}")
 
 
 def cmd_status(args):

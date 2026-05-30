@@ -6,7 +6,11 @@ from ..config import _find_bouncer_dir, load_yaml_config
 
 VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "policy_mode", "llm",
                                  "on_unsure", "on_unavailable", "log",
-                                 "activity_width", "activity", "notify"})
+                                 "activity_width", "activity", "notify",
+                                 # provider-keyed sections consumed by the
+                                 # vendored llmclient for key/URL resolution
+                                 "openai", "openai_compatible", "anthropic",
+                                 "ollama"})
 VALID_POLICY_MODES = ("append", "replace")
 VALID_ACTIONS      = ("ask", "allow", "deny")
 VALID_VERBOSITIES  = ("all", "deny_only", "off")
