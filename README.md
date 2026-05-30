@@ -64,6 +64,28 @@ If the LLM is unreachable, the `on_unavailable` fallback applies (default: ask).
 
 Every decision is logged and shown in the statusline activity strip.
 
+### Codex auto-review vs. bouncer
+
+Codex has its own auto-review mode for approval requests. In broad terms, that
+routes approval prompts to Codex's built-in reviewer instead of sending each
+eligible request directly to the user.
+
+Bouncer fills a different role: it is a local, policy-controlled reviewer. The
+decision context comes from your user policy, project policy, local-only policy
+overrides, selected LLM provider/model, fallback settings, logs, activity
+indicators, and notifier hooks.
+
+That means the practical distinction is:
+
+- **Codex auto-review:** "Does Codex's built-in reviewer think this approval
+  request is okay?"
+- **Bouncer:** "Does this action match my policy for this project, using my
+  chosen reviewer and feedback channels?"
+
+The two can overlap. When testing bouncer, leave Codex auto-review off unless
+you are intentionally comparing both reviewers; otherwise you may see extra
+latency, token use, or confusing approval behavior.
+
 ### Escalation mechanism
 
 If the harness has ASK available and the agent receives a DENY it believes is
