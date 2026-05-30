@@ -81,8 +81,8 @@ Activity indicator — one character per recent decision, newest on the left:
 |------|-------|---------|
 | Tool initial (B/W/E/R/G…) | green | ALLOW |
 | Tool initial | red | DENY |
-| Tool initial | yellow | UNSURE |
-| Tool initial | blue | ESCALATE |
+| Tool initial | magenta | UNSURE |
+| Tool initial | cyan | ESCALATE |
 | `·` | dim | Prompt boundary |
 | `○` | dim | Bouncer active, no decisions yet |
 
@@ -97,6 +97,18 @@ Tool characters: `B`=Bash, `W`=Write, `E`=Edit, `R`=Read, `G`=Glob/Grep,
   opencode's `commandStrip`, which maps decision values to theme colors
 - `tmux` — tmux style segments (`#[fg=green]B#[default]`), suitable for
   `status-left` / `status-right`
+
+Colors for `ansi` and `tmux` output are driven by the same config map so the
+Claude Code statusline and tmux indicator stay synchronized:
+
+```yaml
+activity:
+  colors:
+    ALLOW: green
+    DENY: red
+    UNSURE: magenta
+    ESCALATE: cyan
+```
 
 For Codex, which does not currently expose a statusline hook, tmux can render
 the project log for the current pane:
@@ -119,6 +131,11 @@ approval. That matches bouncer's primary purpose: pre-triage approval prompts,
 auto-approve policy-compliant actions, deny policy-forbidden actions, and
 abstain on UNSURE so Codex shows its normal approval prompt.
 
+This is intentionally more permissive than adding a second mandatory approval
+layer. Bouncer should save human review for commands that are not obvious to a
+simple harness rule but are clear to an LLM with the project policy. See
+[`docs/design.md`](design.md) for the general philosophy.
+
 The default Codex wrapper uses `bouncer classify --hook --format
 codex-permission`:
 
@@ -126,11 +143,24 @@ codex-permission`:
 - DENY → deny the Codex approval request with bouncer's reason
 - UNSURE/unavailable/ESCALATE → emit no decision so Codex asks the user
 
-Codex `PreToolUse` is not installed by default because it would classify many
-commands before Codex decides whether approval is needed, and then classify
-again for commands that do need approval. It is available as an optional hard
-guard via `integrations/codex/bouncer_pre_tool_use.py`; because `PreToolUse`
-cannot ask the user, its UNSURE path passes through and DENY blocks.
+The hook also emits a short `systemMessage` such as `bouncer: ALLOW - ...` as
+experimental feedback. Codex Desktop / GUI may not surface that message in the
+chat transcript, especially for auto-approved or denied requests. For visible
+GUI feedback, configure [`notify.command`](configuration.md#notify) to call a
+local notifier, sound, status app, or script.
+
+Codex `PreToolUse` is not installed by default because it classifies commands
+before Codex decides whether approval is needed. It is useful as an optional
+hard guard for trusted Codex Desktop / GUI sessions, where normal commands may
+not produce a `PermissionRequest` approval prompt. Install it explicitly with:
+
+```sh
+bouncer -g init --harness=codex_pretool
+```
+
+The wrapper uses `integrations/codex/bouncer_pre_tool_use.py`; because
+`PreToolUse` cannot ask the user, its UNSURE path passes through and DENY
+blocks.
 
 There is no Codex equivalent of `UserPromptSubmit` or the statusline.
 
@@ -147,7 +177,7 @@ Manual `~/.codex/hooks.json`:
             "type": "command",
             "command": "~/.codex/hooks/bouncer_hook.py",
             "timeout": 30,
-            "statusMessage": "Checking approval request"
+            "statusMessage": "Bouncer reviewing approval"
           }
         ]
       }

@@ -20,6 +20,14 @@ def _join_reason(reason: str, hint: str) -> str:
     return f"{reason.rstrip()}{sep}{hint}"
 
 
+def _codex_system_message(decision: str, reason: str) -> str:
+    label = decision if decision in ("ALLOW", "DENY") else "ASK"
+    text = " ".join((reason or "").split())
+    if len(text) > 160:
+        text = text[:157].rstrip() + "..."
+    return f"bouncer: {label}" + (f" - {text}" if text else "")
+
+
 def _ask_available(fmt: str) -> bool:
     return fmt == "json"
 
@@ -60,6 +68,7 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
     if fmt == "codex-permission":
         if decision == "ALLOW":
             stdout = json.dumps({
+                "systemMessage": _codex_system_message(decision, reason),
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
                     "decision": {"behavior": "allow"},
@@ -67,14 +76,18 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
             }) + "\n"
         elif decision == "DENY":
             stdout = json.dumps({
+                "systemMessage": _codex_system_message(decision, reason),
                 "hookSpecificOutput": {
                     "hookEventName": "PermissionRequest",
                     "decision": {"behavior": "deny", "message": reason},
                 }
             }) + "\n"
         else:
-            # No decision lets Codex continue to its normal approval prompt.
-            stdout = ""
+            # No hookSpecificOutput decision lets Codex continue to its normal
+            # approval prompt. systemMessage is experimental GUI feedback.
+            stdout = json.dumps({
+                "systemMessage": _codex_system_message(decision, reason),
+            }) + "\n"
         return stdout, stderr, exit_code
 
     # JSON (default — ASK-capable hookSpecificOutput protocol)

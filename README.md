@@ -178,6 +178,11 @@ good place for personal norms ("never touch my dotfiles", "no force-push ever").
 
 ## Documentation
 
+- [docs/design.md](docs/design.md) — design philosophy: bouncer as a
+  permissive reviewer for existing approval prompts, not an extra lockdown
+  layer.
+- [docs/alpha-quickstart.md](docs/alpha-quickstart.md) — short setup path
+  for trusted alpha users using shared local config.
 - [docs/configuration.md](docs/configuration.md) — `config.yaml` schema,
   LLM providers, tools filter, fallback behavior, merge order, custom
   system prompt.

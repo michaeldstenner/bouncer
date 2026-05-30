@@ -6,7 +6,7 @@ from ..config import _find_bouncer_dir, load_yaml_config
 
 VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "policy_mode", "llm",
                                  "on_unsure", "on_unavailable", "log",
-                                 "activity_width"})
+                                 "activity_width", "activity", "notify"})
 VALID_POLICY_MODES = ("append", "replace")
 VALID_ACTIONS      = ("ask", "allow", "deny")
 VALID_VERBOSITIES  = ("all", "deny_only", "off")
@@ -77,6 +77,19 @@ def cmd_lint(args):
         print(f"  log:           verbosity={v}"
               + (f", max_entries={me}" if me else "")
               + (f", llm_debug={dbg}" if dbg is not None else ""))
+
+    notify_cfg = data.get("notify")
+    if notify_cfg:
+        if isinstance(notify_cfg, str):
+            print("  notify:        command=<shell>")
+        elif isinstance(notify_cfg, dict):
+            command = notify_cfg.get("command")
+            if not command:
+                errors.append("'notify.command' is required when 'notify' is set")
+            decisions = notify_cfg.get("decisions", "all")
+            print(f"  notify:        decisions={decisions}")
+        else:
+            errors.append("'notify' must be a command string or map")
 
     for w in warnings:
         print(f"  {YELLOW}⚠{RESET}  {w}")

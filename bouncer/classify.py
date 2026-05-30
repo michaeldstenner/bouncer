@@ -1,5 +1,6 @@
 import os
 import signal
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -8,8 +9,43 @@ from .config import _merged_config, project_has_bouncer, project_log_file
 from .log import log_decision
 from .activity import _update_activity
 from .hook import _emit_hook_response, resolve_fallback
+from .notify import notify_decision
 from .providers import call_llm
 from ._abort import ABORT_EVENT
+
+
+_BOUNCER_DIAGNOSTIC_COMMANDS = {
+    "activity",
+    "check",
+    "log",
+    "status",
+}
+
+
+def _is_bouncer_diagnostic_command(command: str) -> bool:
+    try:
+        parts = shlex.split(command.strip())
+    except ValueError:
+        return False
+
+    if not parts:
+        return False
+
+    executable = Path(parts[0]).name
+    if executable != "bouncer":
+        return False
+
+    if len(parts) == 1:
+        return False
+
+    if parts[1] in ("--agent-help", "--help", "-h"):
+        return True
+
+    index = 1
+    if parts[index] in ("-g", "--global"):
+        index += 1
+
+    return index < len(parts) and parts[index] in _BOUNCER_DIAGNOSTIC_COMMANDS
 
 
 def get_classification(
@@ -43,15 +79,18 @@ def get_classification(
 
     command = tool_input.get("command", "")
 
-    if command.strip() in ("bouncer --agent-help", "bouncer --help", "bouncer -h"):
-        return "SKIP", "bouncer help command", None, None, None
+    if _is_bouncer_diagnostic_command(command):
+        return "SKIP", "bouncer diagnostic command", None, None, None
 
     if command.lstrip().startswith("# ESCALATE:"):
         first_line      = command.split("\n")[0]
         escalate_reason = first_line.replace("# ESCALATE:", "").strip()
         return "ESCALATE", escalate_reason, "ASK", None, None
 
-    decision, reason, prompt_chars, snap = call_llm(tool_name, tool_input, cwd_path, config)
+    try:
+        decision, reason, prompt_chars, snap = call_llm(tool_name, tool_input, cwd_path, config)
+    except Exception as exc:
+        decision, reason, prompt_chars, snap = None, str(exc), None, None
 
     if decision is None or decision == "TIMEOUT":
         display_dec = decision or "UNSURE"
@@ -108,6 +147,18 @@ def run_classify(
         log_decision(tool_name, tool_input, cwd, "ESCALATE", reason,
                      config, proj_log)
         _update_activity(tool_name, "ESCALATE", session_id, activity_width)
+        notify_decision(
+            cfg=config,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            cwd=cwd,
+            session_id=session_id,
+            decision="ESCALATE",
+            action=action,
+            reason=reason,
+            request_id=None,
+            proj_log=proj_log,
+        )
         _emit_hook_response(action, f"agent escalation requested: {reason}", fmt)
         return
 
@@ -131,6 +182,20 @@ def run_classify(
                  elapsed_s=elapsed, prompt_chars=prompt_chars,
                  queue_snapshot=snap)
     _update_activity(tool_name, decision, session_id, activity_width)
+    notify_decision(
+        cfg=config,
+        tool_name=tool_name,
+        tool_input=tool_input,
+        cwd=cwd,
+        session_id=session_id,
+        decision=decision,
+        action=action,
+        reason=reason,
+        request_id=rid,
+        elapsed_s=elapsed,
+        prompt_chars=prompt_chars,
+        proj_log=proj_log,
+    )
 
     if action:
         _emit_hook_response(action, reason, fmt)

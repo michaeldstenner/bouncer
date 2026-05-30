@@ -58,6 +58,23 @@ on_unavailable: ask         # ask | allow | deny | deny_with_message
 # Width of the activity strip (number of recent decisions to keep)
 activity_width: 10
 
+# Activity/statusline colors. One decision map applies to all display formats;
+# bouncer translates each style name to ANSI or tmux syntax as needed.
+# Supported styles: green, red, yellow, blue, magenta, cyan, white, black,
+# dim, bold, black_on_red_bold, black_on_magenta_bold.
+activity:
+  colors:
+    ALLOW: green
+    DENY: red
+    UNSURE: magenta
+    ESCALATE: cyan
+
+# Optional post-decision notifier. Bouncer starts the command, writes one JSON
+# object to stdin, closes stdin, and does not wait for it to finish.
+notify:
+  command: ~/bin/bouncer-notify
+  decisions: all             # all, or a list such as [DENY, ESCALATE, TIMEOUT]
+
 # Logging
 log:
   verbosity: all            # all | deny_only | off
@@ -136,6 +153,65 @@ llm:
 **Replacement semantics:** setting `tools` at the project level replaces
 the user-level list entirely. There is no append/merge — whatever you
 write at the project level is the complete list for that project.
+
+## `notify`
+
+`notify.command` is an optional post-decision command. When set, bouncer starts
+it after each final decision, writes one JSON object to stdin, closes stdin, and
+does not wait for it to finish. It may be a shell command string or an argv
+list. Notifier failures, stderr, stdout, and runtime are ignored so
+notifications cannot delay or break command approval.
+
+```yaml
+notify:
+  command: ~/bin/bouncer-notify
+  decisions:
+    - DENY
+    - ESCALATE
+    - TIMEOUT
+```
+
+For quick local experiments, `notify` may also be just a shell command string:
+
+```yaml
+notify: "jq -r '.decision + \": \" + (.command // \"\")' >> /tmp/bouncer.notify.log"
+```
+
+Payload fields:
+
+| Field | Meaning |
+|---|---|
+| `version` | Payload schema version, currently `1` |
+| `timestamp` | Local ISO timestamp for notification emission |
+| `tool` | Harness tool name, such as `Bash` |
+| `tool_input` | Original hook tool input |
+| `command` | Convenience copy of `tool_input.command` for Bash, otherwise `null` |
+| `cwd` | Working directory for the tool request |
+| `project.cwd` | Same working directory, grouped for notifier UIs |
+| `project.bouncer_dir` | Resolved `.bouncer` directory, if any |
+| `project.log_file` | Project log file path, if available |
+| `session_id` | Harness/session id when provided |
+| `decision` | Bouncer result: `ALLOW`, `DENY`, `UNSURE`, `TIMEOUT`, `ESCALATE` |
+| `action` | Action returned to the harness: `ALLOW`, `DENY`, `ASK`, or `null` |
+| `reason` | Bouncer reason text |
+| `request_id` | Process id used to correlate `PENDING` and final log rows |
+| `elapsed_s` | Classification latency, when measured |
+| `prompt_chars` | Approximate LLM prompt size, when available |
+
+Example macOS notifier:
+
+```yaml
+notify:
+  command:
+    - /absolute/path/to/bouncer/integrations/notifiers/macos_notification.py
+  decisions:
+    - DENY
+    - ESCALATE
+    - TIMEOUT
+```
+
+The example script is intentionally small; copy or wrap it if you want sounds,
+terminal output, a menu-bar app, or per-decision routing.
 
 ## `on_unsure` / `on_unavailable`
 

@@ -97,7 +97,7 @@ def main():
                             "(-g: user-level setup + harness hooks)")
     p_init.add_argument(
         "--harness", metavar="NAME",
-        help="wire AI harness hooks: auto | all | claude_code | codex | opencode | shim  "
+        help="wire AI harness hooks: auto | all | claude_code | codex | codex_pretool | opencode | shim  "
              "(comma-separated for multiple; -g only: prompts if omitted)",
     )
 

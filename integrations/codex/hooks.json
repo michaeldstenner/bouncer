@@ -8,7 +8,7 @@
             "type": "command",
             "command": "~/.codex/hooks/bouncer_hook.py",
             "timeout": 30,
-            "statusMessage": "Checking approval request"
+            "statusMessage": "Bouncer reviewing approval"
           }
         ]
       }

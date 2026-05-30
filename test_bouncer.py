@@ -9,11 +9,12 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import bouncer.config as cfg
 import bouncer.classify as classify_mod
 import bouncer.commands.init as init_mod
+import bouncer.notify as notify_mod
 import bouncer.providers as providers_mod
 from bouncer.yaml import MicroYAML
 from bouncer.config import (
@@ -28,6 +29,7 @@ from bouncer.config import (
     USER_CONFIG_YAML_TEMPLATE,
 )
 from bouncer.log import _should_log, _maybe_prune_log, log_decision, log_llm_debug
+from bouncer.notify import notify_decision
 from bouncer.activity import _render_activity
 from bouncer.commands.lint import cmd_lint
 from bouncer.commands.activity import cmd_activity
@@ -55,7 +57,7 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 
 
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
-              config_yaml=None, policy_md=None, fmt="json"):
+              call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json"):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
@@ -73,11 +75,17 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
         stderr_buf = io.StringIO()
         exit_code  = 0
 
+        call_llm_patch = (
+            patch.object(classify_mod, "call_llm", side_effect=call_llm_exc)
+            if call_llm_exc is not None
+            else patch.object(classify_mod, "call_llm", return_value=call_llm_result)
+        )
+
         with (
             patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
             patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
             patch.object(cfg, "USER_LOG_FILE",    user_dir / "log.jsonl"),
-            patch.object(classify_mod, "call_llm", return_value=call_llm_result),
+            call_llm_patch,
             patch("sys.stdin", io.StringIO(json.dumps(full_input))),
             redirect_stdout(stdout_buf),
             redirect_stderr(stderr_buf),
@@ -529,6 +537,82 @@ class TestLogging(unittest.TestCase):
             self.assertEqual(entry["response_text"], "DECISION: ALLOW\nREASON: ok")
 
 
+class TestNotify(unittest.TestCase):
+    def test_notify_decision_sends_json_to_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            proc = MagicMock()
+            proc.stdin = MagicMock()
+            with patch.object(notify_mod.subprocess, "Popen", return_value=proc) as popen:
+                notify_decision(
+                    cfg={"notify": {"command": ["notify-bin"], "decisions": "all"}},
+                    tool_name="Bash",
+                    tool_input={"command": "printf hi"},
+                    cwd=str(tmp_path),
+                    session_id="s1",
+                    decision="DENY",
+                    action="DENY",
+                    reason="bad",
+                    request_id=123,
+                    elapsed_s=1.2345,
+                    prompt_chars=99,
+                    proj_log=tmp_path / ".bouncer" / "log.jsonl",
+                )
+
+            popen.assert_called_once()
+            self.assertEqual(popen.call_args.args[0], ["notify-bin"])
+            self.assertEqual(popen.call_args.kwargs["stdin"], notify_mod.subprocess.PIPE)
+            if notify_mod.os.name == "nt":
+                self.assertEqual(
+                    popen.call_args.kwargs["creationflags"],
+                    notify_mod.subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+            else:
+                self.assertTrue(popen.call_args.kwargs["start_new_session"])
+            payload = json.loads(proc.stdin.write.call_args.args[0])
+            proc.stdin.close.assert_called_once()
+            self.assertEqual(payload["version"], 1)
+            self.assertEqual(payload["tool"], "Bash")
+            self.assertEqual(payload["command"], "printf hi")
+            self.assertEqual(payload["decision"], "DENY")
+            self.assertEqual(payload["action"], "DENY")
+            self.assertEqual(payload["reason"], "bad")
+            self.assertEqual(payload["request_id"], 123)
+            self.assertEqual(payload["elapsed_s"], 1.234)
+            self.assertEqual(payload["prompt_chars"], 99)
+
+    def test_notify_decision_filters_decisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(notify_mod.subprocess, "Popen") as popen:
+                notify_decision(
+                    cfg={"notify": {"command": "notify-bin", "decisions": ["DENY"]}},
+                    tool_name="Bash",
+                    tool_input={"command": "ls"},
+                    cwd=tmp,
+                    session_id="s1",
+                    decision="ALLOW",
+                    action="ALLOW",
+                    reason="ok",
+                )
+
+            popen.assert_not_called()
+
+    def test_notify_decision_ignores_spawn_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(notify_mod.subprocess, "Popen",
+                              side_effect=TimeoutError("slow")):
+                notify_decision(
+                    cfg={"notify": "notify-bin"},
+                    tool_name="Bash",
+                    tool_input={"command": "ls"},
+                    cwd=tmp,
+                    session_id="s1",
+                    decision="ALLOW",
+                    action="ALLOW",
+                    reason="ok",
+                )
+
+
 # ---------------------------------------------------------------------------
 # activity
 # ---------------------------------------------------------------------------
@@ -545,9 +629,39 @@ class TestActivity(unittest.TestCase):
             as_format="tmux",
         )
         self.assertIn("#[fg=green]B#[default]", out)
-        self.assertIn("#[fg=yellow]B#[default]", out)
-        self.assertIn("#[bg=red,fg=black,bold]B#[default]", out)
-        self.assertIn("#[fg=blue]B#[default]", out)
+        self.assertIn("#[fg=magenta]B#[default]", out)
+        self.assertIn("#[fg=red]B#[default]", out)
+        self.assertIn("#[fg=cyan]B#[default]", out)
+
+    def test_render_activity_color_overrides_apply_to_ansi_and_tmux(self):
+        cfg = {
+            "activity": {
+                "colors": {
+                    "ALLOW": "yellow",
+                    "UNSURE": "cyan",
+                }
+            }
+        }
+        tmux_out = _render_activity(
+            [
+                {"d": "ALLOW", "t": "Bash"},
+                {"d": "UNSURE", "t": "Bash"},
+            ],
+            as_format="tmux",
+            cfg=cfg,
+        )
+        ansi_out = _render_activity(
+            [
+                {"d": "ALLOW", "t": "Bash"},
+                {"d": "UNSURE", "t": "Bash"},
+            ],
+            as_format="ansi",
+            cfg=cfg,
+        )
+        self.assertIn("#[fg=yellow]B#[default]", tmux_out)
+        self.assertIn("#[fg=cyan]B#[default]", tmux_out)
+        self.assertIn("\033[33mB\033[0m", ansi_out)
+        self.assertIn("\033[36mB\033[0m", ansi_out)
 
     def test_project_activity_reads_project_log_newest_first(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -580,6 +694,37 @@ class TestActivity(unittest.TestCase):
                 cmd_activity(_A())
 
         self.assertEqual(stdout_buf.getvalue(), "BB")
+
+    def test_project_activity_uses_configured_tmux_colors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bouncer_dir = _make_bouncer_dir(
+                tmp_path,
+                config_yaml=(
+                    "enabled: true\n"
+                    "activity:\n"
+                    "  colors:\n"
+                    "    DENY: yellow\n"
+                ),
+            )
+            log_path = bouncer_dir / "log.jsonl"
+            log_path.write_text(
+                json.dumps({"tool": "Bash", "decision": "DENY"}) + "\n",
+                encoding="utf-8",
+            )
+
+            class _A:
+                width = 2
+                session = None
+                cwd = str(tmp_path)
+                as_format = "tmux"
+                project = True
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                cmd_activity(_A())
+
+        self.assertEqual(stdout_buf.getvalue(), "#[fg=yellow]B#[default]")
 
     def test_project_activity_tmux_marker_for_active_project(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -648,6 +793,31 @@ class TestInit(unittest.TestCase):
             self.assertEqual(command, str(installed_hook))
             self.assertIn(
                 "codex-permission",
+                installed_hook.read_text(encoding="utf-8"),
+            )
+
+    def test_codex_pretool_install_adds_hard_guard_hook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            codex_dir = home / ".codex"
+            codex_dir.mkdir(parents=True)
+            hooks_json = codex_dir / "hooks.json"
+            hooks_json.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
+
+            with (
+                patch.object(init_mod.Path, "home", return_value=home),
+                redirect_stdout(io.StringIO()),
+            ):
+                init_mod._install_codex_pretool()
+
+            installed_hook = codex_dir / "hooks" / "bouncer_pre_tool_use.py"
+            cfg_data = json.loads(hooks_json.read_text(encoding="utf-8"))
+            pre = cfg_data["hooks"]["PreToolUse"]
+            self.assertEqual(pre[0]["matcher"], "Bash")
+            command = pre[0]["hooks"][0]["command"]
+            self.assertEqual(command, str(installed_hook))
+            self.assertIn(
+                "codex-pretool",
                 installed_hook.read_text(encoding="utf-8"),
             )
 
@@ -807,6 +977,7 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
         data = json.loads(out)
+        self.assertEqual(data["systemMessage"], "bouncer: ALLOW - looks fine")
         output = data["hookSpecificOutput"]
         self.assertEqual(output["hookEventName"], "PermissionRequest")
         self.assertEqual(output["decision"]["behavior"], "allow")
@@ -821,6 +992,7 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(err, "")
         data = json.loads(out)
+        self.assertEqual(data["systemMessage"], "bouncer: DENY - not in policy")
         output = data["hookSpecificOutput"]
         self.assertEqual(output["hookEventName"], "PermissionRequest")
         self.assertEqual(output["decision"]["behavior"], "deny")
@@ -834,7 +1006,9 @@ class TestClassify(unittest.TestCase):
             fmt="codex-permission",
         )
         self.assertEqual(code, 0)
-        self.assertEqual(out, "")
+        data = json.loads(out)
+        self.assertEqual(data["systemMessage"], "bouncer: ASK - LLM unsure: unclear")
+        self.assertNotIn("hookSpecificOutput", data)
         self.assertEqual(err, "")
 
     def test_unsure_on_unsure_allow(self):
@@ -862,6 +1036,17 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
 
+    def test_unavailable_exception_asks_human(self):
+        out, _, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_exc=RuntimeError("queue unavailable"),
+        )
+        self.assertEqual(code, 0)
+        hook_output = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(hook_output["permissionDecision"], "ask")
+        self.assertIn("queue unavailable", hook_output["permissionDecisionReason"])
+
     def test_unavailable_on_unavailable_allow(self):
         _, _, code = _classify(
             self._hook(),
@@ -887,6 +1072,34 @@ class TestClassify(unittest.TestCase):
                     call_llm_result=("DENY", "should not be called", None, None),
                 )
                 self.assertEqual(code, 0)
+
+    def test_bouncer_diagnostic_commands_skip_without_llm(self):
+        commands = (
+            "bouncer status",
+            "bouncer status -v",
+            "bouncer check --llm 'pwd'",
+            "/Users/mstenner/.local/bin/bouncer check --llm 'pwd'",
+            "bouncer log --tail",
+            "bouncer activity --project",
+            "bouncer -g log",
+        )
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                _, _, code = _classify(
+                    self._hook(command=cmd),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("DENY", "should not be called", None, None),
+                )
+                self.assertEqual(code, 0)
+
+    def test_bouncer_mutating_commands_do_not_skip(self):
+        out, _, code = _classify(
+            self._hook(command="bouncer init"),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("ALLOW", "ok", None, None),
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("permissionDecision", out)
 
     def test_escalate_prefix_produces_ask(self):
         out, _, code = _classify(
@@ -952,7 +1165,12 @@ class TestClassify(unittest.TestCase):
             fmt="codex-permission",
         )
         self.assertEqual(code, 0)
-        self.assertEqual(out, "")
+        data = json.loads(out)
+        self.assertEqual(
+            data["systemMessage"],
+            "bouncer: ASK - agent escalation requested: deploy step",
+        )
+        self.assertNotIn("hookSpecificOutput", data)
         self.assertEqual(err, "")
 
     def test_log_decision_records_elapsed_and_prompt_chars(self):
@@ -1006,6 +1224,50 @@ class TestClassify(unittest.TestCase):
             final = next(e for e in lines if e["decision"] != "PENDING")
         self.assertIn("elapsed_s", final)
         self.assertEqual(final["prompt_chars"], 500)
+
+    def test_classify_runs_configured_notifier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_dir = tmp_path / "user"
+            user_dir.mkdir()
+            _make_bouncer_dir(
+                tmp_path,
+                config_yaml=(
+                    "enabled: true\n"
+                    "notify:\n"
+                    "  command: notify-test\n"
+                    "  decisions: [ALLOW]\n"
+                ),
+            )
+            hook_input = {"tool_name": "Bash", "tool_input": {"command": "ls"},
+                          "cwd": str(tmp_path), "session_id": "sess-1"}
+            log_path = user_dir / "log.jsonl"
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
+                patch.object(cfg, "USER_LOG_FILE", log_path),
+                patch.object(classify_mod, "call_llm",
+                             return_value=("ALLOW", "fine", 500, None)),
+                patch.object(notify_mod.subprocess, "Popen") as popen,
+                patch("sys.stdin", io.StringIO(json.dumps(hook_input))),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(io.StringIO()),
+            ):
+                class _A:
+                    hook = True
+                    format = "json"
+                try:
+                    cmd_classify(_A())
+                except SystemExit:
+                    pass
+
+            self.assertEqual(popen.call_count, 1)
+            payload = json.loads(popen.return_value.stdin.write.call_args.args[0])
+            self.assertEqual(payload["decision"], "ALLOW")
+            self.assertEqual(payload["action"], "ALLOW")
+            self.assertEqual(payload["command"], "ls")
+            self.assertEqual(payload["session_id"], "sess-1")
+            self.assertEqual(payload["project"]["cwd"], str(tmp_path))
 
     def test_invalid_stdin_fails_open(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -15,6 +15,17 @@ CONFIG_DEFAULTS: dict = {
     "tools": ["Bash"],
     "policy_mode": "append",
     "activity_width": 10,
+    "activity": {
+        "colors": {
+            "ALLOW": "green",
+            "DENY": "red",
+            "BLOCK": "red",
+            "UNSURE": "magenta",
+            "TIMEOUT": "black_on_magenta_bold",
+            "ESCALATE": "cyan",
+        },
+    },
+    "notify": {},
     "llm": {
         "provider":           "ollama",
         "url":                "http://localhost:11434",
@@ -72,6 +83,21 @@ CONFIG_YAML_TEMPLATE = """\
 #on_unsure: ask
 #on_unavailable: ask
 
+# Activity/statusline indicator
+#activity_width: 10
+#activity:
+#  colors:
+#    ALLOW: green
+#    DENY: red
+#    UNSURE: magenta
+#    ESCALATE: cyan
+
+# Optional post-decision notifier. Bouncer starts the command, writes one JSON
+# object to stdin, closes stdin, and does not wait for it to finish.
+#notify:
+#  command: ~/bin/bouncer-notify
+#  decisions: all       # all, or a list such as [DENY, ESCALATE, TIMEOUT]
+
 # Logging
 #log:
 #  verbosity: all         # all | deny_only | off
@@ -127,6 +153,21 @@ llm:
 # Fallback behavior when LLM is uncertain or unreachable (ask | allow | deny)
 on_unsure: ask
 on_unavailable: ask
+
+# Activity/statusline indicator
+activity_width: 10
+#activity:
+#  colors:
+#    ALLOW: green
+#    DENY: red
+#    UNSURE: magenta
+#    ESCALATE: cyan
+
+# Optional post-decision notifier. Bouncer starts the command, writes one JSON
+# object to stdin, closes stdin, and does not wait for it to finish.
+#notify:
+#  command: ~/bin/bouncer-notify
+#  decisions: all       # all, or a list such as [DENY, ESCALATE, TIMEOUT]
 
 # Logging
 log:

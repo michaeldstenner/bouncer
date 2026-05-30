@@ -11,11 +11,26 @@ ALLOW auto-approves, DENY blocks, and UNSURE emits no decision so Codex asks
 the user normally.
 """
 
+import os
+from pathlib import Path
+import shutil
 import subprocess
 import sys
 
+
+def _bouncer_cmd() -> str:
+    configured = os.environ.get("BOUNCER_BIN")
+    if configured:
+        return configured
+    found = shutil.which("bouncer")
+    if found:
+        return found
+    fallback = Path.home() / ".local" / "bin" / "bouncer"
+    return str(fallback)
+
+
 result = subprocess.run(
-    ["bouncer", "classify", "--hook", "--format", "codex-permission"],
+    [_bouncer_cmd(), "classify", "--hook", "--format", "codex-permission"],
     input=sys.stdin.read(),
     capture_output=True,
     text=True,

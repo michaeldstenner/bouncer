@@ -141,9 +141,63 @@ def _install_codex():
                 "type": "command",
                 "command": dst_str,
                 "timeout": 30,
-                "statusMessage": "Checking approval request",
+                "statusMessage": "Bouncer reviewing approval",
             }],
         })
+    for group in req:
+        if group.get("matcher") != "Bash":
+            continue
+        for hook in group.get("hooks", []):
+            if hook.get("command") in (dst_str, legacy_dst_str):
+                hook["statusMessage"] = "Bouncer reviewing approval"
+    hooks_json.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    print(f"  {GREEN}Installed{RESET} {dst}")
+    print(f"  {GREEN}Patched{RESET}   {hooks_json}")
+
+
+def _install_codex_pretool():
+    repo_hook = Path(__file__).parent.parent.parent / "integrations" / "codex" / "bouncer_pre_tool_use.py"
+    hooks_dir = Path.home() / ".codex" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    dst = hooks_dir / "bouncer_pre_tool_use.py"
+    if repo_hook.exists():
+        shutil.copy2(repo_hook, dst)
+    else:
+        print(f"  {YELLOW}Warning:{RESET} hook source not found at {repo_hook}; skipping copy")
+        return
+    dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    hooks_json = Path.home() / ".codex" / "hooks.json"
+    cfg = json.loads(hooks_json.read_text()) if hooks_json.exists() else {}
+    hooks = cfg.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        cfg["hooks"] = hooks
+
+    dst_str = str(dst)
+    pre = hooks.setdefault("PreToolUse", [])
+    if not any(
+        group.get("matcher") == "Bash"
+        and any(h.get("command") == dst_str for h in group.get("hooks", []))
+        for group in pre
+    ):
+        pre.append({
+            "matcher": "Bash",
+            "hooks": [{
+                "type": "command",
+                "command": dst_str,
+                "timeout": 30,
+                "statusMessage": "Bouncer reviewing command",
+            }],
+        })
+    for group in pre:
+        if group.get("matcher") != "Bash":
+            continue
+        for hook in group.get("hooks", []):
+            if hook.get("command") == dst_str:
+                hook["statusMessage"] = "Bouncer reviewing command"
+
     hooks_json.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     print(f"  {GREEN}Installed{RESET} {dst}")
     print(f"  {GREEN}Patched{RESET}   {hooks_json}")
@@ -194,6 +248,7 @@ def _install_shim():
 _INSTALLERS = {
     "claude_code": _install_claude_code,
     "codex":       _install_codex,
+    "codex_pretool": _install_codex_pretool,
     "opencode":    _install_opencode,
     "shim":        _install_shim,
 }
@@ -201,6 +256,7 @@ _INSTALLERS = {
 _HARNESS_PROMPTS = {
     "claude_code": "Add PreToolUse hook to ~/.claude/settings.json",
     "codex":       "Add PermissionRequest hook to ~/.codex/hooks.json",
+    "codex_pretool": "Add Codex PreToolUse hard-guard hook to ~/.codex/hooks.json",
     "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugin/bouncer.ts",
     "shim":        f"Install shell shim to {_SHIM_INSTALL_DIR}/bash (universal PATH-based gate)",
 }
@@ -241,6 +297,25 @@ def _is_installed_codex() -> bool:
     )
 
 
+def _is_installed_codex_pretool() -> bool:
+    hook_script = str(Path.home() / ".codex" / "hooks" / "bouncer_pre_tool_use.py")
+    hooks_json = Path.home() / ".codex" / "hooks.json"
+    if not hooks_json.exists():
+        return False
+    try:
+        cfg = json.loads(hooks_json.read_text())
+    except Exception:
+        return False
+    hooks = cfg.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
+    pre = hooks.get("PreToolUse", [])
+    return any(
+        any(h.get("command") == hook_script for h in group.get("hooks", []))
+        for group in pre
+    )
+
+
 def _is_installed_opencode() -> bool:
     return (Path.home() / ".config" / "opencode" / "plugin" / "bouncer.ts").exists()
 
@@ -252,6 +327,7 @@ def _is_installed_shim() -> bool:
 _IS_INSTALLED = {
     "claude_code": _is_installed_claude_code,
     "codex":       _is_installed_codex,
+    "codex_pretool": _is_installed_codex_pretool,
     "opencode":    _is_installed_opencode,
     "shim":        _is_installed_shim,
 }

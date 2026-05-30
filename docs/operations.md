@@ -5,7 +5,7 @@
 ```
 bouncer init                  create .bouncer/ in current project
 bouncer init --harness=auto   also wire detected AI harness hooks
-bouncer init --harness=NAME   wire a specific harness (claude_code | codex | opencode)
+bouncer init --harness=NAME   wire a specific harness (claude_code | codex | codex_pretool | opencode)
 bouncer lint [file]           validate config.yaml
 bouncer config                open config.yaml in $EDITOR
 bouncer policy                open policy.md in $EDITOR

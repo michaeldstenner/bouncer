@@ -64,11 +64,12 @@ def cmd_activity(args):
     project    = getattr(args, "project", False)
 
     cwd_path = Path(cwd_arg) if cwd_arg else Path.cwd()
+    cfg = _merged_config(cwd_path)
 
     if project:
         entries = _project_entries(cwd_path, width)
         if entries:
-            out = _render_activity(entries, as_format=as_format)
+            out = _render_activity(entries, as_format=as_format, cfg=cfg)
             if out:
                 print(out, end="")
         else:
@@ -93,6 +94,6 @@ def cmd_activity(args):
 
     entries = entries[-width:]
     entries.reverse()
-    out = _render_activity(entries, as_format=as_format)
+    out = _render_activity(entries, as_format=as_format, cfg=cfg)
     if out:
         print(out, end="")

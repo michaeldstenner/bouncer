@@ -18,22 +18,53 @@ _TOOL_CHARS = {
 
 _ACTIVITY_COLORS = {
     "ALLOW":    "\033[32m",
-    "DENY":     "\033[30;41m",
-    "BLOCK":    "\033[30;41m",
+    "DENY":     "\033[31m",
+    "BLOCK":    "\033[31m",
     "UNSURE":   "\033[35m",
     "TIMEOUT":  "\033[30;45m",
-    "ESCALATE": "\033[34m",
+    "ESCALATE": "\033[36m",
 }
 _ACTIVITY_RESET = "\033[0m"
 
 _TMUX_COLORS = {
     "ALLOW":    "#[fg=green]",
-    "DENY":     "#[bg=red,fg=black,bold]",
-    "BLOCK":    "#[bg=red,fg=black,bold]",
-    "UNSURE":   "#[fg=yellow]",
-    "ESCALATE": "#[fg=blue]",
+    "DENY":     "#[fg=red]",
+    "BLOCK":    "#[fg=red]",
+    "UNSURE":   "#[fg=magenta]",
+    "TIMEOUT":  "#[bg=magenta,fg=black,bold]",
+    "ESCALATE": "#[fg=cyan]",
 }
 _TMUX_RESET = "#[default]"
+
+_ANSI_STYLE_NAMES = {
+    "black": "\033[30m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "magenta": "\033[35m",
+    "cyan": "\033[36m",
+    "white": "\033[37m",
+    "dim": "\033[2m",
+    "bold": "\033[1m",
+    "black_on_red_bold": "\033[30;41;1m",
+    "black_on_magenta_bold": "\033[30;45;1m",
+}
+
+_TMUX_STYLE_NAMES = {
+    "black": "#[fg=black]",
+    "red": "#[fg=red]",
+    "green": "#[fg=green]",
+    "yellow": "#[fg=yellow]",
+    "blue": "#[fg=blue]",
+    "magenta": "#[fg=magenta]",
+    "cyan": "#[fg=cyan]",
+    "white": "#[fg=white]",
+    "dim": "#[dim]",
+    "bold": "#[bold]",
+    "black_on_red_bold": "#[bg=red,fg=black,bold]",
+    "black_on_magenta_bold": "#[bg=magenta,fg=black,bold]",
+}
 
 
 def _tool_char(tool_name: str) -> str:
@@ -41,7 +72,36 @@ def _tool_char(tool_name: str) -> str:
     return _TOOL_CHARS.get(key) or _TOOL_CHARS.get(tool_name, "?")
 
 
-def _render_activity(entries: list[dict], as_format: str = "plain") -> str:
+def _style_value(value: object, names: dict[str, str]) -> str:
+    if not isinstance(value, str):
+        return ""
+    return names.get(value, "")
+
+
+def _format_colors(as_format: str, cfg: dict | None = None) -> tuple[dict[str, str], str]:
+    if as_format == "ansi":
+        defaults = _ACTIVITY_COLORS
+        reset = _ACTIVITY_RESET
+        names = _ANSI_STYLE_NAMES
+    elif as_format == "tmux":
+        defaults = _TMUX_COLORS
+        reset = _TMUX_RESET
+        names = _TMUX_STYLE_NAMES
+    else:
+        return {}, ""
+
+    colors = dict(defaults)
+    activity_cfg = (cfg or {}).get("activity", {})
+    overrides = activity_cfg.get("colors", {}) if isinstance(activity_cfg, dict) else {}
+    if isinstance(overrides, dict):
+        for decision, value in overrides.items():
+            if isinstance(value, dict):
+                continue
+            colors[str(decision).upper()] = _style_value(value, names)
+    return colors, reset
+
+
+def _render_activity(entries: list[dict], as_format: str = "plain", cfg: dict | None = None) -> str:
     if as_format == "json":
         import json as _json
         items = []
@@ -67,12 +127,14 @@ def _render_activity(entries: list[dict], as_format: str = "plain") -> str:
         tool  = e.get("t", "?")
         char  = _tool_char(tool)
         if as_format == "ansi":
-            color = _ACTIVITY_COLORS.get(decision, "")
-            reset = _ACTIVITY_RESET if color else ""
+            colors, format_reset = _format_colors(as_format, cfg)
+            color = colors.get(decision, "")
+            reset = format_reset if color else ""
             parts.append(f"{color}{char}{reset}")
         elif as_format == "tmux":
-            color = _TMUX_COLORS.get(decision, "")
-            reset = _TMUX_RESET if color else ""
+            colors, format_reset = _format_colors(as_format, cfg)
+            color = colors.get(decision, "")
+            reset = format_reset if color else ""
             parts.append(f"{color}{char}{reset}")
         else:
             parts.append(char)
