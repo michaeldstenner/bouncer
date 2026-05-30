@@ -1063,6 +1063,43 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
 
+    def test_llm_error_default_asks_human(self):
+        out, _, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("LLM_ERROR", "Ollama unavailable", None, None),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
+
+    def test_llm_error_on_unavailable_deny(self):
+        _, _, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG + "on_unavailable: deny\n",
+            call_llm_result=("LLM_ERROR", "auth failed", None, None),
+        )
+        self.assertEqual(code, 2)
+
+    def test_llm_error_display_decision_distinct_from_timeout(self):
+        # The display decision must surface *what* went wrong, not collapse to
+        # UNSURE — LLM_ERROR for unreachable/auth/etc, TIMEOUT for slow.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_dir = tmp_path / "user"
+            user_dir.mkdir()
+            _make_bouncer_dir(tmp_path, config_yaml=_BASIC_CONFIG)
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
+                patch.object(classify_mod, "call_llm",
+                             return_value=("LLM_ERROR", "Anthropic 401", None, None)),
+            ):
+                display, _reason, action, _pc, _snap = classify_mod.get_classification(
+                    "Bash", {"command": "ls"}, str(tmp_path)
+                )
+            self.assertEqual(display, "LLM_ERROR")
+            self.assertEqual(action, "ASK")  # on_unavailable default
+
     def test_bouncer_help_commands_skip_without_llm(self):
         for cmd in ("bouncer --agent-help", "bouncer --help", "bouncer -h"):
             with self.subTest(cmd=cmd):

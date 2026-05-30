@@ -34,9 +34,10 @@ def cmd_check(args):
         decision, reason, _prompt_chars, _queue_snapshot = call_llm(
             "Bash", {"command": command}, cwd, config
         )
-        if decision is None:
+        if decision is None or decision in ("TIMEOUT", "LLM_ERROR"):
             action = config.get("on_unavailable", "ask")
-            print(f"  {YELLOW}UNAVAILABLE{RESET} — {reason}  (on_unavailable → {action})")
+            label  = decision or "UNAVAILABLE"
+            print(f"  {YELLOW}{label}{RESET} — {reason}  (on_unavailable → {action})")
         else:
             color = DECISION_COLORS.get(decision, WHITE)
             print(f"  {color}{decision}{RESET} — {reason}")

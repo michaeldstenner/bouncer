@@ -92,7 +92,7 @@ def get_classification(
     except Exception as exc:
         decision, reason, prompt_chars, snap = None, str(exc), None, None
 
-    if decision is None or decision == "TIMEOUT":
+    if decision is None or decision in ("TIMEOUT", "LLM_ERROR"):
         display_dec = decision or "UNSURE"
         fallback_action = config.get("on_unavailable", "ask")
         final_dec, final_reason = resolve_fallback(

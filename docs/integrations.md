@@ -2,7 +2,7 @@
 
 Bouncer supports four integration targets. Harness-specific hooks live in
 `integrations/<harness>/` in this repo; the universal shell shim lives in
-`bouncer-shim/`. `bouncer init --harness=<name>` handles installation
+`bouncer/shim/bash`. `bouncer init --harness=<name>` handles installation
 automatically; the details below are for manual setup or reference.
 
 ## Claude Code
@@ -83,6 +83,8 @@ Activity indicator — one character per recent decision, newest on the left:
 | Tool initial | red | DENY |
 | Tool initial | magenta | UNSURE |
 | Tool initial | cyan | ESCALATE |
+| Tool initial | black on magenta | TIMEOUT (LLM too slow) |
+| Tool initial | black on red | LLM_ERROR (unreachable, auth, etc.) |
 | `·` | dim | Prompt boundary |
 | `○` | dim | Bouncer active, no decisions yet |
 
@@ -130,6 +132,10 @@ Codex `PermissionRequest` runs when Codex is already about to ask the user for
 approval. That matches bouncer's primary purpose: pre-triage approval prompts,
 auto-approve policy-compliant actions, deny policy-forbidden actions, and
 abstain on UNSURE so Codex shows its normal approval prompt.
+
+The `PermissionRequest` integration is tested working in both the Codex CLI and
+the Codex GUI. (The one GUI difference is cosmetic — see the `systemMessage`
+note below.)
 
 This is intentionally more permissive than adding a second mandatory approval
 layer. Bouncer should save human review for commands that are not obvious to a
@@ -261,7 +267,7 @@ For manual install:
 
 ```sh
 mkdir -p ~/.local/share/bouncer/shim
-cp bouncer-shim/bash ~/.local/share/bouncer/shim/bash
+cp bouncer/shim/bash ~/.local/share/bouncer/shim/bash
 chmod +x ~/.local/share/bouncer/shim/bash
 ```
 

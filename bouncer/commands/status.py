@@ -35,6 +35,59 @@ def _print_config_summary(data: dict, prefix: str = "  ") -> None:
     print(f"{prefix}log:            verbosity={v}, max_entries={me}")
 
 
+def _probe_llm(config: dict) -> None:
+    """Best-effort reachability check for the configured LLM backend.
+
+    Never raises; uses short timeouts. For Ollama it pings the server and
+    reports whether the configured model is installed. For cloud providers it
+    only reports whether an API key resolves (no billable request is made).
+    """
+    import json
+    import urllib.request
+    import urllib.error
+    from ..llmclient._keys import resolve_url, resolve_api_key
+
+    llm      = config.get("llm", {})
+    provider = llm.get("provider", "ollama")
+    model    = llm.get("model")
+    url      = resolve_url(provider, llm.get("url", ""))
+
+    print()
+    print(f"{BOLD}LLM backend:{RESET}   {provider} / {model or '?'}")
+    if url:
+        print(f"  url:          {url}")
+
+    if not model:
+        print(f"  {YELLOW}⚠ llm.model is not set{RESET} — required, no default "
+              f"{DIM}(set in 'bouncer -g config'){RESET}")
+
+    if provider == "ollama":
+        try:
+            req = urllib.request.Request(url + "/api/tags")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read())
+        except Exception as exc:
+            print(f"  reachable:    {RED}✗{RESET} could not reach {url} {DIM}({exc}){RESET}")
+            return
+        names = [m.get("name") or m.get("model", "") for m in data.get("models", [])]
+        print(f"  reachable:    {GREEN}✓{RESET} {len(names)} model(s) installed")
+        if model:
+            prefix  = model.split(":")[0]
+            present = any(n == model or n.startswith(prefix) for n in names)
+            if present:
+                print(f"  model:        {GREEN}✓{RESET} {model} installed")
+            else:
+                print(f"  model:        {RED}✗{RESET} {model} not installed "
+                      f"{DIM}(run 'ollama pull {model}'){RESET}")
+    elif provider in ("openai", "openai_compatible", "anthropic"):
+        key = resolve_api_key(provider, llm.get("api_key", ""))
+        if key:
+            print(f"  api key:      {GREEN}✓{RESET} found")
+        else:
+            print(f"  api key:      {RED}✗{RESET} not found "
+                  f"{DIM}(set env var or ~/.config/bouncer/keys.yaml){RESET}")
+
+
 def cmd_status(args):
     cwd    = Path.cwd()
     config = _merged_config(cwd)
@@ -121,3 +174,5 @@ def _cmd_status_verbose(config: dict, cwd: Path) -> None:
     if USER_LOG_FILE.exists():
         count = sum(1 for _ in open(USER_LOG_FILE, encoding="utf-8"))
         print(f"{BOLD}User log:{RESET}    {USER_LOG_FILE} ({count} entries)")
+
+    _probe_llm(config)

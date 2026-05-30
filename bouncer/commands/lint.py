@@ -64,8 +64,12 @@ def cmd_lint(args):
     llm = data.get("llm", {})
     if llm:
         provider = llm.get("provider", "ollama")
-        model    = llm.get("model", "?")
-        print(f"  llm:           provider={provider}, model={model}")
+        model    = llm.get("model")
+        print(f"  llm:           provider={provider}, model={model or '?'}")
+        if not model:
+            warnings.append(
+                "'llm.model' is not set — it is required and has no default. "
+                "Set it here or in ~/.config/bouncer/config.yaml.")
 
     log_cfg = data.get("log", {})
     if log_cfg:

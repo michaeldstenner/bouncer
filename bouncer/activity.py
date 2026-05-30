@@ -22,6 +22,7 @@ _ACTIVITY_COLORS = {
     "BLOCK":    "\033[31m",
     "UNSURE":   "\033[35m",
     "TIMEOUT":  "\033[30;45m",
+    "LLM_ERROR": "\033[30;41m",
     "ESCALATE": "\033[36m",
 }
 _ACTIVITY_RESET = "\033[0m"
@@ -32,6 +33,7 @@ _TMUX_COLORS = {
     "BLOCK":    "#[fg=red]",
     "UNSURE":   "#[fg=magenta]",
     "TIMEOUT":  "#[bg=magenta,fg=black,bold]",
+    "LLM_ERROR": "#[bg=red,fg=black,bold]",
     "ESCALATE": "#[fg=cyan]",
 }
 _TMUX_RESET = "#[default]"

@@ -52,8 +52,8 @@ llm:
   #   max_tokens: 1000
 
 # Fallback behavior when the LLM is uncertain or unreachable
-on_unsure: ask              # ask | allow | deny | deny_with_message
-on_unavailable: ask         # ask | allow | deny | deny_with_message
+on_unsure: ask              # ask | allow | deny
+on_unavailable: ask         # ask | allow | deny
 
 # Width of the activity strip (number of recent decisions to keep)
 activity_width: 10
@@ -73,7 +73,7 @@ activity:
 # object to stdin, closes stdin, and does not wait for it to finish.
 notify:
   command: ~/bin/bouncer-notify
-  decisions: all             # all, or a list such as [DENY, ESCALATE, TIMEOUT]
+  decisions: all             # all, or a list such as [DENY, ESCALATE, TIMEOUT, LLM_ERROR]
 
 # Logging
 log:
@@ -169,6 +169,7 @@ notify:
     - DENY
     - ESCALATE
     - TIMEOUT
+    - LLM_ERROR
 ```
 
 For quick local experiments, `notify` may also be just a shell command string:
@@ -191,7 +192,7 @@ Payload fields:
 | `project.bouncer_dir` | Resolved `.bouncer` directory, if any |
 | `project.log_file` | Project log file path, if available |
 | `session_id` | Harness/session id when provided |
-| `decision` | Bouncer result: `ALLOW`, `DENY`, `UNSURE`, `TIMEOUT`, `ESCALATE` |
+| `decision` | Bouncer result: `ALLOW`, `DENY`, `UNSURE`, `TIMEOUT`, `LLM_ERROR`, `ESCALATE` |
 | `action` | Action returned to the harness: `ALLOW`, `DENY`, `ASK`, or `null` |
 | `reason` | Bouncer reason text |
 | `request_id` | Process id used to correlate `PENDING` and final log rows |

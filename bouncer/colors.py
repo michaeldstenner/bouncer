@@ -23,6 +23,7 @@ DECISION_COLORS = {
     "BLOCK":    RED,
     "UNSURE":   MAGENTA,
     "TIMEOUT":  _c("\033[30;45m"),
+    "LLM_ERROR": _c("\033[30;41m"),
     "ESCALATE": CYAN,
     "PENDING":  DIM,
 }

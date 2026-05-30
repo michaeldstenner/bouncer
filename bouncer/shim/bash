@@ -7,14 +7,31 @@
 #
 # See 'bouncer --agent-help' for how agents should respond to denials.
 
+# Resolve the real bash: the first 'bash' on PATH that is not this shim.
+# Falls back to /bin/bash. Avoids assuming bash lives at /bin/bash (it does
+# not on every system, e.g. NixOS or some minimal images).
+_shim_self="${BASH_SOURCE[0]:-$0}"
+_REAL_BASH=""
+_ifs_save="$IFS"; IFS=':'
+for _p in $PATH; do
+    [[ -z "$_p" ]] && continue
+    _cand="$_p/bash"
+    if [[ -x "$_cand" && ! "$_cand" -ef "$_shim_self" ]]; then
+        _REAL_BASH="$_cand"
+        break
+    fi
+done
+IFS="$_ifs_save"
+[[ -z "$_REAL_BASH" ]] && _REAL_BASH="/bin/bash"
+
 # Recursion guard: once we've screened a process tree, subshells pass through.
 if [[ "$BOUNCER_INTERNAL_ACTIVE" == "1" ]]; then
-    exec /bin/bash "$@"
+    exec "$_REAL_BASH" "$@"
 fi
 
 # Only intercept 'bash -c "<command>"' — the form AI agents use.
 if [[ "$1" != "-c" ]]; then
-    exec /bin/bash "$@"
+    exec "$_REAL_BASH" "$@"
 fi
 
 # Only intercept when bouncer is active for this directory. We walk up
@@ -31,7 +48,7 @@ while :; do
     _d=$(dirname "$_d")
 done
 if [[ -z "$_bouncer_active" ]]; then
-    exec /bin/bash "$@"
+    exec "$_REAL_BASH" "$@"
 fi
 
 export BOUNCER_INTERNAL_ACTIVE=1
@@ -57,7 +74,7 @@ REASON="${FIRST_LINE#*$'\t'}"
 
 case "$VERDICT" in
     allow)
-        exec /bin/bash "$@"
+        exec "$_REAL_BASH" "$@"
         ;;
     deny)
         printf '\033[31mBouncer DENIED:\033[0m %s\n' "$REASON" >&2
@@ -70,6 +87,6 @@ case "$VERDICT" in
     *)
         # bouncer unreachable or unknown response — fail open so the shell
         # doesn't break when bouncer itself is broken.
-        exec /bin/bash "$@"
+        exec "$_REAL_BASH" "$@"
         ;;
 esac

@@ -155,9 +155,18 @@ To update: copy the upstream `llmclient/` directory over
 
 ### Adding a provider
 
-1. Create `bouncer/providers/<name>.py` with a `call_<name>(tool_name, tool_input, cwd, config)` that returns `(decision | None, reason)`.
-2. Add a branch in `bouncer/providers/__init__.py:call_llm`.
-3. Add the provider name to the `llm.provider` docs and `cmd_lint`.
+Providers live in the vendored llmclient, not in `bouncer/providers/`
+(which only holds the `call_llm` dispatcher and prompt building).
+
+1. Add `bouncer/llmclient/providers/<name>.py` with a `call_<name>(system,
+   user, cfg, base_url, abort_event)` returning a `_ProviderResult`.
+2. Wire it into the dispatch in `bouncer/llmclient/__init__.py` and add any
+   default URL / env-var mapping in `bouncer/llmclient/_keys.py`.
+3. Document the provider name under `llm.provider` in
+   [docs/configuration.md](configuration.md).
+
+Because llmclient is vendored, prefer making the change upstream and
+re-vendoring (see below) so the two copies do not drift.
 
 ### Running tests
 

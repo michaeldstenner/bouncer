@@ -39,9 +39,10 @@ Good fits:
   one activity strip.
 - **Local-first setups** — defaults to Ollama; also supports OpenAI,
   Anthropic, and any OpenAI-compatible endpoint.
-- **Context-dependent risk** — the deploy script is CI-only, migrations
-  are fine in dev, `~/Documents` is off-limits. Easier to describe in
-  markdown than to encode as regex allowlists.
+- **Rules that depend on intent, not just the command text** — "migrations
+  are fine in dev," "the deploy script should only run in CI," "stay out of
+  `~/Documents`." Conditions like these are easy to state in plain English but
+  awkward to capture as path globs or regex allowlists.
 
 ---
 
@@ -64,27 +65,31 @@ If the LLM is unreachable, the `on_unavailable` fallback applies (default: ask).
 
 Every decision is logged and shown in the statusline activity strip.
 
-### Codex auto-review vs. bouncer
+### Harness auto-approval vs. bouncer
 
-Codex has its own auto-review mode for approval requests. In broad terms, that
-routes approval prompts to Codex's built-in reviewer instead of sending each
-eligible request directly to the user.
+Some harnesses have their own auto-approval mode. Codex has an auto-review mode
+that routes approval prompts to its built-in reviewer; Claude Code has an
+auto-accept ("auto") mode that stops prompting for edits and commands it
+considers safe. In both cases the harness decides with its own built-in logic.
 
 Bouncer fills a different role: it is a local, policy-controlled reviewer. The
 decision context comes from your user policy, project policy, local-only policy
 overrides, selected LLM provider/model, fallback settings, logs, activity
 indicators, and notifier hooks.
 
-That means the practical distinction is:
+The practical distinction:
 
-- **Codex auto-review:** "Does Codex's built-in reviewer think this approval
-  request is okay?"
+- **Harness auto-approval:** "Does the harness's built-in reviewer think this
+  is okay?"
 - **Bouncer:** "Does this action match my policy for this project, using my
   chosen reviewer and feedback channels?"
 
-The two can overlap. When testing bouncer, leave Codex auto-review off unless
-you are intentionally comparing both reviewers; otherwise you may see extra
-latency, token use, or confusing approval behavior.
+The two can overlap. When testing bouncer, leave the harness's own
+auto-approval off unless you are intentionally comparing both reviewers;
+otherwise you may see extra latency, token use, or confusing approval behavior.
+
+Bouncer's Codex integration is tested working in both the Codex CLI and the
+Codex GUI.
 
 ### Escalation mechanism
 
@@ -108,28 +113,68 @@ instance) deliver the escalation outward as a denial instead.
 
 ## Setup
 
-**Requirements:** Python 3.11+, no third-party dependencies.
+**Requirements:** Python 3.11+ (no third-party Python dependencies) **and** an
+LLM backend — either a local [Ollama](https://ollama.com) model or an API key
+for a hosted provider (OpenAI, Anthropic, or any OpenAI-compatible endpoint).
+The Python package has zero dependencies, but bouncer still needs a model to
+classify against; see step 2.
+
+### 1. Install the CLI
+
+Recommended — `uv tool install` puts `bouncer` on your PATH globally, which the
+harness hooks need:
 
 ```sh
-pip install -e /path/to/bouncer
-bouncer --help   # verify
+uv tool install --editable /path/to/bouncer
+bouncer --help        # verify
+command -v bouncer    # confirm it's on PATH
 ```
 
-Or run without installing: `python3 -m bouncer <command>`.
+> **Why global PATH matters:** harness hooks invoke a bare `bouncer` command in
+> a fresh subprocess. If you install into a virtualenv that isn't active when
+> your agent launches, the hooks silently fail to find `bouncer` and everything
+> passes through. `uv tool install` (or `pipx install`) avoids this. A plain
+> `pip install -e .` only works if the agent is started from that same
+> activated environment.
 
-**One-time user setup** (creates `~/.config/bouncer/` and wires harness hooks):
+### 2. Pick an LLM backend
+
+Bouncer ships with the Ollama provider configured by default, but there is no
+built-in default *model* — you choose one.
+
+**Local (Ollama) — no API key:**
 
 ```sh
-bouncer -g init --harness=auto
-bouncer -g config   # set your LLM provider + model
-bouncer -g policy   # add any personal norms
+brew install ollama        # or see https://ollama.com/download
+ollama serve &             # if it isn't already running
+ollama pull qwen3:32b      # the shipped default model
 ```
 
-**Per-project setup:**
+`qwen3:32b` gives good judgment but is a large (~20 GB) download. A smaller
+instruct model such as `qwen3:4b` pulls faster and works fine for a first
+try — just set `llm.model` to match (step 3).
+
+**Hosted (OpenAI / Anthropic / OpenAI-compatible):** skip Ollama entirely. Set
+the `llm:` section to your provider and supply an API key via env var or
+`~/.config/bouncer/keys.yaml`. See
+[docs/configuration.md](docs/configuration.md#llm-providers).
+
+### 3. One-time user setup
+
+Creates `~/.config/bouncer/` and wires harness hooks:
+
+```sh
+bouncer -g init       # detect harnesses + offer to wire hooks (incl. shim)
+bouncer -g config     # set your LLM provider + model
+bouncer -g policy     # add any personal norms
+bouncer status -v     # confirm config + LLM reachability
+```
+
+### 4. Per-project setup
 
 ```sh
 cd your-project
-bouncer init --harness=auto   # create .bouncer/ + wire harness hooks
+bouncer init --harness=auto   # create .bouncer/ + wire detected harnesses
 bouncer policy                # describe the project for the LLM
 bouncer status                # confirm it's active
 ```
@@ -219,7 +264,7 @@ good place for personal norms ("never touch my dotfiles", "no force-push ever").
 
 ### 0.1.0 (2026-05-07)
 
-Initial public release.
+Initial alpha release.
 
 - LLM-powered ALLOW/DENY/UNSURE classification for Bash and other tools
 - Claude Code, Codex, opencode, and universal shell shim integrations

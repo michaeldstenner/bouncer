@@ -4,7 +4,7 @@ from pathlib import Path
 from ..config import _build_policy_context, USER_SYSTEM_PROMPT
 
 DEFAULT_SYSTEM_PROMPT = """\
-You are a permission scope enforcer for an AI coding assistant running on a personal Mac.
+You are a permission scope enforcer for an AI coding assistant running on a developer's personal workstation.
 
 Your job is NOT to decide if a command is generically safe. Your job is to decide
 if it falls WITHIN the scope of what the user has already explicitly approved.
@@ -131,7 +131,9 @@ def call_llm(
     provider = llm_cfg.get("provider", "ollama")
     model    = llm_cfg.get("model")
     if not model:
-        return None, "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml", None
+        return ("LLM_ERROR",
+                "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml",
+                None, None)
 
     system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
 
@@ -194,8 +196,11 @@ def call_llm(
     if result.outcome != "success":
         is_timeout = (result.outcome.startswith("timeout") or
                       result.outcome == "circuit_open")
+        # TIMEOUT and LLM_ERROR are both "couldn't get a verdict" outcomes that
+        # resolve via on_unavailable; the distinct labels exist so the log and
+        # activity strip show *what* went wrong (slow vs. unreachable/auth/etc).
         return (
-            "TIMEOUT" if is_timeout else None,
+            "TIMEOUT" if is_timeout else "LLM_ERROR",
             _outcome_to_error(result.outcome, provider, llm_cfg,
                               result.queue_snapshot),
             result.prompt_chars,

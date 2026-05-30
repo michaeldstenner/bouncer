@@ -22,6 +22,7 @@ CONFIG_DEFAULTS: dict = {
             "BLOCK": "red",
             "UNSURE": "magenta",
             "TIMEOUT": "black_on_magenta_bold",
+            "LLM_ERROR": "black_on_red_bold",
             "ESCALATE": "cyan",
         },
     },
@@ -96,7 +97,7 @@ CONFIG_YAML_TEMPLATE = """\
 # object to stdin, closes stdin, and does not wait for it to finish.
 #notify:
 #  command: ~/bin/bouncer-notify
-#  decisions: all       # all, or a list such as [DENY, ESCALATE, TIMEOUT]
+#  decisions: all       # all, or a list such as [DENY, ESCALATE, TIMEOUT, LLM_ERROR]
 
 # Logging
 #log:
@@ -167,7 +168,7 @@ activity_width: 10
 # object to stdin, closes stdin, and does not wait for it to finish.
 #notify:
 #  command: ~/bin/bouncer-notify
-#  decisions: all       # all, or a list such as [DENY, ESCALATE, TIMEOUT]
+#  decisions: all       # all, or a list such as [DENY, ESCALATE, TIMEOUT, LLM_ERROR]
 
 # Logging
 log:
@@ -180,7 +181,7 @@ USER_POLICY_MD_TEMPLATE = """\
 # User Policy
 
 Global context for the LLM classifier:
-- Working on a personal Mac as a developer
+- Working as a developer on a personal workstation
 - Standard development tools (git, npm, make, python, uv) are generally safe
 - Irreversible system changes and external data exfiltration require caution
 """
