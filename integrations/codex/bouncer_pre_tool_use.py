@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Optional Codex PreToolUse hard-guard bridge.
+Legacy Codex PreToolUse bridge.
 
-This is not installed by default. Codex PreToolUse cannot ask the user; it can
-only block or pass through. Use this only when you want bouncer to deny commands
-Codex would otherwise run without its normal approval prompt.
+This is not installed by default and is not recommended for normal bouncer use.
+Codex PreToolUse cannot ask the user; it can only block or pass through. Keep
+the PermissionRequest integration as the normal Codex path.
 """
 
 import os

@@ -35,13 +35,6 @@ Create `~/.config/bouncer/` and choose which detected harnesses or shim to wire:
 bouncer -g init
 ```
 
-For Codex Desktop / GUI trusted projects, also wire the experimental
-`PreToolUse` hard guard:
-
-```sh
-bouncer -g init --harness=codex_pretool
-```
-
 This modifies local harness config under your home directory, such as
 `~/.codex/hooks.json`, `~/.claude/settings.json`, or
 `~/.config/opencode/opencode.json`.

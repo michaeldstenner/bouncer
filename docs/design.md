@@ -37,11 +37,11 @@ needless interruption, DENY can block a request with a clear reason, and UNSURE
 can defer to the harness's normal human review.
 
 A pre-tool hook runs earlier, before the harness has decided whether approval
-is needed. That can be useful as an optional hard guard in highly trusted or
-YOLO-like modes, but it is not bouncer's default posture. It risks reviewing
+is needed. That is a poor fit for bouncer's main purpose: it risks reviewing
 commands that would never have bothered the user, and some harnesses cannot ask
 from that hook, forcing UNSURE to become either pass-through or denial.
 
 For Codex, this means `PermissionRequest` is the primary integration point.
-`PreToolUse` remains optional for cases where the user deliberately wants a
-hard guard in sessions that may otherwise run commands without approval.
+`PreToolUse` is not recommended for bouncer. It cannot route `UNSURE` or
+`ESCALATE` through Codex's normal approval prompt, and Codex GUI/TUI behavior
+may differ in whether that hook is actually run.

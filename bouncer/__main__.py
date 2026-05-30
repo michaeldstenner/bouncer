@@ -42,8 +42,9 @@ Current harness behavior:
   * Claude Code — ASK is available.
   * Codex PermissionRequest — ASK is available by abstaining and letting Codex
     show its normal approval prompt.
-  * Codex PreToolUse / opencode / shell shim — ASK is not available; outward
-    ASKs are delivered as denials or pass-through depending on integration.
+  * Codex legacy PreToolUse / opencode / shell shim — ASK is not available;
+    outward ASKs are delivered as denials or pass-through depending on
+    integration.
 
 Do not use ESCALATE preemptively. Trying to anticipate what bouncer will
 decide wastes tokens and defeats the purpose of automated classification —
@@ -97,7 +98,7 @@ def main():
                             "(-g: user-level setup + harness hooks)")
     p_init.add_argument(
         "--harness", metavar="NAME",
-        help="wire AI harness hooks: auto | all | claude_code | codex | codex_pretool | opencode | shim  "
+        help="wire AI harness hooks: auto | all | claude_code | codex | opencode | shim  "
              "(comma-separated for multiple; -g only: prompts if omitted)",
     )
 

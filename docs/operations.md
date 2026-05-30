@@ -5,7 +5,7 @@
 ```
 bouncer init                  create .bouncer/ in current project
 bouncer init --harness=auto   also wire detected AI harness hooks
-bouncer init --harness=NAME   wire a specific harness (claude_code | codex | codex_pretool | opencode)
+bouncer init --harness=NAME   wire a specific harness (claude_code | codex | opencode)
 bouncer lint [file]           validate config.yaml
 bouncer config                open config.yaml in $EDITOR
 bouncer policy                open policy.md in $EDITOR
@@ -137,8 +137,7 @@ bouncer/
 
 ### Vendored llmclient
 
-`bouncer/llmclient/` is a vendored copy of the
-[llmclient](https://github.com/mstenner/llmclient) library. It provides
+`bouncer/llmclient/` is a vendored copy of the llmclient library. It provides
 cooperative Ollama queuing (via `~/.local/share/llmclient/queue.db`),
 unified provider dispatch, and JSONL debug logging. Vendored to preserve
 the zero-external-dependency guarantee — the `bin/bouncer` launcher

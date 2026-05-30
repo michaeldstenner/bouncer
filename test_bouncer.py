@@ -1078,7 +1078,7 @@ class TestClassify(unittest.TestCase):
             "bouncer status",
             "bouncer status -v",
             "bouncer check --llm 'pwd'",
-            "/Users/mstenner/.local/bin/bouncer check --llm 'pwd'",
+            "/Users/example/.local/bin/bouncer check --llm 'pwd'",
             "bouncer log --tail",
             "bouncer activity --project",
             "bouncer -g log",

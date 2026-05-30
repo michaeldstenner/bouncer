@@ -149,18 +149,16 @@ chat transcript, especially for auto-approved or denied requests. For visible
 GUI feedback, configure [`notify.command`](configuration.md#notify) to call a
 local notifier, sound, status app, or script.
 
-Codex `PreToolUse` is not installed by default because it classifies commands
-before Codex decides whether approval is needed. It is useful as an optional
-hard guard for trusted Codex Desktop / GUI sessions, where normal commands may
-not produce a `PermissionRequest` approval prompt. Install it explicitly with:
+Codex `PreToolUse` is intentionally not part of the recommended bouncer setup.
+It runs before Codex decides whether approval is needed, so bouncer would review
+commands that may never have interrupted the user. More importantly, Codex
+`PreToolUse` cannot ask the user: `UNSURE`, unavailable, and `ESCALATE` outcomes
+cannot use Codex's normal approval prompt from that hook. Codex Desktop / GUI
+may also differ from the TUI in whether it runs `PreToolUse`, which makes the
+behavior confusing across clients.
 
-```sh
-bouncer -g init --harness=codex_pretool
-```
-
-The wrapper uses `integrations/codex/bouncer_pre_tool_use.py`; because
-`PreToolUse` cannot ask the user, its UNSURE path passes through and DENY
-blocks.
+Use `PermissionRequest` for Codex. The legacy `codex_pretool` installer remains
+available only for experiments or hard-guard debugging.
 
 There is no Codex equivalent of `UserPromptSubmit` or the statusline.
 

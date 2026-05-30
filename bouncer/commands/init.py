@@ -253,10 +253,12 @@ _INSTALLERS = {
     "shim":        _install_shim,
 }
 
+_DEFAULT_INSTALLERS = ("claude_code", "codex", "opencode", "shim")
+
 _HARNESS_PROMPTS = {
     "claude_code": "Add PreToolUse hook to ~/.claude/settings.json",
     "codex":       "Add PermissionRequest hook to ~/.codex/hooks.json",
-    "codex_pretool": "Add Codex PreToolUse hard-guard hook to ~/.codex/hooks.json",
+    "codex_pretool": "Add legacy Codex PreToolUse hard-guard hook to ~/.codex/hooks.json",
     "opencode":    "Copy bouncer_plugin.ts to ~/.config/opencode/plugin/bouncer.ts",
     "shim":        f"Install shell shim to {_SHIM_INSTALL_DIR}/bash (universal PATH-based gate)",
 }
@@ -338,7 +340,7 @@ def _resolve_harness_targets(arg: str | None) -> list[str]:
     if arg is None:
         return []
     if arg == "all":
-        return list(_INSTALLERS.keys())
+        return list(_DEFAULT_INSTALLERS)
     if arg == "auto":
         return _detect_harnesses()
     return [h.strip().replace("-", "_") for h in arg.split(",")]
