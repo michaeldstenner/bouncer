@@ -62,6 +62,7 @@ llm:
   model: unreachable-test-model
   url: http://127.0.0.1:9
   timeout: 1
+  circuit_n: 0
 on_unsure: ask
 on_unavailable: ask
 log:
@@ -87,8 +88,9 @@ tools:
   - Bash
 policy_mode: replace
 # Inherits provider/model/url/api key from the user-level Bouncer config.
-# Add an llm: block here to test a specific endpoint without changing user config.
-#llm:
+# Disables circuit state so offline smoke failures cannot poison live checks.
+llm:
+  circuit_n: 0
 #  provider: openai_compatible
 #  model: example-model
 #  url: https://example.test
@@ -227,7 +229,7 @@ def build_cases(paths: dict[str, Path], *, live: bool) -> list[Case]:
             name="unavailable llm falls back to ask",
             argv=["check", "pwd", "--llm"],
             cwd=paths["child"],
-            want_stdout=("UNAVAILABLE", "on_unavailable"),
+            want_stdout=("LLM_ERROR", "on_unavailable"),
         ),
     ]
     if live:

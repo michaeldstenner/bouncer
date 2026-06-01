@@ -176,6 +176,12 @@ def call_llm(
         first_token_timeout=llm_cfg.get("first_token_timeout"),
         generation_timeout=llm_cfg.get("generation_timeout"),
         circuit_n=int(llm_cfg.get("circuit_n", 2)),
+        circuit_key="|".join((
+            "bouncer",
+            provider,
+            str(model),
+            str(llm_cfg.get("url", "")),
+        )),
         circuit_cooldown_s=float(llm_cfg.get("circuit_cooldown_s", 120.0)),
         circuit_triggers=circuit_triggers,
         log_caller="bouncer",

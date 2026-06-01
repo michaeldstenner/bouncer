@@ -4,7 +4,7 @@
 
 ```
 bouncer init                  create .bouncer/ in current project
-bouncer init --harness=auto   also wire detected AI harness hooks
+bouncer -g init               create user config/policy and offer harness wiring
 bouncer init --harness=NAME   wire a specific harness (claude_code | codex | opencode)
 bouncer lint [file]           validate config.yaml
 bouncer config                open config.yaml in $EDITOR
@@ -19,6 +19,7 @@ bouncer log --since 2h        show last 2 hours
 bouncer log --break           append prompt separator (called by hook)
 bouncer check <cmd>           dry-run: shows what bouncer would decide
 bouncer check --llm <cmd>     dry-run: actually calls the LLM
+bouncer tools                 list documented and observed harness tool names
 bouncer review                interactive UNSURE decision review
 bouncer classify --hook                 internal: hook interface (stdin → stdout)
 bouncer classify --hook --format plain  plain-text output (allow/deny/ask + reason)
@@ -56,6 +57,7 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project -
 
 ~/.local/share/bouncer/
   log.jsonl            global decision log
+  tools.json           global observed harness/tool catalog
   activity/
     <session_id>.json  per-session activity strip data
 
@@ -112,17 +114,7 @@ bouncer/
     bash                universal shell shim (installed by bouncer -g init)
   providers/
     __init__.py         call_llm() dispatcher; _build_prompt, _parse_llm_text
-  llmclient/            vendored copy of the llmclient library
-    __init__.py         LLMClient class; LLMConfig; configure(); call dispatch
-    _config.py          configure(): app config_dir, data_dir, log_level
-    _keys.py            layered API key + URL resolution (config.yaml files)
-    _queue.py           cooperative Ollama request queue
-    _log.py             LLM call JSONL debug logging
-    providers/
-      ollama.py         Ollama /api/generate (polling loop, abort support)
-      openai.py         OpenAI chat completions + embeddings (also openai_compatible)
-      anthropic.py      Anthropic /v1/messages
-      claude_code.py    claude_code / claude_p provider (shells out to `claude -p`)
+  llmclient/            vendored llmclient library used for provider calls
   commands/
     __init__.py         empty
     init.py             bouncer init [--harness]
@@ -139,28 +131,11 @@ bouncer/
 
 ### Vendored llmclient
 
-`bouncer/llmclient/` is a vendored copy of the llmclient library. It provides
-cooperative Ollama queuing (via `~/.local/share/llmclient/queue.db`),
-unified provider dispatch, and JSONL debug logging. Vendored to preserve
-the zero-external-dependency guarantee — the `bin/bouncer` launcher
-resolves paths via symlink and works from any CWD without a venv.
+`bouncer/llmclient/` is a vendored copy of the llmclient library. Bouncer uses
+it for provider calls, API key / URL resolution, Ollama queue management, and
+LLM call logging while keeping the bouncer package dependency-free.
 
-`bouncer/__main__.py` calls `llmclient.configure(config_dir=USER_CONFIG_DIR)`
-once at startup so API keys / URLs / `parallel_slots` resolve from
-`~/.config/bouncer/config.yaml` as an overlay on the global llmclient files.
-`data_dir` and `log_level` are left at their defaults: llmclient's shared
-`~/.local/share/llmclient/` holds both the cooperative `queue.db` and the
-central `llmclient_log.jsonl`, so bouncer shares Ollama slot management — and a
-single call log — with other llmclient-based tools. At the default `errors`
-level, only non-success calls are logged there (inspect with
-`llmc --dir ~/.local/share/llmclient log`). This is separate from bouncer's own
-decision log and `llm_debug.jsonl`.
-
-To update: copy the upstream module files (`*.py` and `providers/*.py`) over
-`bouncer/llmclient/` and run the tests. Skip the upstream `cli/` package —
-bouncer does not ship the `llmc` CLI. The vendored copy is now a clean,
-unpatched mirror of upstream (the old `_keys.py` dual-path patch was retired
-in favor of `configure()`), so future syncs are a straight copy.
+Bouncer's own decision log remains separate from llmclient's provider-call log.
 
 ### Hot path
 
@@ -168,21 +143,6 @@ in favor of `configure()`), so future syncs are a straight copy.
 → `providers:call_llm` → `hook.py:_emit_hook_response`
 
 `run_classify` has no stdin/stdout side effects — unit-testable without mocking.
-
-### Adding a provider
-
-Providers live in the vendored llmclient, not in `bouncer/providers/`
-(which only holds the `call_llm` dispatcher and prompt building).
-
-1. Add `bouncer/llmclient/providers/<name>.py` with a `call_<name>(system,
-   user, cfg, base_url, abort_event)` returning a `_ProviderResult`.
-2. Wire it into the dispatch in `bouncer/llmclient/__init__.py` and add any
-   default URL / env-var mapping in `bouncer/llmclient/_keys.py`.
-3. Document the provider name under `llm.provider` in
-   [docs/configuration.md](configuration.md).
-
-Because llmclient is vendored, prefer making the change upstream and
-re-vendoring (see below) so the two copies do not drift.
 
 ### Running tests
 

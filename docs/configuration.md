@@ -171,6 +171,29 @@ llm:
 the user-level list entirely. There is no append/merge — whatever you
 write at the project level is the complete list for that project.
 
+Tool names are harness-specific. Run this to see bouncer's documented catalog
+merged with locally observed hook traffic:
+
+```sh
+bouncer tools
+bouncer tools --harness=claude_code
+```
+
+MCP tools only appear to bouncer when the harness exposes them through its hook
+payload. Claude Code MCP tools may be observed with names like
+`mcp__server__tool`; other harnesses may differ.
+
+For Codex, the recommended integration sees `PermissionRequest` events. To make
+Codex ask for approval more often, and therefore send more Bash requests through
+bouncer, start Codex with:
+
+```sh
+codex --ask-for-approval untrusted
+```
+
+This increases Codex approval traffic; it does not expose Codex-internal tools
+that Codex does not include in `PermissionRequest` hook payloads.
+
 ## `notify`
 
 `notify.command` is an optional post-decision command. When set, bouncer starts

@@ -12,6 +12,7 @@ the user normally.
 """
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,9 +30,17 @@ def _bouncer_cmd() -> str:
     return str(fallback)
 
 
+raw = sys.stdin.read()
+try:
+    payload = json.loads(raw)
+    payload.setdefault("harness", "codex")
+    data = json.dumps(payload)
+except Exception:
+    data = raw
+
 result = subprocess.run(
     [_bouncer_cmd(), "classify", "--hook", "--format", "codex-permission"],
-    input=sys.stdin.read(),
+    input=data,
     capture_output=True,
     text=True,
 )

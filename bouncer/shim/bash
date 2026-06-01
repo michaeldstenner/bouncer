@@ -58,6 +58,7 @@ export BOUNCER_INTERNAL_ACTIVE=1
 JSON_INPUT=$(BOUNCER_CMD="$2" BOUNCER_CWD="$PWD" python3 -c '
 import json, os
 print(json.dumps({
+    "harness":    "shim",
     "tool_name":  "Bash",
     "tool_input": {"command": os.environ["BOUNCER_CMD"]},
     "cwd":        os.environ["BOUNCER_CWD"],

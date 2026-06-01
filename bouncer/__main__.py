@@ -8,6 +8,7 @@ from .commands.status   import cmd_status
 from .commands.activity import cmd_activity
 from .commands.log      import cmd_log
 from .commands.check    import cmd_check
+from .commands.tools    import cmd_tools
 from .commands.classify import cmd_classify
 from .commands.review   import cmd_review
 from .commands.abort    import cmd_abort
@@ -153,6 +154,13 @@ def main():
     p_check.add_argument("--llm", action="store_true",
                          help="actually call the LLM to get a decision")
 
+    p_tools = sub.add_parser("tools", help="list observed harness tool names")
+    p_tools.add_argument("--harness", metavar="NAME",
+                         help="show one harness: claude_code | codex | opencode | shim")
+    p_tools.add_argument("--as", dest="as_format", metavar="FORMAT",
+                         choices=["plain", "json"], default="plain",
+                         help="output format: plain (default) or json")
+
     p_classify = sub.add_parser("classify", help="internal hook interface")
     p_classify.add_argument("--hook", action="store_true", required=True,
                              help="read hook JSON from stdin, write response to stdout")
@@ -190,6 +198,7 @@ def main():
         "activity": cmd_activity,
         "log":      cmd_log,
         "check":    cmd_check,
+        "tools":    cmd_tools,
         "classify": cmd_classify,
         "review":   cmd_review,
         "abort":    cmd_abort,

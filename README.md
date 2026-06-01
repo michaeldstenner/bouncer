@@ -8,6 +8,53 @@ actions can proceed without repeatedly asking the user.
 
 Bouncer is **opt-in per project**: it only activates when `.bouncer/config.yaml`
 exists somewhere in the directory tree above the working directory.
+Without that, the harness just follows its default behavior.
+
+---
+
+## Quickstart
+
+```sh
+uv tool install --editable /path/to/bouncer
+bouncer -g init       # detect harnesses + offer to wire hooks (incl. shim)
+bouncer -g config     # set your LLM provider + model
+```
+
+```sh
+cd /path/to/your-project
+bouncer init      # create .bouncer/
+bouncer policy    # describe the project policy for the LLM
+```
+
+That is the normal path. Afterward, start your agent in that project; bouncer
+will activate because `.bouncer/config.yaml` exists there.
+
+Requirements: Python 3.11+ and an LLM backend. The Python package has no
+third-party dependencies, but classification still needs a model: local
+[Ollama](https://ollama.com), OpenAI, Anthropic, or an OpenAI-compatible
+endpoint. Bouncer ships with the Ollama provider configured by default, but
+there is no built-in default model.
+
+For local Ollama, install/start Ollama and pull a model such as:
+
+```sh
+brew install ollama        # or see https://ollama.com/download
+ollama serve &             # if it isn't already running
+ollama pull qwen3:32b      # example model used by the generated config
+```
+
+`qwen3:32b` gives good judgment but is a large (~20 GB) download. A smaller
+instruct model such as `qwen3:4b` pulls faster and works fine for a first try;
+set `llm.model` in `bouncer -g config` to match.
+
+Harness hooks need `bouncer` on PATH in fresh subprocesses. `uv tool install`
+or `pipx install` is usually the least surprising way to do that. A plain
+`pip install -e .` only works if the agent is started from that same activated
+environment.
+
+Users can pass `--harness=<name>` to add a specific harness
+integration. See [docs/integrations.md](docs/integrations.md) for
+per-harness details.
 
 ---
 
@@ -35,8 +82,9 @@ Good fits:
 - **Work that resists sandboxing** — infrastructure, system scripts,
   network-reaching tasks, anything that touches outside the repo.
 - **Multi-harness workflows** — Claude Code, Codex CLI, opencode, and any
-  shell-invoking agent (via the universal shim) share one policy, one log,
-  one activity strip.
+  shell-invoking agent (via the universal shim) share one policy and one log,
+  with activity output you can render in a statusline, tmux, notifier, or
+  custom script.
 - **Local-first setups** — defaults to Ollama; also supports OpenAI,
   Anthropic, and any OpenAI-compatible endpoint.
 - **Rules that depend on intent, not just the command text** — "migrations
@@ -63,7 +111,9 @@ The LLM returns one of three decisions:
 
 If the LLM is unreachable, the `on_unavailable` fallback applies (default: ask).
 
-Every decision is logged and shown in the statusline activity strip.
+Every decision is logged. Optional activity output can be rendered wherever it
+fits your workflow: a Claude Code statusline, opencode command strip, tmux
+status bar, local notifier, or custom script.
 
 ### Harness auto-approval vs. bouncer
 
@@ -109,81 +159,7 @@ only escalate after a denial, not preemptively.
 Harnesses that do not have ASK available (the shell shim and opencode, for
 instance) deliver the escalation outward as a denial instead.
 
----
 
-## Setup
-
-**Requirements:** Python 3.11+ (no third-party Python dependencies) **and** an
-LLM backend — either a local [Ollama](https://ollama.com) model or an API key
-for a hosted provider (OpenAI, Anthropic, or any OpenAI-compatible endpoint).
-The Python package has zero dependencies, but bouncer still needs a model to
-classify against; see step 2.
-
-### 1. Install the CLI
-
-Recommended — `uv tool install` puts `bouncer` on your PATH globally, which the
-harness hooks need:
-
-```sh
-uv tool install --editable /path/to/bouncer
-bouncer --help        # verify
-command -v bouncer    # confirm it's on PATH
-```
-
-> **Why global PATH matters:** harness hooks invoke a bare `bouncer` command in
-> a fresh subprocess. If you install into a virtualenv that isn't active when
-> your agent launches, the hooks silently fail to find `bouncer` and everything
-> passes through. `uv tool install` (or `pipx install`) avoids this. A plain
-> `pip install -e .` only works if the agent is started from that same
-> activated environment.
-
-### 2. Pick an LLM backend
-
-Bouncer ships with the Ollama provider configured by default, but there is no
-built-in default *model* — you choose one.
-
-**Local (Ollama) — no API key:**
-
-```sh
-brew install ollama        # or see https://ollama.com/download
-ollama serve &             # if it isn't already running
-ollama pull qwen3:32b      # the shipped default model
-```
-
-`qwen3:32b` gives good judgment but is a large (~20 GB) download. A smaller
-instruct model such as `qwen3:4b` pulls faster and works fine for a first
-try — just set `llm.model` to match (step 3).
-
-**Hosted (OpenAI / Anthropic / OpenAI-compatible):** skip Ollama entirely. Set
-the `llm:` section to your provider and supply an API key via env var,
-`llm.api_key`, or a provider section in `~/.config/bouncer/config.yaml`. See
-[docs/configuration.md](docs/configuration.md#llm-providers).
-
-### 3. One-time user setup
-
-Creates `~/.config/bouncer/` and wires harness hooks:
-
-```sh
-bouncer -g init       # detect harnesses + offer to wire hooks (incl. shim)
-bouncer -g config     # set your LLM provider + model
-bouncer -g policy     # add any personal norms
-bouncer status -v     # confirm config + LLM reachability
-```
-
-### 4. Per-project setup
-
-```sh
-cd your-project
-bouncer init --harness=auto   # create .bouncer/ + wire detected harnesses
-bouncer policy                # describe the project for the LLM
-bouncer status                # confirm it's active
-```
-
-`--harness=auto` detects whichever AI coding harnesses are installed and wires
-them automatically. Pass a specific name (`claude_code`, `codex`, `opencode`,
-`shim`) to target one harness, or omit `--harness` entirely to skip hook
-wiring. `--harness=all` installs every known target, including the universal
-shim. See [docs/integrations.md](docs/integrations.md) for per-harness details.
 
 ---
 
@@ -200,6 +176,7 @@ bouncer log --since 2h  # last 2 hours only
 
 bouncer check 'git push origin main'        # what would bouncer decide?
 bouncer check --llm 'git push origin main'  # ask the LLM directly
+bouncer tools                               # documented + observed harness tool names
 
 bouncer review          # interactive UNSURE decision review
 ```

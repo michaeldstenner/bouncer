@@ -17,14 +17,20 @@ from ..config import (
     USER_POLICY_MD_TEMPLATE,
 )
 
-# ── hook wrapper (identical for claude_code and codex) ───────────────────────
-
-_HOOK_WRAPPER = """\
+def _hook_wrapper(harness: str, fmt: str = "json") -> str:
+    return f"""\
 #!/usr/bin/env python3
-import subprocess, sys
+import json, subprocess, sys
+raw = sys.stdin.read()
+try:
+    payload = json.loads(raw)
+    payload.setdefault("harness", {harness!r})
+    data = json.dumps(payload)
+except Exception:
+    data = raw
 result = subprocess.run(
-    ["bouncer", "classify", "--hook"],
-    input=sys.stdin.read(), capture_output=True, text=True,
+    ["bouncer", "classify", "--hook", "--format", {fmt!r}],
+    input=data, capture_output=True, text=True,
 )
 if result.stdout: print(result.stdout, end="")
 if result.stderr: print(result.stderr, end="", file=sys.stderr)
@@ -53,7 +59,7 @@ def _install_claude_code():
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     hook_script = hooks_dir / "bouncer_hook.py"
-    hook_script.write_text(_HOOK_WRAPPER, encoding="utf-8")
+    hook_script.write_text(_hook_wrapper("claude_code"), encoding="utf-8")
     hook_script.chmod(hook_script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     settings_path = Path.home() / ".claude" / "settings.json"
@@ -96,7 +102,7 @@ def _install_codex():
     if repo_hook.exists():
         shutil.copy2(repo_hook, dst)
     else:
-        dst.write_text(_HOOK_WRAPPER, encoding="utf-8")
+        dst.write_text(_hook_wrapper("codex", "codex-permission"), encoding="utf-8")
     dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     hooks_json = Path.home() / ".codex" / "hooks.json"
@@ -346,6 +352,20 @@ def _resolve_harness_targets(arg: str | None) -> list[str]:
     return [h.strip().replace("-", "_") for h in arg.split(",")]
 
 
+def _has_installed_harness() -> bool:
+    return bool(installed_harnesses())
+
+
+def installed_harnesses() -> list[str]:
+    """Return installed bouncer harness integrations."""
+    return [name for name in _INSTALLERS if _IS_INSTALLED[name]()]
+
+
+def format_installed_harnesses() -> str:
+    names = installed_harnesses()
+    return ", ".join(names) if names else "(none)"
+
+
 def _install_targets(targets: list[str]) -> None:
     """Install the given harnesses, skipping already-installed ones."""
     for name in targets:
@@ -395,9 +415,11 @@ def cmd_init(args):
     print()
     print(f"Edit policy with: {BOLD}bouncer policy{RESET}")
     print(f"Edit config with: {BOLD}bouncer config{RESET}")
-    if not harness:
-        print(f"Wire a harness:   {BOLD}bouncer init --harness=auto{RESET}  "
-              f"(or --harness=claude_code / codex / opencode)")
+    print(f"Installed integrations: {BOLD}{format_installed_harnesses()}{RESET}")
+    if not harness and not _has_installed_harness():
+        print(f"{YELLOW}Note:{RESET} bouncer is enabled for this project, but no harness "
+              "integration appears to be installed.")
+        print(f"Wire harnesses with: {BOLD}bouncer -g init{RESET}")
 
 
 def cmd_global_init(args):
@@ -445,3 +467,4 @@ def cmd_global_init(args):
     print()
     print(f"Edit user policy with: {BOLD}bouncer -g policy{RESET}")
     print(f"Edit user config with: {BOLD}bouncer -g config{RESET}")
+    print(f"Enable a project with: {BOLD}bouncer init{RESET}")

@@ -133,6 +133,26 @@ approval. That matches bouncer's primary purpose: pre-triage approval prompts,
 auto-approve policy-compliant actions, deny policy-forbidden actions, and
 abstain on UNSURE so Codex shows its normal approval prompt.
 
+To make Codex send more approval requests through bouncer, start Codex with the
+stricter approval policy:
+
+```sh
+codex --ask-for-approval untrusted
+```
+
+To make that persistent for Codex CLI/TUI sessions, add this to
+`~/.codex/config.toml`:
+
+```toml
+approval_policy = "untrusted"
+```
+
+In that mode Codex still runs its trusted command set directly, but non-trusted
+shell commands become approval requests that the `PermissionRequest` hook can
+pre-triage. This increases observed Codex `Bash` traffic in `bouncer tools`; it
+does not expose Codex-internal tools that are not part of the approval request
+payload.
+
 The `PermissionRequest` integration is tested working in both the Codex CLI and
 the Codex GUI. (The one GUI difference is cosmetic — see the `systemMessage`
 note below.)
@@ -199,7 +219,8 @@ Manual `~/.codex/hooks.json`:
 
 **Coverage:** opencode's `tool.execute.before` fires for all built-in tools
 (bash, read, edit, write, apply_patch) — broader than Codex's Bash-only scope.
-`apply_patch` maps to `Write` for the bouncer tools filter.
+The plugin passes opencode's tool name through as-is; run `bouncer tools
+--harness=opencode` for the observed list.
 
 **ASK availability:** opencode does not have ASK available. When bouncer's
 internal decision is ASK (from an UNSURE LLM verdict or `# ESCALATE:`), the

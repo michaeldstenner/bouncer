@@ -12,6 +12,7 @@ from ..config import (
     load_policy,
     project_log_file,
 )
+from .init import format_installed_harnesses
 
 
 def _print_config_summary(data: dict, prefix: str = "  ") -> None:
@@ -109,11 +110,13 @@ def cmd_status(args):
 
     if not enabled:
         print(f"{DIM}○ bouncer disabled{RESET}")
+        print(f"  integrations: {format_installed_harnesses()}")
         return
 
     if not has_proj:
         print(f"{YELLOW}○ bouncer inactive{RESET}  no project config  "
               f"{DIM}(run 'bouncer init'){RESET}")
+        print(f"  integrations: {format_installed_harnesses()}")
         return
 
     proj_name = d.parent.name
@@ -121,6 +124,7 @@ def cmd_status(args):
           f"{BOLD}{tools_str}{RESET} via {model_str}  "
           f"{DIM}[{proj_name}]{RESET}")
     print(f"  unsure→{on_u}  unavailable→{on_na}")
+    print(f"  integrations: {format_installed_harnesses()}")
 
 
 def _cmd_status_verbose(config: dict, cwd: Path) -> None:
@@ -164,6 +168,7 @@ def _cmd_status_verbose(config: dict, cwd: Path) -> None:
     print()
     print(f"{BOLD}Effective config:{RESET}")
     _print_config_summary(config)
+    print(f"{BOLD}Installed integrations:{RESET} {format_installed_harnesses()}")
 
     print()
     plog = project_log_file(cwd)

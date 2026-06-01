@@ -16,6 +16,7 @@ import bouncer.classify as classify_mod
 import bouncer.commands.init as init_mod
 import bouncer.notify as notify_mod
 import bouncer.providers as providers_mod
+import bouncer.tool_catalog as tool_catalog_mod
 from bouncer.yaml import MicroYAML
 from bouncer.config import (
     _deep_merge,
@@ -33,9 +34,11 @@ from bouncer.notify import notify_decision
 from bouncer.activity import _render_activity
 from bouncer.commands.lint import cmd_lint
 from bouncer.commands.activity import cmd_activity
+from bouncer.commands.status import cmd_status
 from bouncer.commands.classify import cmd_classify
 from bouncer.commands.log import _extract_command
 from bouncer.commands.check import cmd_check
+from bouncer.commands.tools import cmd_tools
 from bouncer.providers import _parse_llm_text
 from bouncer.llmclient.providers.openai import _extract_text as _extract_response_text
 from bouncer.llmclient.providers.ollama import _get_loaded_ctx, call_ollama
@@ -751,6 +754,30 @@ class TestActivity(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestInit(unittest.TestCase):
+    def test_format_installed_harnesses_lists_installed_integrations(self):
+        with patch.object(
+            init_mod,
+            "_INSTALLERS",
+            {"codex": object(), "opencode": object(), "shim": object()},
+        ), patch.object(
+            init_mod,
+            "_IS_INSTALLED",
+            {
+                "codex": lambda: True,
+                "opencode": lambda: False,
+                "shim": lambda: True,
+            },
+        ):
+            self.assertEqual(init_mod.format_installed_harnesses(), "codex, shim")
+
+    def test_format_installed_harnesses_reports_none(self):
+        with patch.object(init_mod, "_INSTALLERS", {"codex": object()}), patch.object(
+            init_mod,
+            "_IS_INSTALLED",
+            {"codex": lambda: False},
+        ):
+            self.assertEqual(init_mod.format_installed_harnesses(), "(none)")
+
     def test_codex_install_uses_permission_request_not_pretool_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
@@ -821,6 +848,111 @@ class TestInit(unittest.TestCase):
                 "codex-pretool",
                 installed_hook.read_text(encoding="utf-8"),
             )
+
+    def test_project_init_prints_installed_integrations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            class _A:
+                harness = None
+
+            stdout_buf = io.StringIO()
+            with (
+                patch.object(init_mod.Path, "cwd", return_value=tmp_path),
+                patch.object(init_mod, "format_installed_harnesses", return_value="codex"),
+                patch.object(init_mod, "_has_installed_harness", return_value=True),
+                redirect_stdout(stdout_buf),
+            ):
+                init_mod.cmd_init(_A())
+
+        self.assertIn("Installed integrations:", stdout_buf.getvalue())
+        self.assertIn("codex", stdout_buf.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+class TestStatus(unittest.TestCase):
+    def test_status_prints_installed_integrations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(tmp_path, config_yaml="enabled: true\n")
+
+            class _A:
+                verbose = False
+
+            stdout_buf = io.StringIO()
+            with (
+                patch("bouncer.commands.status.Path.cwd", return_value=tmp_path),
+                patch("bouncer.commands.status.format_installed_harnesses", return_value="codex, opencode"),
+                redirect_stdout(stdout_buf),
+            ):
+                cmd_status(_A())
+
+        out = stdout_buf.getvalue()
+        self.assertIn("integrations:", out)
+        self.assertIn("codex, opencode", out)
+
+
+# ---------------------------------------------------------------------------
+# tools
+# ---------------------------------------------------------------------------
+
+class TestToolsCommand(unittest.TestCase):
+    def test_tools_lists_observed_harness_tools(self):
+        class _A:
+            harness = None
+            as_format = "plain"
+
+        stdout_buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                with redirect_stdout(stdout_buf):
+                    cmd_tools(_A())
+
+        out = stdout_buf.getvalue()
+        self.assertIn("claude_code:", out)
+        self.assertIn("documented: Bash", out)
+        self.assertIn("observed: (none)", out)
+        self.assertIn("mcp__server__tool", out)
+
+    def test_tools_json_can_filter_harness(self):
+        class _A:
+            harness = "codex"
+            as_format = "json"
+
+        stdout_buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                with redirect_stdout(stdout_buf):
+                    cmd_tools(_A())
+
+        data = json.loads(stdout_buf.getvalue())
+        self.assertEqual(list(data), ["codex"])
+        self.assertEqual(data["codex"]["documented"], ["Bash"])
+        self.assertEqual(data["codex"]["observed"], [])
+        self.assertEqual(data["codex"]["tools"], ["Bash"])
+
+    def test_tools_includes_global_observations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                tool_catalog_mod.record_tool_observation("opencode", "mcp_example")
+
+                class _A:
+                    harness = "opencode"
+                    as_format = "json"
+
+                stdout_buf = io.StringIO()
+                with redirect_stdout(stdout_buf):
+                    cmd_tools(_A())
+
+        data = json.loads(stdout_buf.getvalue())
+        self.assertIn("mcp_example", data["opencode"]["observed"])
+        self.assertIn("mcp_example", data["opencode"]["tools"])
 
 
 # ---------------------------------------------------------------------------
@@ -1490,6 +1622,10 @@ class TestCallLlm(unittest.TestCase):
         self.assertEqual(captured["cfg"].extra_params["max_tokens"], 4096)
         self.assertEqual(captured["cfg"].extra_params["num_predict"], 80)
         self.assertEqual(captured["cfg"].extra_params["temperature"], 0.2)
+        self.assertEqual(
+            captured["cfg"].circuit_key,
+            "bouncer|openai_compatible|reasoning-test-model|",
+        )
 
     def test_openai_compatible_classifier_uses_larger_default_token_budget(self):
         captured = {}

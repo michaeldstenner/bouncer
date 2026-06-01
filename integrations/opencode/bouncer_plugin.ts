@@ -36,6 +36,7 @@ export const BouncerPlugin = async () => {
 
       // bouncer's tool filter is case-insensitive, so pass tool name as-is.
       const bouncerPayload = JSON.stringify({
+        harness: "opencode",
         tool_name: input.tool,
         tool_input: toolInput,
         cwd: process.cwd(),
