@@ -114,7 +114,7 @@ bouncer/
     __init__.py         call_llm() dispatcher; _build_prompt, _parse_llm_text
   llmclient/            vendored copy of the llmclient library
     __init__.py         LLMClient class; LLMConfig; configure(); call dispatch
-    _config.py          configure(): app config_dir + queue_db redirection
+    _config.py          configure(): app config_dir, data_dir, log_level
     _keys.py            layered API key + URL resolution (config.yaml files)
     _queue.py           cooperative Ollama request queue
     _log.py             LLM call JSONL debug logging
@@ -148,8 +148,13 @@ resolves paths via symlink and works from any CWD without a venv.
 `bouncer/__main__.py` calls `llmclient.configure(config_dir=USER_CONFIG_DIR)`
 once at startup so API keys / URLs / `parallel_slots` resolve from
 `~/.config/bouncer/config.yaml` as an overlay on the global llmclient files.
-The queue DB is left at the llmclient default so bouncer shares Ollama slot
-management with other llmclient-based tools.
+`data_dir` and `log_level` are left at their defaults: llmclient's shared
+`~/.local/share/llmclient/` holds both the cooperative `queue.db` and the
+central `llmclient_log.jsonl`, so bouncer shares Ollama slot management — and a
+single call log — with other llmclient-based tools. At the default `errors`
+level, only non-success calls are logged there (inspect with
+`llmc --dir ~/.local/share/llmclient log`). This is separate from bouncer's own
+decision log and `llm_debug.jsonl`.
 
 To update: copy the upstream module files (`*.py` and `providers/*.py`) over
 `bouncer/llmclient/` and run the tests. Skip the upstream `cli/` package —
