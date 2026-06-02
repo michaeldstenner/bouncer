@@ -151,7 +151,6 @@ def call_llm(
         extra["num_ctx"] = llm_cfg["num_ctx"]
 
     _fail_fast_triggers = (
-        "timeout:queue_wait",
         "timeout:queue_stall",
         "timeout:first_token",
         "error:unreachable",
@@ -176,14 +175,14 @@ def call_llm(
         first_token_timeout=llm_cfg.get("first_token_timeout"),
         generation_timeout=llm_cfg.get("generation_timeout"),
         circuit_n=int(llm_cfg.get("circuit_n", 2)),
-        circuit_key="|".join((
-            "bouncer",
-            provider,
-            str(model),
-            str(llm_cfg.get("url", "")),
-        )),
         circuit_cooldown_s=float(llm_cfg.get("circuit_cooldown_s", 120.0)),
         circuit_triggers=circuit_triggers,
+        circuit_key=f"bouncer|{provider}|{model}|{llm_cfg.get('url', '')}",
+        circuit_mode=llm_cfg.get("circuit_mode", "count"),
+        grace_s=float(llm_cfg.get("grace_s", 0.0)),
+        deadline_s=llm_cfg.get("deadline_s"),
+        ps_probe=bool(llm_cfg.get("ps_probe", False)),
+        ps_url=llm_cfg.get("ps_url", ""),
         log_caller="bouncer",
         extra_params=extra,
     )

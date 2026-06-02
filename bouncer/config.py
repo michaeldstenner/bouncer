@@ -36,6 +36,10 @@ CONFIG_DEFAULTS: dict = {
         "generation_timeout": 30,
         "circuit_n":          2,
         "circuit_cooldown_s": 120,
+        "circuit_mode":       "futility",
+        "grace_s":            8,
+        "deadline_s":         90,
+        "ps_probe":           True,
     },
     "on_unsure":      "ask",
     "on_unavailable": "ask",
@@ -74,8 +78,12 @@ CONFIG_YAML_TEMPLATE = """\
 #  queue_timeout: 8              # max seconds to wait for an ollama slot
 #  first_token_timeout: 5        # max seconds until ollama starts responding
 #  generation_timeout: 30        # max seconds for full inference
-#  circuit_n: 2                  # trip after N consecutive queue/first-token failures
-#  circuit_cooldown_s: 120       # seconds to stay open; then one probe attempt
+#  circuit_n: 2                  # (count mode) trip after N consecutive failures
+#  circuit_cooldown_s: 120       # seconds open before probe attempt
+#  circuit_mode: futility        # futility | count (futility = leaky-LLR breaker)
+#  grace_s: 8                    # min wait before stall bail may fire
+#  deadline_s: 90                # pencils-down ceiling (null = no hard ceiling)
+#  ps_probe: true                # cheap /api/ps liveness probe (ollama only)
 #  api_key: ...                  # openai / anthropic (or use env var)
 #  extra_params:                 # optional provider-specific request params
 #    max_tokens: 1000
@@ -145,8 +153,12 @@ llm:
   queue_timeout: 8              # max seconds to wait for an ollama slot
   first_token_timeout: 5        # max seconds until ollama starts responding
   generation_timeout: 30        # max seconds for full inference
-  circuit_n: 2                  # trip after N consecutive queue/first-token failures
-  circuit_cooldown_s: 120       # seconds to stay open; then one probe attempt
+  circuit_n: 2                  # (count mode) trip after N consecutive failures
+  circuit_cooldown_s: 120       # seconds open before probe attempt
+  circuit_mode: futility        # futility | count (futility = leaky-LLR breaker)
+  grace_s: 8                    # min wait before stall bail may fire
+  deadline_s: 90                # pencils-down ceiling (null = no hard ceiling)
+  ps_probe: true                # cheap /api/ps liveness probe (ollama only)
   # api_key: ...                # openai / anthropic (or env var)
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
