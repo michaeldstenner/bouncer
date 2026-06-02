@@ -65,9 +65,10 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project -
   .bouncer/
     config.yaml        project config (committed)
     policy.md          project policy (committed)
-    config.local.yaml  local overrides (gitignored)
+    config.local.yaml  local config overrides (gitignored)
+    policy.local.md    local policy additions (gitignored)
     log.jsonl          project decision log (gitignored)
-    .gitignore         protects log + config.local.yaml
+    .gitignore         protects logs + config.local.yaml + policy.local.md
 ```
 
 ## Log format
