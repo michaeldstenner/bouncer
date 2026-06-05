@@ -215,7 +215,10 @@ Manual `~/.codex/hooks.json`:
 `bouncer init --harness=opencode` does the following:
 
 1. Copies `integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugin/bouncer.ts`
-2. Adds `"bouncer"` to the `plugin` list in `~/.config/opencode/opencode.json`
+2. Adds `"bouncer"` to the `plugin` list in `~/.config/opencode/opencode.jsonc`
+   if present, otherwise `~/.config/opencode/opencode.json`. If both files
+   exist, bouncer warns and leaves the config unchanged so you can merge them
+   intentionally.
 
 **Coverage:** opencode's native permission prompts are reviewed through the
 plugin event stream. The plugin also observes `tool.execute.before` so it can
@@ -239,7 +242,7 @@ classification takes longer, bouncer replies immediately when ready.
 }
 ```
 
-Manual `~/.config/opencode/opencode.json`:
+Manual `~/.config/opencode/opencode.jsonc` or `opencode.json`:
 
 ```json
 {

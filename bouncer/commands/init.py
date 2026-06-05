@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -211,7 +212,12 @@ def _install_codex_pretool():
 
 def _install_opencode():
     repo_plugin = Path(__file__).parent.parent.parent / "integrations" / "opencode" / "bouncer_plugin.ts"
-    plugins_dir = Path.home() / ".config" / "opencode" / "plugin"
+    opencode_dir = Path.home() / ".config" / "opencode"
+    config_path = _opencode_config_path(opencode_dir)
+    if config_path is None:
+        return
+
+    plugins_dir = opencode_dir / "plugin"
     plugins_dir.mkdir(parents=True, exist_ok=True)
 
     dst = plugins_dir / "bouncer.ts"
@@ -221,14 +227,57 @@ def _install_opencode():
         print(f"  {YELLOW}Warning:{RESET} plugin source not found at {repo_plugin}; skipping copy")
         return
 
-    oc_json = Path.home() / ".config" / "opencode" / "opencode.json"
-    cfg = json.loads(oc_json.read_text()) if oc_json.exists() else {}
+    cfg = _read_opencode_config(config_path)
     plugins = cfg.setdefault("plugin", [])
-    if "bouncer" not in plugins:
+    if "bouncer" in plugins:
+        changed = False
+    else:
         plugins.append("bouncer")
-    oc_json.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        changed = True
+    if changed:
+        config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     print(f"  {GREEN}Installed{RESET} {dst}")
-    print(f"  {GREEN}Patched{RESET}   {oc_json}")
+    action = "Patched" if changed else "Unchanged"
+    print(f"  {GREEN}{action}{RESET}   {config_path}")
+
+
+def _opencode_config_path(opencode_dir: Path) -> Path | None:
+    json_path = opencode_dir / "opencode.json"
+    jsonc_path = opencode_dir / "opencode.jsonc"
+    json_exists = json_path.exists()
+    jsonc_exists = jsonc_path.exists()
+    if json_exists and jsonc_exists:
+        print(
+            f"  {YELLOW}Warning:{RESET} both {json_path} and {jsonc_path} exist; "
+            "not patching opencode config. Remove or merge one file and retry."
+        )
+        return None
+    if jsonc_exists:
+        return jsonc_path
+    return json_path
+
+
+def _read_opencode_config(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".jsonc":
+        text = _strip_json_comments(text)
+    return json.loads(text)
+
+
+def _strip_json_comments(text: str) -> str:
+    # JSONC comments are allowed in opencode.jsonc; Python's json module does
+    # not support them. This conservative stripper leaves quoted strings intact
+    # and removes // line comments plus /* block comments */.
+    pattern = r'("(?:\\.|[^"\\])*")|(//[^\n\r]*|/\*.*?\*/)'
+
+    def repl(match: re.Match[str]) -> str:
+        if match.group(1) is not None:
+            return match.group(1)
+        return ""
+
+    return re.sub(pattern, repl, text, flags=re.DOTALL)
 
 
 def _install_shim():
@@ -366,17 +415,25 @@ def format_installed_harnesses() -> str:
     return ", ".join(names) if names else "(none)"
 
 
-def _install_targets(targets: list[str]) -> None:
-    """Install the given harnesses, skipping already-installed ones."""
+def _install_targets(targets: list[str], *, refresh: bool = False) -> None:
+    """Install the given harnesses.
+
+    In interactive / auto-detect flows we skip already-installed harnesses to
+    avoid surprising overwrites. In explicit `--harness=...` flows we refresh
+    the installer output so users can push updated hook/plugin versions.
+    """
     for name in targets:
         if name not in _INSTALLERS:
             print(f"{RED}Unknown harness:{RESET} {name!r}  "
                   f"(valid: {', '.join(_INSTALLERS)})")
             continue
         if _IS_INSTALLED[name]():
-            print(f"\n  {name}: already installed — skipping.")
-            continue
-        print(f"\n{BOLD}Wiring {name}{RESET}")
+            if not refresh:
+                print(f"\n  {name}: already installed — skipping.")
+                continue
+            print(f"\n{BOLD}Refreshing {name}{RESET}")
+        else:
+            print(f"\n{BOLD}Wiring {name}{RESET}")
         _INSTALLERS[name]()
 
 
@@ -409,7 +466,7 @@ def cmd_init(args):
         if not targets:
             print(f"{YELLOW}No supported AI harnesses detected.{RESET} "
                   "Pass --harness=<name> to wire one explicitly.")
-        _install_targets(targets)
+        _install_targets(targets, refresh=True)
 
     # ── next steps ────────────────────────────────────────────────────────────
     print()
@@ -461,7 +518,7 @@ def cmd_global_init(args):
         targets = _resolve_harness_targets(harness_arg)
         if not targets:
             print(f"\n{YELLOW}No supported AI harnesses detected.{RESET}")
-        _install_targets(targets)
+        _install_targets(targets, refresh=True)
 
     # ── next steps ────────────────────────────────────────────────────────────
     print()

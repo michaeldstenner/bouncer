@@ -24,9 +24,10 @@
 import { execFileSync } from "child_process"
 
 type OpencodeClient = {
-  permission: {
-    reply(input: { requestID: string; reply: "once" | "always" | "reject"; message?: string }): Promise<unknown>
-  }
+  postSessionIdPermissionsPermissionId(input: {
+    path: { id: string; permissionID: string }
+    body: { response: "once" | "always" | "reject" }
+  }): Promise<unknown>
 }
 
 type PluginInput = {
@@ -161,9 +162,17 @@ function classify(
 export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOptions) => {
   const configuredDelayMs = delayMs(options)
   const cwd = pluginInput.directory ?? process.cwd()
-  const reply = async (input: { requestID: string; reply: "once" | "reject"; message?: string }) => {
+  const reply = async (input: { sessionID: string; requestID: string; reply: "once" | "reject"; message?: string }) => {
     try {
-      await pluginInput.client.permission.reply(input)
+      await pluginInput.client.postSessionIdPermissionsPermissionId({
+        path: {
+          id: input.sessionID,
+          permissionID: input.requestID,
+        },
+        body: {
+          response: input.reply,
+        },
+      })
     } catch {
       // The user may answer before bouncer's delayed auto-reply. In that case
       // opencode has already removed the pending request, which is fine.
@@ -207,6 +216,7 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
 
       if (result.decision === "allow") {
         await reply({
+          sessionID: request.sessionID,
           requestID: request.id,
           reply: "once",
         })
@@ -214,6 +224,7 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
       }
 
       await reply({
+        sessionID: request.sessionID,
         requestID: request.id,
         reply: "reject",
         message: result.reason || "operation denied by policy",

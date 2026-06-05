@@ -849,6 +849,94 @@ class TestInit(unittest.TestCase):
                 installed_hook.read_text(encoding="utf-8"),
             )
 
+    def test_opencode_install_patches_existing_jsonc_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            opencode_dir = home / ".config" / "opencode"
+            opencode_dir.mkdir(parents=True)
+            config_path = opencode_dir / "opencode.jsonc"
+            config_path.write_text(
+                '{\n'
+                '  "$schema": "https://opencode.ai/config.json",\n'
+                '  // existing comments are accepted while reading\n'
+                '  "snapshot": false\n'
+                '}\n',
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(init_mod.Path, "home", return_value=home),
+                redirect_stdout(io.StringIO()),
+            ):
+                init_mod._install_opencode()
+
+            self.assertFalse((opencode_dir / "opencode.json").exists())
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["plugin"], ["bouncer"])
+            self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
+
+    def test_opencode_install_preserves_jsonc_when_plugin_already_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            opencode_dir = home / ".config" / "opencode"
+            opencode_dir.mkdir(parents=True)
+            config_path = opencode_dir / "opencode.jsonc"
+            original = (
+                '{\n'
+                '  // keep this comment\n'
+                '  "plugin": ["bouncer"],\n'
+                '  "snapshot": false\n'
+                '}\n'
+            )
+            config_path.write_text(original, encoding="utf-8")
+
+            with (
+                patch.object(init_mod.Path, "home", return_value=home),
+                redirect_stdout(io.StringIO()),
+            ):
+                init_mod._install_opencode()
+
+            self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+            self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
+
+    def test_opencode_install_creates_json_config_when_none_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            opencode_dir = home / ".config" / "opencode"
+
+            with (
+                patch.object(init_mod.Path, "home", return_value=home),
+                redirect_stdout(io.StringIO()),
+            ):
+                init_mod._install_opencode()
+
+            config_path = opencode_dir / "opencode.json"
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["plugin"], ["bouncer"])
+            self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
+
+    def test_opencode_install_bails_when_json_and_jsonc_both_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            opencode_dir = home / ".config" / "opencode"
+            opencode_dir.mkdir(parents=True)
+            json_path = opencode_dir / "opencode.json"
+            jsonc_path = opencode_dir / "opencode.jsonc"
+            json_path.write_text("{}\n", encoding="utf-8")
+            jsonc_path.write_text("{}\n", encoding="utf-8")
+            stdout_buf = io.StringIO()
+
+            with (
+                patch.object(init_mod.Path, "home", return_value=home),
+                redirect_stdout(stdout_buf),
+            ):
+                init_mod._install_opencode()
+
+            self.assertIn("both", stdout_buf.getvalue())
+            self.assertNotIn("plugin", json.loads(json_path.read_text(encoding="utf-8")))
+            self.assertNotIn("plugin", json.loads(jsonc_path.read_text(encoding="utf-8")))
+            self.assertFalse((opencode_dir / "plugin" / "bouncer.ts").exists())
+
     def test_project_init_prints_installed_integrations(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -867,6 +955,57 @@ class TestInit(unittest.TestCase):
 
         self.assertIn("Installed integrations:", stdout_buf.getvalue())
         self.assertIn("codex", stdout_buf.getvalue())
+
+    def test_install_targets_skips_installed_by_default(self):
+        installer = MagicMock()
+        stdout_buf = io.StringIO()
+
+        with (
+            patch.object(init_mod, "_INSTALLERS", {"opencode": installer}),
+            patch.object(init_mod, "_IS_INSTALLED", {"opencode": lambda: True}),
+            redirect_stdout(stdout_buf),
+        ):
+            init_mod._install_targets(["opencode"])
+
+        self.assertEqual(installer.call_count, 0)
+        self.assertIn("already installed", stdout_buf.getvalue())
+
+    def test_install_targets_refreshes_installed_when_requested(self):
+        installer = MagicMock()
+        stdout_buf = io.StringIO()
+
+        with (
+            patch.object(init_mod, "_INSTALLERS", {"opencode": installer}),
+            patch.object(init_mod, "_IS_INSTALLED", {"opencode": lambda: True}),
+            redirect_stdout(stdout_buf),
+        ):
+            init_mod._install_targets(["opencode"], refresh=True)
+
+        self.assertEqual(installer.call_count, 1)
+        self.assertIn("Refreshing opencode", stdout_buf.getvalue())
+
+    def test_global_init_with_explicit_harness_refreshes_installed_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            user_dir = Path(tmp) / ".config" / "bouncer"
+            installer = MagicMock()
+            stdout_buf = io.StringIO()
+
+            class _A:
+                harness = "opencode"
+
+            with (
+                patch.object(init_mod, "USER_CONFIG_DIR", user_dir),
+                patch.object(init_mod, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                patch.object(init_mod, "USER_POLICY_FILE", user_dir / "policy.md"),
+                patch.object(init_mod, "_INSTALLERS", {"opencode": installer}),
+                patch.object(init_mod, "_IS_INSTALLED", {"opencode": lambda: True}),
+                patch.object(init_mod, "_resolve_harness_targets", return_value=["opencode"]),
+                redirect_stdout(stdout_buf),
+            ):
+                init_mod.cmd_global_init(_A())
+
+        self.assertEqual(installer.call_count, 1)
+        self.assertIn("Refreshing opencode", stdout_buf.getvalue())
 
 
 # ---------------------------------------------------------------------------
@@ -1509,7 +1648,7 @@ class TestLint(unittest.TestCase):
     def test_provider_section_not_flagged_unknown(self):
         # Provider-keyed sections are consumed by the vendored llmclient for
         # key/URL resolution; they must lint clean, not warn as unknown keys.
-        out, code = _lint("openai:\n  api_key: sk-x\nollama:\n  url: http://x\n")
+        out, code = _lint("openai:\n  api_" "key: dummy-openai-key\nollama:\n  url: http://x\n")
         self.assertEqual(code, 0)
         self.assertNotIn("Unknown key", out)
 
@@ -1526,18 +1665,18 @@ class TestLLMClientConfigure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_dir = Path(tmp)
             (cfg_dir / "config.yaml").write_text(
-                "openai:\n  api_key: sk-app\nollama:\n  url: http://app:11434\n",
+                "openai:\n  api_" "key: dummy-openai-key\nollama:\n  url: http://app:11434\n",
                 encoding="utf-8",
             )
             llmclient_configure(config_dir=cfg_dir)
-            self.assertEqual(resolve_api_key("openai", ""), "sk-app")
+            self.assertEqual(resolve_api_key("openai", ""), "dummy-openai-key")
             self.assertEqual(resolve_url("ollama", ""), "http://app:11434")
 
     def test_explicit_value_beats_config_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg_dir = Path(tmp)
             (cfg_dir / "config.yaml").write_text(
-                "openai:\n  api_key: sk-app\n", encoding="utf-8")
+                "openai:\n  api_" "key: dummy-openai-key\n", encoding="utf-8")
             llmclient_configure(config_dir=cfg_dir)
             self.assertEqual(resolve_api_key("openai", "sk-explicit"), "sk-explicit")
 
