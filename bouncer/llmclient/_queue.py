@@ -13,8 +13,12 @@ same slots.  Within a model:
   4. Check no higher-priority eligible waiter for the same model.
   5. Atomically flip status → 'running'.
 
-Circuit breaker: tracks consecutive triggering failures per circuit key in
-the circuit_state table.  States derived from (tripped_at, probe_pid):
+Circuit breaker: tracks triggering failures per circuit_key in the
+circuit_state table.  circuit_key defaults to log_caller (per-caller
+breaker) but callers may set it to scope the breaker more narrowly,
+e.g. per (caller, provider, model, url).  caller is retained as a
+metadata column for diagnostics.  States derived from (tripped_at,
+probe_pid):
 
   tripped_at IS NULL                          → closed  (normal)
   tripped_at NOT NULL, cooldown live, no probe → open    (reject calls)
@@ -26,6 +30,7 @@ and per-model (key 'last_release_at:<model>') so stall detection for
 one model is not masked by completions from another.
 """
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -53,11 +58,13 @@ CREATE TABLE IF NOT EXISTS queue (
 _CREATE_CIRCUIT = """
 CREATE TABLE IF NOT EXISTS circuit_state (
     circuit_key     TEXT    PRIMARY KEY,
-    caller          TEXT    NOT NULL DEFAULT '',
+    caller          TEXT,
     consecutive_n   INTEGER NOT NULL DEFAULT 0,
     last_failure_at REAL,
     tripped_at      REAL,
-    probe_pid       INTEGER
+    probe_pid       INTEGER,
+    llr             REAL    NOT NULL DEFAULT 0.0,
+    llr_updated_at  REAL
 )
 """
 
@@ -69,6 +76,46 @@ CREATE TABLE IF NOT EXISTS queue_meta (
 """
 
 
+def _migrate_circuit_key(conn) -> None:
+    """Re-key circuit_state from caller (old PRIMARY KEY) to circuit_key.
+
+    Older DBs keyed breaker state on caller.  Rebuild the table keyed on
+    circuit_key (seeded from the old caller value) while retaining caller
+    as a metadata column.  Idempotent: skipped once circuit_key exists.
+    Runs inside an IMMEDIATE transaction and re-checks after locking, so a
+    racing process just no-ops.  Fails open on any error.
+    """
+    try:
+        cols = {r[1] for r in
+                conn.execute("PRAGMA table_info(circuit_state)").fetchall()}
+        if not cols or "circuit_key" in cols:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        # Re-check under the write lock — another process may have migrated.
+        cols = {r[1] for r in
+                conn.execute("PRAGMA table_info(circuit_state)").fetchall()}
+        if "circuit_key" in cols:
+            conn.execute("ROLLBACK")
+            return
+        llr_sel = ("llr, llr_updated_at" if "llr" in cols else "0.0, NULL")
+        conn.execute("ALTER TABLE circuit_state RENAME TO _circuit_state_old")
+        conn.execute(_CREATE_CIRCUIT)
+        conn.execute(
+            "INSERT INTO circuit_state "
+            "(circuit_key, caller, consecutive_n, last_failure_at, "
+            " tripped_at, probe_pid, llr, llr_updated_at) "
+            "SELECT caller, caller, consecutive_n, last_failure_at, "
+            f"tripped_at, probe_pid, {llr_sel} FROM _circuit_state_old"
+        )
+        conn.execute("DROP TABLE _circuit_state_old")
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+
+
 def _open() -> sqlite3.Connection:
     from ._config import get_db_path
     db_path = get_db_path()
@@ -78,7 +125,6 @@ def _open() -> sqlite3.Connection:
     conn.execute(_CREATE_QUEUE)
     conn.execute(_CREATE_CIRCUIT)
     conn.execute(_CREATE_META)
-    _migrate_circuit_state(conn)
     # Migrate existing DBs that predate the model column
     try:
         conn.execute(
@@ -86,29 +132,19 @@ def _open() -> sqlite3.Connection:
         )
     except Exception:
         pass
+    # Migrate circuit_state for futility-mode columns (added v0.7.0).
+    # Fresh DBs already have these from _CREATE_CIRCUIT; ignored if present.
+    for _col in (
+        "ALTER TABLE circuit_state ADD COLUMN llr REAL NOT NULL DEFAULT 0.0",
+        "ALTER TABLE circuit_state ADD COLUMN llr_updated_at REAL",
+    ):
+        try:
+            conn.execute(_col)
+        except Exception:
+            pass
+    # Re-key caller-PK DBs onto circuit_key (added v0.8.0).
+    _migrate_circuit_key(conn)
     return conn
-
-
-def _migrate_circuit_state(conn: sqlite3.Connection) -> None:
-    """Migrate pre-circuit_key DBs while preserving caller-wide state."""
-    columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(circuit_state)").fetchall()
-    }
-    if "circuit_key" in columns:
-        return
-
-    conn.execute("ALTER TABLE circuit_state RENAME TO circuit_state_old")
-    conn.execute(_CREATE_CIRCUIT)
-    conn.execute("""
-        INSERT OR IGNORE INTO circuit_state
-            (circuit_key, caller, consecutive_n, last_failure_at,
-             tripped_at, probe_pid)
-        SELECT
-            caller, caller, consecutive_n, last_failure_at,
-            tripped_at, probe_pid
-        FROM circuit_state_old
-    """)
-    conn.execute("DROP TABLE circuit_state_old")
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +263,8 @@ def _read_queue_state() -> list[dict]:
 def acquire(
     cfg,
     abort_event: threading.Event | None,
+    *,
+    grace_s: float = 0.0,
 ) -> tuple[int | None, float, str, list[dict] | None]:
     """Insert a queue row and wait until promoted.
 
@@ -234,6 +272,11 @@ def acquire(
     reason is "ok", "aborted", "queue_timeout", or "queue_stalled".
     queue_id is None when reason != "ok".
     queue_snapshot is populated on "queue_timeout" and "queue_stalled".
+
+    grace_s: minimum wait before a stall ("queue not advancing") bail may
+    fire.  Used by futility mode so a momentary lull right after submission
+    can't trigger an early bail.  The hard queue_timeout ceiling is
+    unaffected by grace.
     """
     from ._keys import get_parallel_slots
 
@@ -286,7 +329,8 @@ def acquire(
                             caller, model,
                         )
                         no_history_logged = True
-                elif (time.time() - last_rel) > stall_t:
+                elif (time.time() - last_rel) > stall_t \
+                        and (time.monotonic() - t0) >= grace_s:
                     snapshot = _read_queue_state()
                     _delete_row(row_id)
                     return None, time.monotonic() - t0, "queue_stalled", snapshot
@@ -366,6 +410,12 @@ def release(queue_id: int, model: str = "") -> None:
 # Circuit breaker
 # ---------------------------------------------------------------------------
 
+def _circuit_key(cfg) -> str:
+    """State-scoping key for the breaker: explicit circuit_key, else
+    log_caller.  Empty means the breaker is disabled."""
+    return getattr(cfg, "circuit_key", "") or cfg.log_caller or ""
+
+
 def circuit_check(cfg) -> str:
     """
     Returns "proceed", "open", or "probe".
@@ -374,32 +424,31 @@ def circuit_check(cfg) -> str:
     "probe"   — half-open, this process is the designated probe.
 
     Fails open (returns "proceed") on any DB error.
-    No-ops (returns "proceed") when circuit_n <= 0 or no circuit key exists.
+    No-ops (returns "proceed") when circuit_n <= 0 or log_caller is empty.
     """
-    caller = cfg.log_caller
-    circuit_key = _circuit_key(cfg)
-    if not circuit_key or cfg.circuit_n <= 0:
+    key = _circuit_key(cfg)
+    if not key or cfg.circuit_n <= 0:
         return "proceed"
+    caller = cfg.log_caller or ""
 
     now      = time.time()
     cooldown = cfg.circuit_cooldown_s
 
-    conn = None
+    conn = _open()
     try:
-        conn = _open()
         conn.execute("BEGIN IMMEDIATE")
 
         row = conn.execute(
             "SELECT consecutive_n, tripped_at, probe_pid "
             "FROM circuit_state WHERE circuit_key=?",
-            [circuit_key],
+            [key],
         ).fetchone()
 
         if row is None:
             conn.execute(
-                "INSERT INTO circuit_state "
-                "(circuit_key, caller, consecutive_n) VALUES (?, ?, 0)",
-                [circuit_key, caller or ""],
+                "INSERT INTO circuit_state (circuit_key, caller, "
+                "consecutive_n) VALUES (?, ?, 0)",
+                [key, caller],
             )
             conn.execute("COMMIT")
             return "proceed"
@@ -424,7 +473,7 @@ def circuit_check(cfg) -> str:
             # Crashed probe — clear it and fall through.
             conn.execute(
                 "UPDATE circuit_state SET probe_pid=NULL WHERE circuit_key=?",
-                [circuit_key],
+                [key],
             )
             probe_pid = None
 
@@ -432,7 +481,7 @@ def circuit_check(cfg) -> str:
         if (now - tripped_at) >= cooldown:
             conn.execute(
                 "UPDATE circuit_state SET probe_pid=? WHERE circuit_key=?",
-                [os.getpid(), circuit_key],
+                [os.getpid(), key],
             )
             conn.execute("COMMIT")
             return "probe"
@@ -442,14 +491,12 @@ def circuit_check(cfg) -> str:
 
     except Exception:
         try:
-            if conn is not None:
-                conn.execute("ROLLBACK")
+            conn.execute("ROLLBACK")
         except Exception:
             pass
         return "proceed"
     finally:
-        if conn is not None:
-            conn.close()
+        conn.close()
 
 
 def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
@@ -461,30 +508,29 @@ def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
                       if is_probe, re-trip and reset cooldown.
     non-triggering  → no state change (but clear probe_pid if is_probe).
     """
-    caller = cfg.log_caller
-    circuit_key = _circuit_key(cfg)
-    if not circuit_key or cfg.circuit_n <= 0:
+    key = _circuit_key(cfg)
+    if not key or cfg.circuit_n <= 0:
         return
+    caller = cfg.log_caller or ""
 
     triggers = set(cfg.circuit_triggers)
     now      = time.time()
 
-    conn = None
+    conn = _open()
     try:
-        conn = _open()
         conn.execute("BEGIN IMMEDIATE")
 
         row = conn.execute(
             "SELECT consecutive_n, tripped_at, probe_pid "
             "FROM circuit_state WHERE circuit_key=?",
-            [circuit_key],
+            [key],
         ).fetchone()
 
         if row is None:
             conn.execute(
-                "INSERT INTO circuit_state "
-                "(circuit_key, caller, consecutive_n) VALUES (?, ?, 0)",
-                [circuit_key, caller or ""],
+                "INSERT INTO circuit_state (circuit_key, caller, "
+                "consecutive_n) VALUES (?, ?, 0)",
+                [key, caller],
             )
             row = (0, None, None)
 
@@ -496,7 +542,7 @@ def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
                 "SET consecutive_n=0, last_failure_at=NULL, "
                 "    tripped_at=NULL, probe_pid=NULL "
                 "WHERE circuit_key=?",
-                [circuit_key],
+                [key],
             )
         elif outcome in triggers:
             new_n = consecutive_n + 1
@@ -507,7 +553,7 @@ def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
                     "SET consecutive_n=?, last_failure_at=?, "
                     "    tripped_at=?, probe_pid=NULL "
                     "WHERE circuit_key=?",
-                    [new_n, now, now, circuit_key],
+                    [new_n, now, now, key],
                 )
             else:
                 should_trip = (new_n >= cfg.circuit_n)
@@ -516,35 +562,253 @@ def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
                         "UPDATE circuit_state "
                         "SET consecutive_n=?, last_failure_at=?, tripped_at=? "
                         "WHERE circuit_key=?",
-                        [new_n, now, now, circuit_key],
+                        [new_n, now, now, key],
                     )
                 else:
                     conn.execute(
                         "UPDATE circuit_state "
                         "SET consecutive_n=?, last_failure_at=? "
                         "WHERE circuit_key=?",
-                        [new_n, now, circuit_key],
+                        [new_n, now, key],
                     )
         else:
             # Non-triggering outcome — still clear probe_pid if we were probing.
             if is_probe:
                 conn.execute(
                     "UPDATE circuit_state SET probe_pid=NULL WHERE circuit_key=?",
-                    [circuit_key],
+                    [key],
                 )
 
         conn.execute("COMMIT")
     except Exception:
         try:
-            if conn is not None:
-                conn.execute("ROLLBACK")
+            conn.execute("ROLLBACK")
         except Exception:
             pass
     finally:
-        if conn is not None:
-            conn.close()
+        conn.close()
 
 
-def _circuit_key(cfg) -> str:
-    """Return caller-compatible circuit scope unless explicitly overridden."""
-    return (getattr(cfg, "circuit_key", "") or cfg.log_caller or "").strip()
+# ---------------------------------------------------------------------------
+# Futility circuit breaker (circuit_mode == "futility")
+#
+# Replaces the consecutive-failure counter with a leaky log-likelihood-ratio
+# accumulator (Wald SPRT + forgetting factor).  Evidence weights and the
+# self-heal time constant come from a provider-specific FutilitySensor.
+# See docs/futility-circuit-breaker.md.
+# ---------------------------------------------------------------------------
+
+def _pid_alive(pid) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True
+
+
+def futility_check(cfg, sensor) -> str:
+    """Return "proceed", "open", or "probe" for futility mode.
+
+    "proceed" — circuit closed (or a cheap probe just re-closed it).
+    "open"    — circuit open, skip the call.
+    "probe"   — half-open with no cheap probe available; this process makes
+                the real probe call.
+
+    When cfg.ps_probe is set and the sensor offers a probe (e.g. Ollama's
+    /api/ps), the half-open check is resolved with that cheap probe instead
+    of stealing a real slot.  The network probe runs OUTSIDE the DB
+    transaction so the shared queue lock is never held across I/O.
+
+    Fails open ("proceed") on any DB error.  No-ops when circuit_mode is
+    not "futility" or log_caller is empty.
+    """
+    key = _circuit_key(cfg)
+    if not key or getattr(cfg, "circuit_mode", "count") != "futility":
+        return "proceed"
+    caller = cfg.log_caller or ""
+
+    now      = time.time()
+    cooldown = cfg.circuit_cooldown_s
+
+    conn = _open()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT tripped_at, probe_pid FROM circuit_state WHERE circuit_key=?",
+            [key],
+        ).fetchone()
+
+        if row is None:
+            conn.execute(
+                "INSERT INTO circuit_state (circuit_key, caller, "
+                "consecutive_n, llr, llr_updated_at) VALUES (?, ?, 0, 0.0, ?)",
+                [key, caller, now],
+            )
+            conn.execute("COMMIT")
+            return "proceed"
+
+        tripped_at, probe_pid = row
+
+        if tripped_at is None:
+            conn.execute("COMMIT")
+            return "proceed"
+
+        # Another process is already probing?
+        if probe_pid is not None:
+            if _pid_alive(probe_pid):
+                conn.execute("COMMIT")
+                return "open"
+            # Crashed probe — clear it and continue.
+            conn.execute(
+                "UPDATE circuit_state SET probe_pid=NULL WHERE circuit_key=?",
+                [key],
+            )
+
+        if (now - tripped_at) < cooldown:
+            conn.execute("COMMIT")
+            return "open"
+
+        # Half-open: claim the probe slot so no one else probes concurrently.
+        conn.execute(
+            "UPDATE circuit_state SET probe_pid=? WHERE circuit_key=?",
+            [os.getpid(), key],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        return "proceed"
+    finally:
+        conn.close()
+
+    # We hold the probe slot.  If a cheap probe exists, use it now (outside
+    # any transaction) and apply the result.  Otherwise let the caller make
+    # the real probe call.
+    if getattr(cfg, "ps_probe", False):
+        try:
+            pr = sensor.probe()
+        except Exception:
+            pr = None
+        if pr is not None:
+            conn = _open()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if pr.healthy:
+                    conn.execute(
+                        "UPDATE circuit_state SET llr=0.0, llr_updated_at=?, "
+                        "tripped_at=NULL, probe_pid=NULL WHERE circuit_key=?",
+                        [now, key],
+                    )
+                    conn.execute("COMMIT")
+                    return "proceed"
+                conn.execute(
+                    "UPDATE circuit_state SET tripped_at=?, probe_pid=NULL "
+                    "WHERE circuit_key=?",
+                    [now, key],
+                )
+                conn.execute("COMMIT")
+                return "open"
+            except Exception:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            finally:
+                conn.close()
+
+    return "probe"
+
+
+def futility_update(cfg, sensor, outcome: str, ctx, is_probe: bool) -> None:
+    """Fold one observed outcome into the leaky-LLR accumulator and update
+    the trip state.
+
+    S ← clamp( max(0, lambda*S + w(outcome)) ),  lambda = exp(-dt / tau_heal).
+
+    success  → S forced to 0, circuit closed.
+    permanent (auth / bad request) → S forced to the boundary (trip now).
+    A probe call that fails re-arms the cooldown; one that recovers closes.
+    """
+    key = _circuit_key(cfg)
+    if not key or getattr(cfg, "circuit_mode", "count") != "futility":
+        return
+    caller = cfg.log_caller or ""
+
+    try:
+        w = sensor.weight(outcome, ctx)
+    except Exception:
+        w = 0.0
+    permanent = bool(getattr(sensor, "is_permanent", lambda o: False)(outcome))
+    tau       = float(getattr(sensor, "tau_heal_s", 20.0))
+    boundary  = float(getattr(sensor, "trip_boundary", 4.0))
+    now       = time.time()
+
+    conn = _open()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT llr, llr_updated_at, tripped_at FROM circuit_state "
+            "WHERE circuit_key=?",
+            [key],
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO circuit_state (circuit_key, caller, "
+                "consecutive_n, llr, llr_updated_at) VALUES (?, ?, 0, 0.0, ?)",
+                [key, caller, now],
+            )
+            llr, llr_updated_at, tripped_at = 0.0, now, None
+        else:
+            llr, llr_updated_at, tripped_at = row
+            llr = float(llr or 0.0)
+
+        # Leak toward the prior since the last observation.
+        if tau > 0 and llr_updated_at is not None:
+            dt = max(0.0, now - float(llr_updated_at))
+            llr *= math.exp(-dt / tau)
+
+        if outcome == "success":
+            llr = 0.0
+        elif permanent:
+            llr = boundary
+        else:
+            llr = max(0.0, llr + w)
+            llr = min(llr, boundary * 2.0)
+
+        # Derive trip state from the accumulator.
+        if outcome == "success":
+            new_tripped = None
+        elif llr >= boundary:
+            # Trip, or re-arm the cooldown after a failed probe.
+            new_tripped = now if (tripped_at is None or is_probe) else tripped_at
+        else:
+            # Below boundary: a recovering probe closes; otherwise unchanged.
+            new_tripped = None if is_probe else tripped_at
+
+        clear_probe = is_probe or (new_tripped is None)
+        if clear_probe:
+            conn.execute(
+                "UPDATE circuit_state SET llr=?, llr_updated_at=?, "
+                "tripped_at=?, probe_pid=NULL WHERE circuit_key=?",
+                [llr, now, new_tripped, key],
+            )
+        else:
+            conn.execute(
+                "UPDATE circuit_state SET llr=?, llr_updated_at=?, "
+                "tripped_at=? WHERE circuit_key=?",
+                [llr, now, new_tripped, key],
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+    finally:
+        conn.close()

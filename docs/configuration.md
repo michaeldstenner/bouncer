@@ -40,10 +40,14 @@ llm:
   # generation_timeout: 30      # seconds for full response after first token
 
   # Circuit breaker — prevents hammering an unresponsive LLM
-  # circuit_n: 2                # consecutive failures before opening circuit
-  # circuit_cooldown_s: 60      # seconds before attempting recovery
-  # circuit_triggers:           # which outcomes count as failures
-  #   - timeout:queue_wait
+  # Two modes: "futility" (default, leaky-LLR) and "count" (consecutive-N).
+  # circuit_mode: futility       # futility | count
+  # circuit_cooldown_s: 120      # seconds open before probe attempt
+  # grace_s: 8                   # min wait before stall bail may fire
+  # deadline_s: 90               # pencils-down ceiling (null = no ceiling)
+  # ps_probe: true               # cheap /api/ps liveness probe (ollama only)
+  # circuit_n: 2                 # (count mode) failures before opening
+  # circuit_triggers:            # (count mode) which outcomes count
   #   - timeout:queue_stall
   #   - timeout:first_token
   #   - error:unreachable

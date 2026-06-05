@@ -455,10 +455,13 @@ def cmd_init(args):
         policy_target.write_text(POLICY_MD_TEMPLATE, encoding="utf-8")
         gitignore = bouncer_dir / ".gitignore"
         if not gitignore.exists():
-            gitignore.write_text("log.jsonl\nllm_debug.jsonl\nconfig.local.yaml\n", encoding="utf-8")
+            gitignore.write_text(
+                "log.jsonl\nllm_debug.jsonl\nconfig.local.yaml\npolicy.local.md\n",
+                encoding="utf-8",
+            )
         print(f"{GREEN}Created{RESET} {config_target}")
         print(f"{GREEN}Created{RESET} {policy_target}")
-        print(f"         {DIM}{gitignore}{RESET}  (protects logs + config.local.yaml)")
+        print(f"         {DIM}{gitignore}{RESET}  (protects logs + config.local.yaml + policy.local.md)")
 
     # ── harness wiring ────────────────────────────────────────────────────────
     if harness:
