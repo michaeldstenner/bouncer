@@ -30,16 +30,15 @@ class LLMConfig:
     retries:             int        = 0
     retry_delay:         int        = 15
     circuit_n:           int        = 0
+    # Scopes breaker state; empty falls back to log_caller.  Set e.g.
+    # "<caller>|<provider>|<model>|<url>" to scope per endpoint rather than
+    # globally per caller.  Applies to both circuit modes.
+    circuit_key:         str        = ""
     circuit_cooldown_s:  float      = 120.0
     circuit_triggers:    tuple      = (
         "timeout:first_token",
         "error:unreachable",
     )
-    # Scopes breaker state.  Empty → falls back to log_caller, so existing
-    # callers keep per-caller breakers.  Set it to e.g.
-    # "bouncer|<provider>|<model>|<url>" to scope the breaker per endpoint
-    # rather than globally per caller.  Applies to both circuit modes.
-    circuit_key:         str        = ""
     # Futility circuit breaker (opt-in; see docs/futility-circuit-breaker.md).
     # circuit_mode="count" (default) keeps the consecutive-failure counter
     # above.  "futility" uses the leaky-LLR breaker driven by grace_s /

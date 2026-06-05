@@ -93,6 +93,9 @@ def cmd_activity(args):
         return
 
     entries = entries[-width:]
+    if cwd_arg and not cfg.get("enabled", True):
+        _print_project_marker(cwd_path, as_format)
+        return
     entries.reverse()
     out = _render_activity(entries, as_format=as_format, cfg=cfg)
     if out:

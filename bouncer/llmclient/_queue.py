@@ -434,8 +434,9 @@ def circuit_check(cfg) -> str:
     now      = time.time()
     cooldown = cfg.circuit_cooldown_s
 
-    conn = _open()
+    conn = None
     try:
+        conn = _open()
         conn.execute("BEGIN IMMEDIATE")
 
         row = conn.execute(
@@ -491,12 +492,14 @@ def circuit_check(cfg) -> str:
 
     except Exception:
         try:
-            conn.execute("ROLLBACK")
+            if conn is not None:
+                conn.execute("ROLLBACK")
         except Exception:
             pass
         return "proceed"
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
@@ -516,8 +519,9 @@ def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
     triggers = set(cfg.circuit_triggers)
     now      = time.time()
 
-    conn = _open()
+    conn = None
     try:
+        conn = _open()
         conn.execute("BEGIN IMMEDIATE")
 
         row = conn.execute(
@@ -582,11 +586,13 @@ def circuit_record(cfg, outcome: str, is_probe: bool) -> None:
         conn.execute("COMMIT")
     except Exception:
         try:
-            conn.execute("ROLLBACK")
+            if conn is not None:
+                conn.execute("ROLLBACK")
         except Exception:
             pass
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -634,8 +640,9 @@ def futility_check(cfg, sensor) -> str:
     now      = time.time()
     cooldown = cfg.circuit_cooldown_s
 
-    conn = _open()
+    conn = None
     try:
+        conn = _open()
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT tripped_at, probe_pid FROM circuit_state WHERE circuit_key=?",
@@ -680,12 +687,14 @@ def futility_check(cfg, sensor) -> str:
         conn.execute("COMMIT")
     except Exception:
         try:
-            conn.execute("ROLLBACK")
+            if conn is not None:
+                conn.execute("ROLLBACK")
         except Exception:
             pass
         return "proceed"
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     # We hold the probe slot.  If a cheap probe exists, use it now (outside
     # any transaction) and apply the result.  Otherwise let the caller make
@@ -696,8 +705,9 @@ def futility_check(cfg, sensor) -> str:
         except Exception:
             pr = None
         if pr is not None:
-            conn = _open()
+            conn = None
             try:
+                conn = _open()
                 conn.execute("BEGIN IMMEDIATE")
                 if pr.healthy:
                     conn.execute(
@@ -716,11 +726,13 @@ def futility_check(cfg, sensor) -> str:
                 return "open"
             except Exception:
                 try:
-                    conn.execute("ROLLBACK")
+                    if conn is not None:
+                        conn.execute("ROLLBACK")
                 except Exception:
                     pass
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
 
     return "probe"
 
@@ -749,8 +761,9 @@ def futility_update(cfg, sensor, outcome: str, ctx, is_probe: bool) -> None:
     boundary  = float(getattr(sensor, "trip_boundary", 4.0))
     now       = time.time()
 
-    conn = _open()
+    conn = None
     try:
+        conn = _open()
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT llr, llr_updated_at, tripped_at FROM circuit_state "
@@ -807,8 +820,10 @@ def futility_update(cfg, sensor, outcome: str, ctx, is_probe: bool) -> None:
         conn.execute("COMMIT")
     except Exception:
         try:
-            conn.execute("ROLLBACK")
+            if conn is not None:
+                conn.execute("ROLLBACK")
         except Exception:
             pass
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
