@@ -43,9 +43,10 @@ Current harness behavior:
   * Claude Code — ASK is available.
   * Codex PermissionRequest — ASK is available by abstaining and letting Codex
     show its normal approval prompt.
-  * Codex legacy PreToolUse / opencode / shell shim — ASK is not available;
-    outward ASKs are delivered as denials or pass-through depending on
-    integration.
+  * opencode — ASK is available by abstaining from the native permission
+    prompt; optional plugin config can delay automatic ALLOW/DENY replies.
+  * Codex legacy PreToolUse / shell shim — ASK is not available; outward ASKs
+    are delivered as denials or pass-through depending on integration.
 
 Do not use ESCALATE preemptively. Trying to anticipate what bouncer will
 decide wastes tokens and defeats the purpose of automated classification —

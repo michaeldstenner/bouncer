@@ -156,8 +156,8 @@ reason. This is a retry mechanism — the agent should submit normally first and
 only escalate after a denial, not preemptively.
 
 `ESCALATE` is a request, not an override: bouncer still defers to the user.
-Harnesses that do not have ASK available (the shell shim and opencode, for
-instance) deliver the escalation outward as a denial instead.
+Harnesses that do not have ASK available (the shell shim, for instance)
+deliver the escalation outward as a denial instead.
 
 
 

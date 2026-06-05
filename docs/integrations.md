@@ -217,15 +217,27 @@ Manual `~/.codex/hooks.json`:
 1. Copies `integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugin/bouncer.ts`
 2. Adds `"bouncer"` to the `plugin` list in `~/.config/opencode/opencode.json`
 
-**Coverage:** opencode's `tool.execute.before` fires for all built-in tools
-(bash, read, edit, write, apply_patch) — broader than Codex's Bash-only scope.
-The plugin passes opencode's tool name through as-is; run `bouncer tools
---harness=opencode` for the observed list.
+**Coverage:** opencode's native permission prompts are reviewed through the
+plugin event stream. The plugin also observes `tool.execute.before` so it can
+attach full tool arguments to the later permission event when opencode includes
+the tool call ID. Run `bouncer tools --harness=opencode` for the observed list.
 
-**ASK availability:** opencode does not have ASK available. When bouncer's
-internal decision is ASK (from an UNSURE LLM verdict or `# ESCALATE:`), the
-plain-format hook delivers it outward as a deny with guidance to find another
-way or suggest a policy change.
+**ASK availability:** opencode ASK is available by abstaining from the native
+permission prompt. ALLOW and DENY decisions are answered through opencode's
+permission API; UNSURE, unavailable-with-ask, and `# ESCALATE:` outcomes leave
+the prompt for the user.
+
+**Reply delay:** by default, bouncer replies as soon as classification
+finishes. To leave a short window for the user to answer first, configure a
+plugin delay. The delay starts when opencode emits the permission request: if
+classification finishes before the delay, bouncer waits out the remainder; if
+classification takes longer, bouncer replies immediately when ready.
+
+```json
+{
+  "plugin": [["bouncer", { "replyDelayMs": 10000 }]]
+}
+```
 
 Manual `~/.config/opencode/opencode.json`:
 
