@@ -134,9 +134,16 @@ The practical distinction:
 - **Bouncer:** "Does this action match my policy for this project, using my
   chosen reviewer and feedback channels?"
 
-The two can overlap. When testing bouncer, leave the harness's own
-auto-approval off unless you are intentionally comparing both reviewers;
-otherwise you may see extra latency, token use, or confusing approval behavior.
+The two can overlap, and for **Claude Code auto-mode** we tested exactly how.
+bouncer's `PreToolUse` hook runs *upstream of* auto-mode and is authoritative:
+when bouncer returns ALLOW or DENY, auto-mode's classifier is never consulted;
+auto-mode only weighs in when bouncer abstains (UNSURE → ask). A practical
+consequence — since a bouncer ALLOW is authoritative, a permissive policy can
+pass actions auto-mode would otherwise block; they are not additive
+defense-in-depth on the allow side. The two compose well in practice: bouncer
+carries your project's specific, plain-English boundaries and anything it leaves
+ambiguous defers to auto-mode. Full pipeline, matrix, and guidance:
+[docs/auto-mode.md](docs/auto-mode.md).
 
 Bouncer's Codex integration is tested working in both the Codex CLI and the
 Codex GUI.
@@ -232,6 +239,9 @@ good place for personal norms ("never touch my dotfiles", "no force-push ever").
   system prompt.
 - [docs/integrations.md](docs/integrations.md) — per-harness install and
   manual setup (Claude Code, Codex, opencode, shell shim).
+- [docs/auto-mode.md](docs/auto-mode.md) — how bouncer composes with Claude
+  Code's auto-mode: the permission pipeline, precedence, and the full
+  interaction matrix.
 - [docs/operations.md](docs/operations.md) — command reference, file
   layout, log format, internals, running tests.
 
