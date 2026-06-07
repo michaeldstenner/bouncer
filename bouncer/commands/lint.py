@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from ..colors import RESET, BOLD, GREEN, RED, YELLOW, DIM
-from ..config import _find_bouncer_dir, load_yaml_config
+from ..config import _find_bouncer_dir, load_yaml_config, USER_CONFIG_FILE
 
 VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "policy_mode", "llm",
                                  "on_unsure", "on_unavailable", "log",
@@ -19,6 +19,11 @@ VALID_VERBOSITIES  = ("all", "deny_only", "off")
 def cmd_lint(args):
     if args.file:
         path = Path(args.file)
+    elif getattr(args, "user", False):
+        path = USER_CONFIG_FILE
+        if not path.exists():
+            print(f"{YELLOW}No global config found.{RESET} Run 'bouncer -g init' first.")
+            sys.exit(1)
     else:
         d = _find_bouncer_dir()
         if d is None or not (d / "config.yaml").exists():

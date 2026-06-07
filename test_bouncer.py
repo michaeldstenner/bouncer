@@ -1711,6 +1711,41 @@ class TestLint(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("Unknown key", out)
 
+    def test_global_flag_lints_user_config(self):
+        # `bouncer -g lint` validates the user config (no file arg, no project).
+        with tempfile.TemporaryDirectory() as tmp:
+            user_cfg = Path(tmp) / "config.yaml"
+            user_cfg.write_text("enabled: true\ntools: all\n", encoding="utf-8")
+            stdout_buf = io.StringIO()
+
+            class _A:
+                file = None
+                user = True
+
+            with patch("bouncer.commands.lint.USER_CONFIG_FILE", user_cfg), \
+                 redirect_stdout(stdout_buf):
+                try:
+                    cmd_lint(_A())
+                    code = 0
+                except SystemExit as e:
+                    code = e.code
+        self.assertEqual(code, 0)
+        self.assertIn(str(user_cfg), stdout_buf.getvalue())
+
+    def test_global_flag_missing_user_config_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "config.yaml"  # never created
+
+            class _A:
+                file = None
+                user = True
+
+            with patch("bouncer.commands.lint.USER_CONFIG_FILE", missing), \
+                 redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    cmd_lint(_A())
+        self.assertEqual(ctx.exception.code, 1)
+
 
 # ---------------------------------------------------------------------------
 # llmclient configure() wiring
