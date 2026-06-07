@@ -17,7 +17,7 @@ from .init import format_installed_harnesses
 
 def _print_config_summary(data: dict, prefix: str = "  ") -> None:
     enabled   = data.get("enabled", True)
-    tools     = data.get("tools", ["Bash"])
+    tools     = data.get("tools", "all")
     tools_str = "all" if tools == "all" else (", ".join(tools) if tools else "(none)")
     pm        = data.get("policy_mode", "append")
     llm       = data.get("llm", {})
@@ -99,7 +99,7 @@ def cmd_status(args):
         return
 
     enabled   = config.get("enabled", True)
-    tools     = config.get("tools", ["Bash"])
+    tools     = config.get("tools", "all")
     tools_str = "all" if tools == "all" else (", ".join(tools) if tools else "(none)")
     llm       = config.get("llm", {})
     model_str = f"{llm.get('provider', 'ollama')}/{llm.get('model', '?')}"

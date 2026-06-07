@@ -48,6 +48,25 @@ def _is_bouncer_diagnostic_command(command: str) -> bool:
     return index < len(parts) and parts[index] in _BOUNCER_DIAGNOSTIC_COMMANDS
 
 
+def _skip_reason(tool_name: str, tool_input: dict, config: dict) -> str | None:
+    """
+    Why bouncer should skip this call (no LLM, no decision), or None to classify.
+
+    Single source of truth for the config-derived skip conditions, shared by
+    get_classification (pure path) and run_classify (so it can bail before
+    logging a PENDING entry). The cwd-based project_has_bouncer gate is checked
+    by callers before the config is loaded.
+    """
+    if not config.get("enabled", True):
+        return "bouncer disabled in config"
+    tools = config.get("tools", "all")
+    if tools != "all" and tool_name.lower() not in [t.lower() for t in tools]:
+        return f"tool {tool_name!r} not in intercepted list"
+    if _is_bouncer_diagnostic_command(tool_input.get("command", "")):
+        return "bouncer diagnostic command"
+    return None
+
+
 def get_classification(
     tool_name: str,
     tool_input: dict,
@@ -68,19 +87,11 @@ def get_classification(
         return "SKIP", "no project config", None, None, None
 
     config = _merged_config(cwd_path)
-    if not config.get("enabled", True):
-        return "SKIP", "bouncer disabled in config", None, None, None
-
-    tools = config.get("tools", ["Bash"])
-    if tools != "all":
-        tools_lower = [t.lower() for t in tools]
-        if tool_name.lower() not in tools_lower:
-            return "SKIP", f"tool {tool_name!r} not in intercepted list", None, None, None
+    skip = _skip_reason(tool_name, tool_input, config)
+    if skip:
+        return "SKIP", skip, None, None, None
 
     command = tool_input.get("command", "")
-
-    if _is_bouncer_diagnostic_command(command):
-        return "SKIP", "bouncer diagnostic command", None, None, None
 
     if command.lstrip().startswith("# ESCALATE:"):
         first_line      = command.split("\n")[0]
@@ -128,8 +139,7 @@ def run_classify(
 
     # Fast early exit for projects with no bouncer config at all. Avoids
     # writing a stranded PENDING entry to the user log for every tool call
-    # in unrelated projects. The enabled / tools-filter SKIP checks are
-    # handled by get_classification below — single source of truth.
+    # in unrelated projects.
     if not project_has_bouncer(cwd_path):
         sys.exit(0)
 
@@ -137,6 +147,13 @@ def run_classify(
     proj_log       = project_log_file(cwd_path)
     activity_width = config.get("activity_width", 10)
     rid            = os.getpid()
+
+    # Bail on the config-derived SKIP conditions (disabled, tool not in the
+    # intercept list, bouncer's own diagnostic commands) BEFORE logging a
+    # PENDING entry — otherwise a non-intercepted call strands a PENDING with
+    # no resolving entry. Shares _skip_reason with get_classification.
+    if _skip_reason(tool_name, tool_input, config):
+        sys.exit(0)
 
     # ESCALATE bypasses the LLM, so we log a single entry (no PENDING).
     command = tool_input.get("command", "")

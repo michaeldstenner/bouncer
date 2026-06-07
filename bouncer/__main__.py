@@ -115,10 +115,14 @@ def main():
     p_lint = sub.add_parser("lint", help="validate config.yaml")
     p_lint.add_argument("file", nargs="?", help="file to lint (default: project config.yaml)")
 
-    p_config = sub.add_parser("config", help="open config.yaml in $EDITOR  (-e/-d: enable/disable)")
+    p_config = sub.add_parser("config", help="open config.yaml in $EDITOR  (-e/-d: enable/disable, -t/-a: tools)")
     p_config_tog = p_config.add_mutually_exclusive_group()
     p_config_tog.add_argument("-e", "--enable",  action="store_true", help="set enabled: true")
     p_config_tog.add_argument("-d", "--disable", action="store_true", help="set enabled: false")
+    p_config_tog.add_argument("-t", "--tools", metavar="LIST",
+                              help="set intercepted tools (comma-separated, e.g. bash,read)")
+    p_config_tog.add_argument("-a", "--all", dest="all_tools", action="store_true",
+                              help="intercept all tools (sets 'tools: all')")
     sub.add_parser("policy", help="open policy.md in $EDITOR")
 
     p_status = sub.add_parser("status", help="show bouncer status (use -v for full detail)")

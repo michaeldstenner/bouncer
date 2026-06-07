@@ -20,7 +20,7 @@ def cmd_check(args):
         print(f"{DIM}Bouncer disabled (enabled: false).{RESET}")
         return
 
-    tools = config.get("tools", ["Bash"])
+    tools = config.get("tools", "all")
     if tools != "all" and "bash" not in [t.lower() for t in tools]:
         print(f"{DIM}Bash not in intercepted tools {tools} — would pass through.{RESET}")
         return

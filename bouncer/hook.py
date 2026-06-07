@@ -21,7 +21,7 @@ def _join_reason(reason: str, hint: str) -> str:
 
 
 def _codex_system_message(decision: str, reason: str) -> str:
-    label = decision if decision in ("ALLOW", "DENY") else "ASK"
+    label = decision if decision in ("ALLOW", "DENY", "ABSTAIN") else "ASK"
     text = " ".join((reason or "").split())
     if len(text) > 160:
         text = text[:157].rstrip() + "..."
@@ -36,7 +36,12 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
     """
     Format a hook response.
     Returns (stdout, stderr, exit_code).
-    decision: ALLOW | DENY | ASK
+    decision: ALLOW | DENY | ASK | ABSTAIN
+
+    ABSTAIN means "no opinion — defer to the harness's own permission flow."
+    On Claude Code (json) it emits nothing (no permissionDecision). On Codex it
+    converges with ASK (no decision → Codex continues to its normal prompt). On
+    the bash shim (plain) there is nothing to defer to, so it allows.
     """
     stdout, stderr, exit_code = "", "", 0
     ask_available = _ask_available(fmt)
@@ -91,7 +96,14 @@ def format_hook_response(decision: str, reason: str, fmt: str = "json") -> tuple
         return stdout, stderr, exit_code
 
     # JSON (default — ASK-capable hookSpecificOutput protocol)
-    if decision == "DENY":
+    if decision == "ABSTAIN":
+        # Emit no permissionDecision at all: the hook expresses no opinion, so
+        # the harness falls back to its own permission flow (auto-mode
+        # classifier, allow-rules, or a normal user prompt) exactly as if
+        # bouncer had not run for this call. Distinct from ALLOW, which would
+        # override that flow.
+        exit_code = 0
+    elif decision == "DENY":
         stderr = f"{reason}\n{deny_hint}\n"
         exit_code = 2
     elif decision == "ASK":
@@ -132,13 +144,15 @@ def _emit_hook_response(decision: str, reason: str, fmt: str = "json") -> None:
 
 def resolve_fallback(action: str, reason: str) -> tuple[str, str]:
     """
-    Map a fallback action (allow|deny|ask) to a canonical decision
-    (ALLOW|DENY|ASK) and final reason. The harness-specific hint is
+    Map a fallback action (allow|deny|ask|abstain) to a canonical decision
+    (ALLOW|DENY|ASK|ABSTAIN) and final reason. The harness-specific hint is
     appended by format_hook_response, so this returns the bare reason.
     """
     if action == "allow":
         return "ALLOW", reason
     elif action == "deny":
         return "DENY", reason
+    elif action == "abstain":
+        return "ABSTAIN", reason
     else:  # ask (default)
         return "ASK", reason

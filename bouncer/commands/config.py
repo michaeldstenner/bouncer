@@ -33,6 +33,25 @@ def _set_enabled(path: Path, value: bool) -> None:
     print(f"bouncer {state}  ({path})")
 
 
+def _set_tools(path: Path, value) -> None:
+    """Rewrite the 'tools:' setting. value is "all" or a list of tool names."""
+    if value == "all":
+        block = "tools: all"
+        label = "all"
+    else:
+        block = "tools:\n" + "\n".join(f"  - {t}" for t in value)
+        label = ", ".join(value) if value else "(none)"
+    text = path.read_text(encoding="utf-8")
+    # Match the 'tools:' line (inline value or none) plus any indented list
+    # items that follow it, so we replace both the inline and block forms.
+    pattern = r"^tools:[^\n]*\n(?:[ \t]+-[^\n]*\n)*"
+    new_text, n = re.subn(pattern, block + "\n", text, flags=re.MULTILINE)
+    if n == 0:
+        new_text = block + "\n" + text
+    path.write_text(new_text, encoding="utf-8")
+    print(f"bouncer tools: {GREEN}{label}{RESET}  ({path})")
+
+
 def cmd_config(args):
     if args.user:
         USER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,6 +71,13 @@ def cmd_config(args):
         return
     if getattr(args, "disable", False):
         _set_enabled(path, False)
+        return
+    if getattr(args, "all_tools", False):
+        _set_tools(path, "all")
+        return
+    if getattr(args, "tools", None):
+        names = [t.strip() for t in args.tools.split(",") if t.strip()]
+        _set_tools(path, names)
         return
 
     editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "vi"))

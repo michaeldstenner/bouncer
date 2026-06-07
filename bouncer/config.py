@@ -12,7 +12,7 @@ PROJECT_DIR_NAME   = ".bouncer"
 
 CONFIG_DEFAULTS: dict = {
     "enabled": True,
-    "tools": ["Bash"],
+    "tools": "all",
     "policy_mode": "append",
     "activity_width": 10,
     "activity": {
@@ -57,9 +57,9 @@ CONFIG_YAML_TEMPLATE = """\
 # Enable or disable bouncer for this project.
 #enabled: true
 
-# Tools to intercept.
+# Tools to intercept (default: all).
 # NOTE: this REPLACES the user-level list entirely (no merging).
-# Use a list of tool names, or the string "all".
+# Use the string "all", or a list of tool names.
 #tools:
 #  - Bash
 
@@ -88,7 +88,13 @@ CONFIG_YAML_TEMPLATE = """\
 #  extra_params:                 # optional provider-specific request params
 #    max_tokens: 1000
 
-# Fallback behavior when LLM is uncertain or unreachable (ask | allow | deny)
+# Fallback when the LLM is uncertain (on_unsure) or unreachable (on_unavailable):
+#   ask      prompt the user (default)
+#   allow    let the call through
+#   deny     block the call
+#   abstain  no opinion — defer to the harness's own permission flow (e.g.
+#            Claude Code auto-mode, or its normal prompt). NOT the same as
+#            allow: risky calls still hit the harness's own gate.
 #on_unsure: ask
 #on_unavailable: ask
 
@@ -139,9 +145,10 @@ USER_CONFIG_YAML_TEMPLATE = """\
 
 enabled: true
 
-# Tools to intercept. Use a list of tool names, or the string "all".
-tools:
-  - Bash
+# Tools to intercept. Use the string "all", or a list of tool names.
+# (bouncer only ever sees calls the harness escalates for approval, so "all"
+#  does not mean classifying every read — just every call that needs a decision.)
+tools: all
 
 # LLM backend
 # provider: ollama | openai | openai_compatible | anthropic
@@ -163,7 +170,13 @@ llm:
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
 
-# Fallback behavior when LLM is uncertain or unreachable (ask | allow | deny)
+# Fallback when the LLM is uncertain (on_unsure) or unreachable (on_unavailable):
+#   ask      prompt the user (default)
+#   allow    let the call through
+#   deny     block the call
+#   abstain  no opinion — defer to the harness's own permission flow (e.g.
+#            Claude Code auto-mode, or its normal prompt). NOT the same as
+#            allow: risky calls still hit the harness's own gate.
 on_unsure: ask
 on_unavailable: ask
 

@@ -9,20 +9,34 @@ records how the two interact — established empirically against Claude Code
 
 ## The permission pipeline
 
-A tool call passes through three gates, in order:
+A tool call passes through these gates:
 
 ```
-model's own judgment  →  PreToolUse hook (bouncer)  →  auto-mode classifier
+model's own judgment  →  PreToolUse hook (bouncer)
+                             ├─ ALLOW   → runs
+                             ├─ DENY    → blocked
+                             ├─ ASK     → prompts you (auto-mode NOT consulted)
+                             └─ ABSTAIN → emits nothing → falls through ↓
+
+auto-mode classifier  →  handles abstains + tools bouncer doesn't intercept
 ```
 
 1. **Model judgment.** Claude may decline to emit a call at all (e.g. it
    refused a bare `rm -rf` of a home directory until given explicit context).
    This sits above everything and is **nondeterministic** — the same prompt
    ran in one session and was refused in another.
-2. **bouncer (the hook).** If bouncer returns an explicit `ALLOW` or `DENY`,
-   that *is* the permission decision for the call.
-3. **auto-mode classifier.** Only consulted when bouncer **abstains**
-   (`UNSURE` → ask, or the tool isn't in bouncer's intercept list).
+2. **bouncer (the hook).** Every bouncer verdict — `ALLOW`, `DENY`, *and*
+   `ASK` — is authoritative for the call it decides. An `ALLOW` or `DENY` is
+   the permission decision; an `ASK` (`on_unsure: ask`) emits
+   `permissionDecision: "ask"`, which **interrupts auto-mode and prompts you**,
+   surfacing bouncer's reason. bouncer does *not* hand ambiguous calls to
+   auto-mode — `ask` goes to the human, not to auto-mode's classifier.
+3. **auto-mode classifier.** Governs only calls bouncer does not decide — a tool
+   not in bouncer's intercept list, or one bouncer **abstains** on
+   (`on_unsure: abstain` / `on_unavailable: abstain`, which emit *no*
+   `permissionDecision`). It does **not** backstop a bouncer `ASK`, and note
+   `on_unsure: allow` does *not* defer here — it emits a real allow that
+   overrides auto-mode.
 
 ## Precedence: bouncer is authoritative
 
@@ -35,6 +49,12 @@ decided.
   command whose shape matches auto-mode's own block rules (tested with an
   explicitly-allowed `rm -rf` of a non-existent path — bouncer logged ALLOW and
   the command ran, with no auto-mode involvement).
+- **bouncer ASK** → auto-mode's hands-off flow **stops** and you get a normal
+  permission prompt carrying bouncer's reason; auto-mode does not auto-resolve
+  it (tested with a policy that returns `UNSURE` on an out-of-tree
+  `touch ~/NOTE` — Claude Code halted with `Hook PreToolUse:Bash requires
+  confirmation … Do you want to proceed? 1. Yes / 2. No`, and the file was not
+  created until a human chose).
 
 ## The interaction matrix
 
@@ -42,12 +62,20 @@ decided.
 |---|---|---|
 | **DENY** | *not consulted* | Blocked by bouncer |
 | **ALLOW** | *not consulted* | Runs — even if auto-mode would have blocked it |
-| **UNSURE → ask** | auto-approves | Runs (no prompt) |
-| **UNSURE → ask** | blocks | Blocked by auto-mode |
+| **UNSURE → ask** | *not consulted* | **Prompts you** — auto-mode autonomy pauses |
+| **UNSURE → abstain** | **decides** | Auto-mode classifies it (`Allowed by auto mode classifier`) |
 
-The first two rows are confirmed. The `UNSURE → ask` handoff is not yet pinned
-down empirically; auto-mode is by design somewhat more permissive than a tuned
-bouncer policy, so deferred-ambiguous calls are expected to mostly auto-approve.
+All four rows are confirmed empirically (Claude Code 2.1.167–2.1.168). The
+earlier expectation that a `UNSURE → ask` would fall through to auto-mode and
+"mostly auto-approve" was **wrong**: a hook `ask` is a real user prompt that
+breaks auto-mode's no-interruption flow. To keep auto-mode running without
+prompts, either bouncer reaches a confident `ALLOW`/`DENY`, or it **abstains**
+(`on_unsure: abstain`) — only then does the call fall through to auto-mode.
+`UNSURE → ask` stops the run and asks you.
+
+(The `abstain` row was confirmed by re-running the same `touch ~/NOTE` trigger
+with `on_unsure: abstain`: bouncer logged `UNSURE`, emitted no decision, and the
+command ran with no prompt — auto-mode auto-approved it.)
 
 ## What this means in practice
 
@@ -59,17 +87,26 @@ where bouncer decides, bouncer's judgment replaces auto-mode's.
 
 Pick the composition you want:
 
-- **Want auto-mode's catastrophic-action floor to stay in force?** Keep
-  bouncer's ALLOW set conservative and let genuinely ambiguous calls fall
-  through (`UNSURE` → ask) so auto-mode still gets to weigh in.
+- **Want auto-mode's catastrophic-action floor to stay in force?** Leave those
+  tools *out* of bouncer's intercept list (or use `on_unsure: allow`), so the
+  calls reach auto-mode instead of bouncer. A bouncer `UNSURE → ask` will **not**
+  defer to auto-mode — it stops and asks you.
 - **Want bouncer fully in charge?** A confident, specific policy means bouncer
   decides most calls and auto-mode rarely matters.
+- **Want unattended auto-mode runs?** `on_unsure: ask` (the default) will pause
+  the run for a human on any `UNSURE`. Set **`on_unsure: abstain`** (and
+  **`on_unavailable: abstain`** so a flaky LLM backend doesn't stall the run):
+  bouncer then emits no decision on those calls and hands them straight to
+  auto-mode's classifier, instead of nagging you or guessing `allow`/`deny`.
+  bouncer still enforces its confident `ALLOW`/`DENY` verdicts; only the
+  ambiguous and unavailable cases defer.
 
 The roles are complementary: bouncer provides **fine-grained, natural-language,
 per-project boundaries** (with a local/private model, cross-harness, fully
 logged); auto-mode provides a generic, zero-config floor plus a keep-going
 nudge. Running them together works well — bouncer encodes your project's
-specific rules, and anything it leaves ambiguous defers to auto-mode.
+specific rules; what it confidently decides it owns, what it leaves `UNSURE`
+comes back to you, and only tools it never intercepts fall through to auto-mode.
 
 ## How this was determined
 

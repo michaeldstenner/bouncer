@@ -12,7 +12,7 @@ VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "policy_mode", "llm",
                                  "openai", "openai_compatible", "anthropic",
                                  "ollama"})
 VALID_POLICY_MODES = ("append", "replace")
-VALID_ACTIONS      = ("ask", "allow", "deny")
+VALID_ACTIONS      = ("ask", "allow", "deny", "abstain")
 VALID_VERBOSITIES  = ("all", "deny_only", "off")
 
 
@@ -43,7 +43,7 @@ def cmd_lint(args):
     enabled = data.get("enabled", True)
     print(f"  enabled:       {GREEN if enabled else DIM}{enabled}{RESET}")
 
-    tools = data.get("tools", ["Bash"])
+    tools = data.get("tools", "all")
     if tools == "all":
         print(f"  tools:         {YELLOW}all{RESET}")
     elif isinstance(tools, list):

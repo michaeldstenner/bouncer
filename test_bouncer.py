@@ -257,7 +257,7 @@ class TestConfigLoading(unittest.TestCase):
         self.assertTrue(config["enabled"])
         self.assertEqual(config["on_unsure"], "ask")
         self.assertEqual(config["on_unavailable"], "ask")
-        self.assertEqual(config["tools"], ["Bash"])
+        self.assertEqual(config["tools"], "all")
         self.assertNotIn("model", config["llm"])  # no default; must be set in user config
 
     def test_merged_config_project_overrides_default(self):
@@ -1299,6 +1299,53 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
 
+    def test_unsure_on_unsure_abstain_emits_nothing(self):
+        # abstain → no permissionDecision at all, so Claude Code falls back to
+        # its own permission flow (auto-mode / normal prompt) as if bouncer had
+        # not run. Distinct from allow, which would carry a permissionDecision.
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG + "on_unsure: abstain\n",
+            call_llm_result=("UNSURE", "unclear", None, None),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
+
+    def test_abstain_codex_permission_omits_decision(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG + "on_unsure: abstain\n",
+            call_llm_result=("UNSURE", "unclear", None, None),
+            fmt="codex-permission",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+        data = json.loads(out)
+        self.assertEqual(data["systemMessage"], "bouncer: ABSTAIN - LLM unsure: unclear")
+        self.assertNotIn("hookSpecificOutput", data)
+
+    def test_abstain_codex_pretool_is_silent(self):
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG + "on_unsure: abstain\n",
+            call_llm_result=("UNSURE", "unclear", None, None),
+            fmt="codex-pretool",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
+
+    def test_abstain_plain_allows_no_gate_to_defer_to(self):
+        out, _, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG + "on_unsure: abstain\n",
+            call_llm_result=("UNSURE", "unclear", None, None),
+            fmt="plain",
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "allow\n")
+
     def test_unavailable_default_asks_human(self):
         out, _, code = _classify(
             self._hook(),
@@ -1334,6 +1381,18 @@ class TestClassify(unittest.TestCase):
             call_llm_result=(None, "Ollama unreachable", None, None),
         )
         self.assertEqual(code, 2)
+
+    def test_unavailable_on_unavailable_abstain_emits_nothing(self):
+        # The motivating case: when the LLM backend is down, defer to the
+        # harness instead of nagging the user — keeps auto-mode runs unattended.
+        out, err, code = _classify(
+            self._hook(),
+            config_yaml=_BASIC_CONFIG + "on_unavailable: abstain\n",
+            call_llm_result=(None, "Ollama unreachable", None, None),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "")
 
     def test_llm_error_default_asks_human(self):
         out, _, code = _classify(
@@ -1952,6 +2011,95 @@ class TestOpenAIProvider(unittest.TestCase):
             _extract_response_text(body)
 
 
+class TestSkipReason(unittest.TestCase):
+    def test_skip_reason_cases(self):
+        from bouncer.classify import _skip_reason
+        # classify: enabled, tool intercepted, not a diagnostic
+        self.assertIsNone(_skip_reason("Bash", {"command": "ls"},
+                                       {"enabled": True, "tools": "all"}))
+        self.assertIsNone(_skip_reason("Write", {},
+                                       {"enabled": True, "tools": "all"}))
+        # tool not in an explicit list
+        self.assertEqual(
+            _skip_reason("Write", {}, {"enabled": True, "tools": ["Bash"]}),
+            "tool 'Write' not in intercepted list",
+        )
+        # disabled
+        self.assertEqual(
+            _skip_reason("Bash", {}, {"enabled": False, "tools": "all"}),
+            "bouncer disabled in config",
+        )
+        # bouncer's own diagnostic command
+        self.assertIn(
+            "diagnostic",
+            _skip_reason("Bash", {"command": "bouncer status"},
+                         {"enabled": True, "tools": "all"}),
+        )
+
+    def test_skipped_tool_does_not_strand_pending(self):
+        # Regression: a non-intercepted tool must not write a PENDING entry to
+        # the project log (and must not call the LLM).
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_dir = tmp_path / "user"
+            user_dir.mkdir()
+            _make_bouncer_dir(tmp_path, "enabled: true\ntools:\n  - Bash\n")
+            full_input = {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/x", "content": "y"},
+                "cwd": str(tmp_path),
+                "session_id": "s",
+            }
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
+                patch.object(cfg, "USER_LOG_FILE",    user_dir / "log.jsonl"),
+                patch.object(classify_mod, "call_llm") as mock_llm,
+                patch("sys.stdin", io.StringIO(json.dumps(full_input))),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(io.StringIO()),
+            ):
+                class _A:
+                    hook = True
+                    format = "json"
+                try:
+                    cmd_classify(_A())
+                except SystemExit:
+                    pass
+                proj_log = tmp_path / ".bouncer" / "log.jsonl"
+                contents = proj_log.read_text() if proj_log.exists() else ""
+            self.assertNotIn("PENDING", contents)
+            mock_llm.assert_not_called()
+
+
+class TestConfigSetTools(unittest.TestCase):
+    def test_set_tools_replaces_list_and_inline_without_clobbering(self):
+        from bouncer.commands.config import _set_tools
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "config.yaml"
+            p.write_text(
+                "enabled: true\ntools:\n  - Bash\n  - Write\n\nllm:\n  provider: ollama\n",
+                encoding="utf-8",
+            )
+            _set_tools(p, "all")
+            t = p.read_text()
+            self.assertIn("tools: all", t)
+            self.assertNotIn("- Bash", t)
+            self.assertIn("provider: ollama", t)  # rest of file intact
+
+            _set_tools(p, ["bash", "read"])
+            t2 = p.read_text()
+            self.assertIn("tools:\n  - bash\n  - read", t2)
+            self.assertNotIn("tools: all", t2)
+            self.assertIn("provider: ollama", t2)
+
+    def test_set_tools_prepends_when_key_absent(self):
+        from bouncer.commands.config import _set_tools
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "config.yaml"
+            p.write_text("enabled: true\n", encoding="utf-8")
+            _set_tools(p, "all")
+            self.assertIn("tools: all", p.read_text())
 
 
 if __name__ == "__main__":
