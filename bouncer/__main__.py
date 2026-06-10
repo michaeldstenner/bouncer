@@ -73,6 +73,45 @@ project by location (where it may read/write), action (what it may do), and
 association (what the targets belong to — e.g. its mail config, or its launchd
 service). Keep it short.
 
+Policy is plain prose fed to an LLM. Bouncer's strength is judgment: describe
+intent, scope, and expected effects so the classifier can decide whether a
+specific tool call fits the approved work. Do not try to enumerate every
+allowed path, command, or flag unless the detail is an example that clarifies
+intent.
+
+Remember what the bouncer LLM sees: only bouncer's small system prompt, the
+assembled policy, and the current tool call. It is stateless and does not know
+the chat history, your plan, files you inspected, or broader project context.
+The policy must carry enough project intent for a fresh classifier call.
+
+A useful policy shape is:
+
+    <brief description of the project to inform intent assessment>
+
+    The agent is permitted to:
+    - read data from these areas or systems for these purposes
+    - affect/modify files in these areas as part of these workflows
+    - configure, start, stop, or inspect these services when doing this work
+
+    The agent is not permitted to:
+    - affect data, files, services, credentials, or accounts outside that scope
+    - perform irreversible, production, or external actions without approval
+
+Good policy names boundaries and intent:
+  "This project manages the user's shell environment. The agent may read and
+   update shell/editor configuration under the user's dotfile and XDG config
+   areas when implementing environment changes, and may run local shell startup
+   checks to verify them. It must not modify unrelated application data or
+   system-wide configuration."
+
+Poor policy is a brittle command allowlist:
+  "Allow rm, allow ~/.zshrc, allow pip install"
+
+When suggesting policy, include concrete examples as examples, not as the whole
+rule. Prefer categories such as "may read test fixtures", "may modify generated
+build artifacts", "may restart the local development database", or "must not
+touch production AWS resources" over long lists of individual commands.
+
 Two common misses:
   * Bless the ordinary. Say the agent may read anywhere and create/edit/move/
     delete within its own tree. Reads are rarely the risk — don't make the
@@ -85,9 +124,15 @@ Two common misses:
 Reserve caution for effects: deletes outside your tree, system/other-project
 changes, force-push, sending data out.
 
-To propose a change, tell the user what you'd add and why, then ask if they'd
-like you to append it to .bouncer/policy.md. Do not edit bouncer config or
-policy files directly — the agent cannot set its own permission scope.
+Suggest policy additions without a lot of back-and-forth when the user asks for
+policy suggestions, or when a requested operation is clearly within the user's
+intent but outside the current policy. Give a short rationale and a paste-ready
+markdown block the user can apply.
+
+Do not edit bouncer config or policy files directly. Bouncer rejects agent
+attempts to set their own permission scope. The user must make policy changes
+themselves, for example by running `bouncer policy` and pasting the suggested
+text.
 
 ── User-level policy ────────────────────────────────────────────────────────
 ~/.config/bouncer/policy.md applies across all projects. Project-level policy
