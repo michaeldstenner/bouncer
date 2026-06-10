@@ -38,6 +38,8 @@ retry the exact same command with an ESCALATE comment explaining why:
     rm -rf dist/ build/
 
 Bouncer skips the LLM and forwards the request to the user for a decision.
+This is enforced: an ESCALATE for a command you have not already submitted
+normally is rejected. Run the command first; escalate only if it is denied.
 
 Current harness behavior:
   * Claude Code — ASK is available.

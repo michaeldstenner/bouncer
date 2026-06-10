@@ -8,6 +8,7 @@ from pathlib import Path
 from .config import _merged_config, project_has_bouncer, project_log_file
 from .log import log_decision
 from .activity import _update_activity
+from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix
 from .hook import _emit_hook_response, resolve_fallback
 from .notify import notify_decision
 from .providers import call_llm
@@ -161,6 +162,37 @@ def run_classify(
         decision, reason, action, _, _snap = get_classification(tool_name, tool_input, cwd)
         if decision == "SKIP":
             sys.exit(0)
+
+        # Gate: only honor the escalation if the underlying command was
+        # actually attempted (bare, without the prefix) recently this session.
+        # Curbs agents that pre-emptively escalate commands they never tried.
+        if config.get("escalation_requires_attempt", True):
+            underlying = strip_escalate_prefix(command)
+            ttl = config.get("escalation_attempt_ttl", 300)
+            if not was_attempted(underlying, session_id, ttl):
+                reject = (
+                    "This command hasn't been attempted yet. Run it directly "
+                    "(without the `# ESCALATE:` prefix) first; escalate only "
+                    "if that attempt is denied."
+                )
+                log_decision(tool_name, tool_input, cwd, "DENY", reject,
+                             config, proj_log)
+                _update_activity(tool_name, "DENY", session_id, activity_width)
+                notify_decision(
+                    cfg=config,
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    cwd=cwd,
+                    session_id=session_id,
+                    decision="DENY",
+                    action="DENY",
+                    reason=reject,
+                    request_id=None,
+                    proj_log=proj_log,
+                )
+                _emit_hook_response("DENY", reject, fmt)
+                return
+
         log_decision(tool_name, tool_input, cwd, "ESCALATE", reason,
                      config, proj_log)
         _update_activity(tool_name, "ESCALATE", session_id, activity_width)
@@ -199,6 +231,10 @@ def run_classify(
                  elapsed_s=elapsed, prompt_chars=prompt_chars,
                  queue_snapshot=snap)
     _update_activity(tool_name, decision, session_id, activity_width)
+    # Record this bare attempt so a later `# ESCALATE:` of the same command is
+    # recognized as a genuine retry rather than a pre-emptive escalation.
+    if config.get("escalation_requires_attempt", True):
+        record_attempt(command, session_id)
     notify_decision(
         cfg=config,
         tool_name=tool_name,

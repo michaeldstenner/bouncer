@@ -6,6 +6,7 @@ import io
 import json
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import bouncer.config as cfg
 import bouncer.classify as classify_mod
+import bouncer.escalation_cache as escalation_mod
 import bouncer.commands.init as init_mod
 import bouncer.notify as notify_mod
 import bouncer.providers as providers_mod
@@ -61,15 +63,21 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 
 
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
-              call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json"):
+              call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json",
+              escalation_dir=None):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
+
+    escalation_dir: where the escalation-attempt cache lives. Defaults to a
+    fresh dir under the per-call temp (so calls are isolated and real $HOME is
+    never touched); pass a shared path to exercise attempt-then-escalate flows.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         user_dir = tmp_path / "user"
         user_dir.mkdir()
+        esc_dir = Path(escalation_dir) if escalation_dir else tmp_path / "escalation"
 
         if config_yaml is not None or policy_md is not None:
             _make_bouncer_dir(tmp_path, config_yaml, policy_md)
@@ -89,6 +97,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
             patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
             patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
             patch.object(cfg, "USER_LOG_FILE",    user_dir / "log.jsonl"),
+            patch.object(escalation_mod, "ESCALATION_DIR", esc_dir),
             call_llm_patch,
             patch("sys.stdin", io.StringIO(json.dumps(full_input))),
             redirect_stdout(stdout_buf),
@@ -1125,6 +1134,7 @@ class TestExtractCommand(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 _BASIC_CONFIG = "enabled: true\ntools:\n  - Bash\n"
+_NO_GATE_CONFIG = _BASIC_CONFIG + "escalation_requires_attempt: false\n"
 
 
 class TestClassify(unittest.TestCase):
@@ -1472,7 +1482,7 @@ class TestClassify(unittest.TestCase):
     def test_escalate_prefix_produces_ask(self):
         out, _, code = _classify(
             self._hook(command="# ESCALATE: needed for deploy\nrm -rf dist/"),
-            config_yaml=_BASIC_CONFIG,
+            config_yaml=_NO_GATE_CONFIG,
             call_llm_result=("DENY", "should not be called", None, None),
         )
         self.assertEqual(code, 0)
@@ -1511,7 +1521,7 @@ class TestClassify(unittest.TestCase):
     def test_escalate_reason_in_ask_message(self):
         out, _, _ = _classify(
             self._hook(command="# ESCALATE: deploy step\nrm -rf dist/"),
-            config_yaml=_BASIC_CONFIG,
+            config_yaml=_NO_GATE_CONFIG,
         )
         reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
         self.assertIn("deploy step", reason)
@@ -1519,7 +1529,7 @@ class TestClassify(unittest.TestCase):
     def test_escalate_plain_denies_when_ask_not_available(self):
         out, _, code = _classify(
             self._hook(command="# ESCALATE: deploy step\nrm -rf dist/"),
-            config_yaml=_BASIC_CONFIG,
+            config_yaml=_NO_GATE_CONFIG,
             fmt="plain",
         )
         self.assertEqual(code, 2)
@@ -1529,7 +1539,7 @@ class TestClassify(unittest.TestCase):
     def test_escalate_codex_permission_abstains_so_codex_asks(self):
         out, err, code = _classify(
             self._hook(command="# ESCALATE: deploy step\nrm -rf dist/"),
-            config_yaml=_BASIC_CONFIG,
+            config_yaml=_NO_GATE_CONFIG,
             fmt="codex-permission",
         )
         self.assertEqual(code, 0)
@@ -1540,6 +1550,73 @@ class TestClassify(unittest.TestCase):
         )
         self.assertNotIn("hookSpecificOutput", data)
         self.assertEqual(err, "")
+
+    def test_escalate_denied_when_not_attempted(self):
+        # Default config gates escalation: a command never tried first is
+        # rejected rather than escalated.
+        out, err, code = _classify(
+            self._hook(command="# ESCALATE: deploy\nrm -rf dist/"),
+            config_yaml=_BASIC_CONFIG,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("hasn't been attempted", err)
+
+    def test_escalate_denied_when_only_other_command_attempted(self):
+        with tempfile.TemporaryDirectory() as shared:
+            _classify(
+                self._hook(command="ls"),
+                config_yaml=_BASIC_CONFIG,
+                call_llm_result=("ALLOW", "ok", None, None),
+                escalation_dir=shared,
+            )
+            out, err, code = _classify(
+                self._hook(command="# ESCALATE: deploy\nrm -rf dist/"),
+                config_yaml=_BASIC_CONFIG,
+                escalation_dir=shared,
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("hasn't been attempted", err)
+
+    def test_escalate_honored_after_bare_attempt(self):
+        with tempfile.TemporaryDirectory() as shared:
+            # 1) agent runs the bare command (denied by policy)
+            _classify(
+                self._hook(command="rm -rf dist/"),
+                config_yaml=_BASIC_CONFIG,
+                call_llm_result=("DENY", "destructive", None, None),
+                escalation_dir=shared,
+            )
+            # 2) agent escalates the same command -> now honored as ASK
+            out, _, code = _classify(
+                self._hook(command="# ESCALATE: needed for deploy\nrm -rf dist/"),
+                config_yaml=_BASIC_CONFIG,
+                escalation_dir=shared,
+            )
+            self.assertEqual(code, 0)
+            data = json.loads(out)
+            self.assertEqual(
+                data["hookSpecificOutput"]["permissionDecision"], "ask"
+            )
+
+    def test_escalate_honored_despite_whitespace_difference(self):
+        with tempfile.TemporaryDirectory() as shared:
+            _classify(
+                self._hook(command="rm    -rf\tdist/"),
+                config_yaml=_BASIC_CONFIG,
+                call_llm_result=("DENY", "destructive", None, None),
+                escalation_dir=shared,
+            )
+            out, _, code = _classify(
+                self._hook(command="# ESCALATE: deploy\nrm -rf dist/"),
+                config_yaml=_BASIC_CONFIG,
+                escalation_dir=shared,
+            )
+            self.assertEqual(code, 0)
+            data = json.loads(out)
+            self.assertEqual(
+                data["hookSpecificOutput"]["permissionDecision"], "ask"
+            )
 
     def test_log_decision_records_elapsed_and_prompt_chars(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2135,6 +2212,69 @@ class TestConfigSetTools(unittest.TestCase):
             p.write_text("enabled: true\n", encoding="utf-8")
             _set_tools(p, "all")
             self.assertIn("tools: all", p.read_text())
+
+
+class TestEscalationCache(unittest.TestCase):
+    def test_normalize_collapses_whitespace(self):
+        self.assertEqual(
+            escalation_mod.normalize("  rm   -rf\tdist/\n"), "rm -rf dist/"
+        )
+
+    def test_strip_escalate_prefix(self):
+        self.assertEqual(
+            escalation_mod.strip_escalate_prefix("# ESCALATE: why\nrm -rf dist/"),
+            "rm -rf dist/",
+        )
+
+    def test_record_then_attempted_true(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                escalation_mod.record_attempt("rm -rf dist/", "sess")
+                self.assertTrue(
+                    escalation_mod.was_attempted("rm -rf dist/", "sess", 300)
+                )
+
+    def test_whitespace_forgiving_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                escalation_mod.record_attempt("rm    -rf\tdist/", "sess")
+                self.assertTrue(
+                    escalation_mod.was_attempted("rm -rf dist/", "sess", 300)
+                )
+
+    def test_different_command_not_matched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                escalation_mod.record_attempt("ls", "sess")
+                self.assertFalse(
+                    escalation_mod.was_attempted("rm -rf dist/", "sess", 300)
+                )
+
+    def test_ttl_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "sess.json"
+            cache.write_text(
+                json.dumps([{"cmd": "rm -rf dist/", "ts": time.time() - 600}]),
+                encoding="utf-8",
+            )
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                self.assertFalse(
+                    escalation_mod.was_attempted("rm -rf dist/", "sess", 300)
+                )
+                self.assertTrue(
+                    escalation_mod.was_attempted("rm -rf dist/", "sess", 900)
+                )
+
+    def test_empty_command_never_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                escalation_mod.record_attempt("   ", "sess")
+                self.assertFalse(escalation_mod.was_attempted("", "sess", 300))
+
+    def test_missing_session_file_is_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                self.assertFalse(escalation_mod.was_attempted("ls", "nope", 300))
 
 
 if __name__ == "__main__":

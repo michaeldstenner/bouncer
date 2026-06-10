@@ -6,6 +6,8 @@ from ..config import _find_bouncer_dir, load_yaml_config, USER_CONFIG_FILE
 
 VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "policy_mode", "llm",
                                  "on_unsure", "on_unavailable", "log",
+                                 "escalation_requires_attempt",
+                                 "escalation_attempt_ttl",
                                  "activity_width", "activity", "notify",
                                  # provider-keyed sections consumed by the
                                  # vendored llmclient for key/URL resolution
@@ -69,6 +71,22 @@ def cmd_lint(args):
             errors.append(f"'{key}' must be one of {VALID_ACTIONS}, got: {val!r}")
         else:
             print(f"  {key:<16} {val}")
+
+    if "escalation_requires_attempt" in data:
+        era = data["escalation_requires_attempt"]
+        if not isinstance(era, bool):
+            errors.append(
+                f"'escalation_requires_attempt' must be true or false, got: {era!r}")
+        else:
+            print(f"  {'escalation_requires_attempt':<16} {era}")
+
+    if "escalation_attempt_ttl" in data:
+        ttl = data["escalation_attempt_ttl"]
+        if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+            errors.append(
+                f"'escalation_attempt_ttl' must be a positive integer (seconds), got: {ttl!r}")
+        else:
+            print(f"  {'escalation_attempt_ttl':<16} {ttl}s")
 
     llm = data.get("llm", {})
     if llm:

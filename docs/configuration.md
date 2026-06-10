@@ -59,6 +59,13 @@ llm:
 on_unsure: ask              # ask | allow | deny
 on_unavailable: ask         # ask | allow | deny
 
+# Escalation gating. An agent escalates a denied command by re-running it with
+# a `# ESCALATE:` prefix. Only honor an escalation if the same command was
+# actually attempted (bare, without the prefix) within the TTL window — curbs
+# agents that pre-emptively escalate commands they never tried.
+escalation_requires_attempt: true   # true | false
+escalation_attempt_ttl: 300         # seconds
+
 # Width of the activity strip (number of recent decisions to keep)
 activity_width: 10
 
@@ -265,6 +272,24 @@ terminal output, a menu-bar app, or per-decision routing.
 | `ask` | Request human approval if ASK is available; otherwise delivered outward as a deny or pass-through depending on the integration (default) |
 | `allow` | Pass through silently |
 | `deny` | Block with the LLM's reason; ASK-capable harnesses include an `# ESCALATE:` hint, while no-ASK harnesses tell the agent to find another way or suggest a policy change |
+
+## Escalation gating
+
+An agent escalates a denied command by re-running it with a `# ESCALATE: <reason>`
+prefix, which bypasses the LLM and forwards the request to the user. Some agents
+abuse this by escalating pre-emptively — without ever trying the command first.
+
+When `escalation_requires_attempt` is `true` (the default), an escalation is only
+honored if the same command was actually run (bare, without the prefix) within
+the last `escalation_attempt_ttl` seconds in this session. An escalation for a
+command that was never attempted is denied with a hint to run it first. Commands
+are matched after collapsing whitespace, so trivial reformatting still counts as
+the same command.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `escalation_requires_attempt` | `true` | Require a recent bare attempt before honoring an escalation |
+| `escalation_attempt_ttl` | `300` | How long (seconds) a bare attempt stays eligible to justify an escalation |
 
 ## Config merge order
 

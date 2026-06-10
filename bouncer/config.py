@@ -43,6 +43,8 @@ CONFIG_DEFAULTS: dict = {
     },
     "on_unsure":      "ask",
     "on_unavailable": "ask",
+    "escalation_requires_attempt": True,
+    "escalation_attempt_ttl":      300,
     "log": {
         "verbosity":   "all",
         "max_entries": 10000,
@@ -97,6 +99,13 @@ CONFIG_YAML_TEMPLATE = """\
 #            allow: risky calls still hit the harness's own gate.
 #on_unsure: ask
 #on_unavailable: ask
+
+# Escalation gating. An agent escalates a denied command by re-running it with
+# a `# ESCALATE:` prefix. To curb agents that pre-emptively escalate commands
+# they never tried, only honor an escalation if the same command was actually
+# attempted within the last escalation_attempt_ttl seconds.
+#escalation_requires_attempt: true
+#escalation_attempt_ttl: 300
 
 # Activity/statusline indicator
 #activity_width: 10
@@ -179,6 +188,13 @@ llm:
 #            allow: risky calls still hit the harness's own gate.
 on_unsure: ask
 on_unavailable: ask
+
+# Escalation gating. An agent escalates a denied command by re-running it with
+# a `# ESCALATE:` prefix. To curb agents that pre-emptively escalate commands
+# they never tried, only honor an escalation if the same command was actually
+# attempted within the last escalation_attempt_ttl seconds.
+#escalation_requires_attempt: true
+#escalation_attempt_ttl: 300
 
 # Activity/statusline indicator
 activity_width: 10
