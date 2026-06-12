@@ -35,7 +35,9 @@ llm:
   # priority: 80                # higher = served first (default: 80)
   # caller_max: 4               # max concurrent bouncer calls in the queue
 
-  # Two-phase timeouts (Ollama streaming)
+  # Two-phase timeouts (Ollama streaming) — IGNORED under circuit_mode:
+  # futility, where deadline_s owns the call end to end. Only used in
+  # circuit_mode: count.
   # first_token_timeout: 8      # seconds to wait for first response token
   # generation_timeout: 30      # seconds for full response after first token
 
@@ -44,7 +46,8 @@ llm:
   # circuit_mode: futility       # futility | count
   # circuit_cooldown_s: 120      # seconds open before probe attempt
   # grace_s: 8                   # min wait before stall bail may fire
-  # deadline_s: 90               # pencils-down ceiling (null = no ceiling)
+  # deadline_s: 180              # pencils-down ceiling (null = no ceiling);
+  #                              #   under futility it bounds the whole call
   # ps_probe: true               # cheap /api/ps liveness probe (ollama only)
   # circuit_n: 2                 # (count mode) failures before opening
   # circuit_triggers:            # (count mode) which outcomes count

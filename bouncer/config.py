@@ -32,13 +32,12 @@ CONFIG_DEFAULTS: dict = {
         "url":                "http://localhost:11434",
         "timeout":            30,
         "queue_timeout":      8,
-        "first_token_timeout": 30,
-        "generation_timeout": 30,
+        "caller_max":         4,
         "circuit_n":          2,
         "circuit_cooldown_s": 120,
         "circuit_mode":       "futility",
         "grace_s":            8,
-        "deadline_s":         90,
+        "deadline_s":         180,
         "ps_probe":           True,
     },
     "on_unsure":      "ask",
@@ -78,13 +77,15 @@ CONFIG_YAML_TEMPLATE = """\
 #  url: http://localhost:11434   # ollama / openai_compatible base URL
 #  timeout: 30                   # fallback / non-streaming timeout (s)
 #  queue_timeout: 8              # max seconds to wait for an ollama slot
-#  first_token_timeout: 5        # max seconds until ollama starts responding
-#  generation_timeout: 30        # max seconds for full inference
+#  caller_max: 4                 # max concurrent bouncer calls in the queue
 #  circuit_n: 2                  # (count mode) trip after N consecutive failures
 #  circuit_cooldown_s: 120       # seconds open before probe attempt
 #  circuit_mode: futility        # futility | count (futility = leaky-LLR breaker)
 #  grace_s: 8                    # min wait before stall bail may fire
-#  deadline_s: 90                # pencils-down ceiling (null = no hard ceiling)
+#  deadline_s: 180               # pencils-down ceiling — owns the call end to
+#                                #   end under futility (null = no ceiling).
+#                                #   first_token_timeout / generation_timeout
+#                                #   are ignored in futility mode.
 #  ps_probe: true                # cheap /api/ps liveness probe (ollama only)
 #  api_key: ...                  # openai / anthropic (or use env var)
 #  extra_params:                 # optional provider-specific request params
@@ -167,13 +168,15 @@ llm:
   url: http://localhost:11434   # ollama / openai_compatible base URL
   timeout: 30                   # fallback / non-streaming timeout (s)
   queue_timeout: 8              # max seconds to wait for an ollama slot
-  first_token_timeout: 5        # max seconds until ollama starts responding
-  generation_timeout: 30        # max seconds for full inference
+  caller_max: 4                 # max concurrent bouncer calls in the queue
   circuit_n: 2                  # (count mode) trip after N consecutive failures
   circuit_cooldown_s: 120       # seconds open before probe attempt
   circuit_mode: futility        # futility | count (futility = leaky-LLR breaker)
   grace_s: 8                    # min wait before stall bail may fire
-  deadline_s: 90                # pencils-down ceiling (null = no hard ceiling)
+  deadline_s: 180               # pencils-down ceiling — owns the call end to end
+                                #   under futility (null = no ceiling).
+                                #   first_token_timeout / generation_timeout are
+                                #   ignored in futility mode.
   ps_probe: true                # cheap /api/ps liveness probe (ollama only)
   # api_key: ...                # openai / anthropic (or env var)
   # extra_params:               # optional provider-specific request params

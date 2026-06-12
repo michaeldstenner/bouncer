@@ -28,6 +28,7 @@ from bouncer.config import (
     _merged_config,
     _build_policy_context,
     project_has_bouncer,
+    CONFIG_DEFAULTS,
     CONFIG_YAML_TEMPLATE,
     USER_CONFIG_YAML_TEMPLATE,
 )
@@ -192,6 +193,16 @@ class TestMicroYAML(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertIn("llm", result)
         self.assertEqual(result["llm"]["provider"], "ollama")
+
+    def test_patient_gate_defaults(self):
+        # Under circuit_mode=futility, deadline_s owns the call end to end and
+        # the legacy hard timeouts are ignored — so they must not be set.
+        llm = CONFIG_DEFAULTS["llm"]
+        self.assertEqual(llm["deadline_s"], 180)
+        self.assertEqual(llm["caller_max"], 4)
+        self.assertEqual(llm["circuit_mode"], "futility")
+        self.assertNotIn("first_token_timeout", llm)
+        self.assertNotIn("generation_timeout", llm)
 
 
 # ---------------------------------------------------------------------------
