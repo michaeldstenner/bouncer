@@ -80,13 +80,13 @@ def _cmd_agent_help():
 
 
 def main():
-    # Point the vendored llmclient at bouncer's config dir so API keys / URLs /
+    # Name the app and point it at bouncer's config dir so API keys / URLs /
     # parallel_slots resolve from ~/.config/bouncer/config.yaml as a top-priority
-    # overlay on ~/.config/llmclient/. Queue DB is left at the llmclient default
-    # so bouncer shares Ollama slot management with other llmclient-based tools.
+    # overlay on ~/.config/llmclient/. Logs land in ~/.local/share/bouncer/.
+    # The slot queue is shared at ~/.local/state/llmclient/queue.db (0.9.0+).
     from .llmclient import configure
     from .config import USER_CONFIG_DIR
-    configure(config_dir=USER_CONFIG_DIR)
+    configure(app="bouncer", config_dir=USER_CONFIG_DIR)
 
     parser = argparse.ArgumentParser(
         prog="bouncer",
