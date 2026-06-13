@@ -30,10 +30,12 @@ llm:
   # api_key: ...                # openai / anthropic (or use env var)
 
   # Ollama queue management (ignored for non-ollama providers)
-  # queue_timeout: 30           # max seconds to wait for a queue slot
-  # queue_stall_timeout: 15     # bail if nothing has completed within this window
   # priority: 80                # higher = served first (default: 80)
   # caller_max: 4               # max concurrent bouncer calls in the queue
+  # queue_timeout: 30           # max wait for a queue slot — IGNORED under
+  #                             #   circuit_mode: futility, where deadline_s
+  #                             #   bounds the queue wait too. count mode only.
+  # queue_stall_timeout: 15     # bail if nothing has completed within this window
 
   # Two-phase timeouts (Ollama streaming) — IGNORED under circuit_mode:
   # futility, where deadline_s owns the call end to end. Only used in

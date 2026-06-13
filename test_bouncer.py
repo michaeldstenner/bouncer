@@ -201,14 +201,17 @@ class TestMicroYAML(unittest.TestCase):
         self.assertEqual(result["llm"]["provider"], "ollama")
 
     def test_patient_gate_defaults(self):
-        # Under circuit_mode=futility, deadline_s owns the call end to end and
-        # the legacy hard timeouts are ignored — so they must not be set.
+        # Under circuit_mode=futility, deadline_s owns the call end to end
+        # (queue wait + active call), so the timeouts and count-mode knobs it
+        # supersedes must not be set — they'd only re-introduce early bails or
+        # are simply ignored.
         llm = CONFIG_DEFAULTS["llm"]
         self.assertEqual(llm["deadline_s"], 180)
         self.assertEqual(llm["caller_max"], 4)
         self.assertEqual(llm["circuit_mode"], "futility")
-        self.assertNotIn("first_token_timeout", llm)
-        self.assertNotIn("generation_timeout", llm)
+        for ignored in ("first_token_timeout", "generation_timeout",
+                        "queue_timeout", "circuit_n"):
+            self.assertNotIn(ignored, llm)
 
 
 # ---------------------------------------------------------------------------
