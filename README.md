@@ -14,47 +14,50 @@ Without that, the harness just follows its default behavior.
 
 ## Quickstart
 
-```sh
-uv tool install --editable /path/to/bouncer
-bouncer -g init       # detect harnesses + offer to wire hooks (incl. shim)
-bouncer -g config     # set your LLM provider + model
-```
+Happy path — Claude Code, Codex, or opencode with a local Ollama model:
 
 ```sh
-cd /path/to/your-project
-bouncer init      # create .bouncer/
-bouncer policy    # describe the project policy for the LLM
+uv tool install .               # from a clone; puts `bouncer` on PATH
+bouncer -g init                 # wire detected harnesses + write user config
+cd my-project && bouncer init   # turn bouncer on for this project
 ```
 
-That is the normal path. Afterward, start your agent in that project; bouncer
-will activate because `.bouncer/config.yaml` exists there.
+Restart your agent in that project. Done — bouncer now reviews the commands
+your harness would have stopped to ask you about.
 
-Requirements: Python 3.11+ and an LLM backend. The Python package has no
-third-party dependencies, but classification still needs a model: local
-[Ollama](https://ollama.com), OpenAI, Anthropic, or an OpenAI-compatible
-endpoint. Bouncer ships with the Ollama provider configured by default, but
-there is no built-in default model.
-
-For local Ollama, install/start Ollama and pull a model such as:
+**One prerequisite: an LLM backend.** The user config that `bouncer -g init`
+writes points at local [Ollama](https://ollama.com) with `qwen3:32b`:
 
 ```sh
 brew install ollama        # or see https://ollama.com/download
 ollama serve &             # if it isn't already running
-ollama pull qwen3:32b      # example model used by the generated config
+ollama pull qwen3:32b
 ```
 
-`qwen3:32b` gives good judgment but is a large (~20 GB) download. A smaller
-instruct model such as `qwen3:4b` pulls faster and works fine for a first try;
-set `llm.model` in `bouncer -g config` to match.
+Prefer a smaller model, or OpenAI / Anthropic / an OpenAI-compatible endpoint?
+See [Customize](#customize).
 
-Harness hooks need `bouncer` on PATH in fresh subprocesses. `uv tool install`
-or `pipx install` is usually the least surprising way to do that. A plain
-`pip install -e .` only works if the agent is started from that same activated
+## Customize
+
+Everything above runs on defaults. The common adjustments:
+
+- **Describe the project for the classifier** (recommended). `bouncer policy`
+  opens `.bouncer/policy.md` in `$EDITOR`. The more specific the policy, the
+  fewer `UNSURE` verdicts — see the **Policy** section below.
+- **Change the model or provider.** `bouncer -g config` opens the user config.
+  `qwen3:32b` gives good judgment but is a large (~20 GB) download; a smaller
+  instruct model such as `qwen3:4b` pulls faster and is fine for a first try.
+  Set `llm.model` to match. OpenAI, Anthropic, and OpenAI-compatible endpoints
+  are also supported — see [docs/configuration.md](docs/configuration.md).
+- **Wire a specific harness.** `bouncer -g init` detects and offers installed
+  harnesses interactively; pass `bouncer init --harness=<name>` to add one
+  explicitly. See [docs/integrations.md](docs/integrations.md).
+
+Requirements: Python 3.11+ and an LLM backend; the package itself has zero
+third-party dependencies. Harness hooks need `bouncer` on `PATH` in fresh
+subprocesses — `uv tool install` or `pipx install` handles that. A plain
+`pip install -e .` only works if the agent starts from that same activated
 environment.
-
-Users can pass `--harness=<name>` to add a specific harness
-integration. See [docs/integrations.md](docs/integrations.md) for
-per-harness details.
 
 ---
 

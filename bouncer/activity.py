@@ -109,6 +109,8 @@ def _render_activity(entries: list[dict], as_format: str = "plain", cfg: dict | 
                 items.append({"c": _tool_char(e.get("t", "?")), "d": decision.lower()})
         return _json.dumps(items)
 
+    # ansi and tmux share the same color-map lookup; plain returns ({}, "").
+    colors, format_reset = _format_colors(as_format, cfg)
     parts = []
     for e in entries:
         decision = e.get("d", "?").upper()
@@ -120,18 +122,8 @@ def _render_activity(entries: list[dict], as_format: str = "plain", cfg: dict | 
             else:
                 parts.append("·")
             continue
-        tool  = e.get("t", "?")
-        char  = _tool_char(tool)
-        if as_format == "ansi":
-            colors, format_reset = _format_colors(as_format, cfg)
-            color = colors.get(decision, "")
-            reset = format_reset if color else ""
-            parts.append(f"{color}{char}{reset}")
-        elif as_format == "tmux":
-            colors, format_reset = _format_colors(as_format, cfg)
-            color = colors.get(decision, "")
-            reset = format_reset if color else ""
-            parts.append(f"{color}{char}{reset}")
-        else:
-            parts.append(char)
+        char  = _tool_char(e.get("t", "?"))
+        color = colors.get(decision, "")
+        reset = format_reset if color else ""
+        parts.append(f"{color}{char}{reset}")
     return "".join(parts)
