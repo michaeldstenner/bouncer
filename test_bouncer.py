@@ -45,7 +45,7 @@ from bouncer.commands.lint import cmd_lint
 from bouncer.commands.activity import cmd_activity
 from bouncer.commands.status import cmd_status
 from bouncer.commands.classify import cmd_classify
-from bouncer.commands.log import _extract_command
+from bouncer.commands.log import _extract_command, cmd_log
 from bouncer.commands.check import cmd_check
 from bouncer.commands.tools import cmd_tools
 from bouncer.providers import _parse_llm_text
@@ -561,6 +561,36 @@ class TestLogging(unittest.TestCase):
             bd = _make_bouncer_dir(tmp_path, config_yaml="enabled: true\n")
             log_break(str(tmp_path), {"log": {"verbosity": "off"}})
             self.assertFalse((bd / "log.jsonl").exists())
+
+    def test_cmd_log_break_routes_by_payload_cwd_not_process_cwd(self):
+        # E: the --break hook must log the turn boundary to the SAME project
+        # the decisions land in — the one named by the hook payload's cwd —
+        # not the bouncer process's own working directory. Two projects: the
+        # payload-cwd one gets the break; the process-cwd one must stay clean.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            payload_proj = tmp_path / "payload"
+            process_proj = tmp_path / "process"
+            payload_proj.mkdir()
+            process_proj.mkdir()
+            bd_payload = _make_bouncer_dir(payload_proj, config_yaml="enabled: true\n")
+            bd_process = _make_bouncer_dir(process_proj, config_yaml="enabled: true\n")
+
+            class _A:
+                mark_break = True
+                user = False
+
+            hook_input = {"cwd": str(payload_proj), "session_id": "s1"}
+            with patch("sys.stdin", io.StringIO(json.dumps(hook_input))), \
+                 patch("pathlib.Path.cwd", return_value=process_proj):
+                cmd_log(_A())
+
+            payload_log = bd_payload / "log.jsonl"
+            self.assertTrue(payload_log.exists())
+            row = json.loads(payload_log.read_text().splitlines()[0])
+            self.assertEqual(row["decision"], "BREAK")
+            # The break must not have leaked into the process-cwd project.
+            self.assertFalse((bd_process / "log.jsonl").exists())
 
     def test_log_decision_continues_if_user_log_write_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
