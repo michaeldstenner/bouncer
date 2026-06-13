@@ -38,6 +38,13 @@ if result.stderr: print(result.stderr, end="", file=sys.stderr)
 sys.exit(result.returncode)
 """
 
+# Packaged integration assets (codex hooks, opencode plugin, notifiers) ship
+# inside the bouncer package so a plain install can wire them, not just an
+# editable checkout. init.py lives at bouncer/commands/, so the package root
+# is two levels up — the same anchor used for bouncer/shim/.
+_ASSET_DIR = Path(__file__).parent.parent / "integrations"
+
+
 # ── auto-detect ───────────────────────────────────────────────────────────────
 
 _HARNESS_ROOTS = {
@@ -95,15 +102,15 @@ def _install_claude_code():
 
 
 def _install_codex():
-    repo_hook = Path(__file__).parent.parent.parent / "integrations" / "codex" / "bouncer_hook.py"
+    repo_hook = _ASSET_DIR / "codex" / "bouncer_hook.py"
     hooks_dir = Path.home() / ".codex" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     dst = hooks_dir / "bouncer_hook.py"
-    if repo_hook.exists():
-        shutil.copy2(repo_hook, dst)
-    else:
-        dst.write_text(_hook_wrapper("codex", "codex-permission"), encoding="utf-8")
+    if not repo_hook.exists():
+        print(f"  {YELLOW}Warning:{RESET} hook source not found at {repo_hook}; skipping copy")
+        return
+    shutil.copy2(repo_hook, dst)
     dst.chmod(dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     hooks_json = Path.home() / ".codex" / "hooks.json"
@@ -163,7 +170,7 @@ def _install_codex():
 
 
 def _install_codex_pretool():
-    repo_hook = Path(__file__).parent.parent.parent / "integrations" / "codex" / "bouncer_pre_tool_use.py"
+    repo_hook = _ASSET_DIR / "codex" / "bouncer_pre_tool_use.py"
     hooks_dir = Path.home() / ".codex" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -211,7 +218,7 @@ def _install_codex_pretool():
 
 
 def _install_opencode():
-    repo_plugin = Path(__file__).parent.parent.parent / "integrations" / "opencode" / "bouncer_plugin.ts"
+    repo_plugin = _ASSET_DIR / "opencode" / "bouncer_plugin.ts"
     opencode_dir = Path.home() / ".config" / "opencode"
     config_path = _opencode_config_path(opencode_dir)
     if config_path is None:

@@ -33,7 +33,13 @@ where = ["."]
 include = ["bouncer*"]
 
 [tool.setuptools.package-data]
-bouncer = ["shim/bash"]
+bouncer = [
+    "shim/bash",
+    "integrations/codex/*.py",
+    "integrations/codex/*.json",
+    "integrations/opencode/*.ts",
+    "integrations/notifiers/*.py",
+]
 
 [project.scripts]
 bouncer = "bouncer.__main__:main"

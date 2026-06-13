@@ -118,6 +118,10 @@ bouncer/
   classify.py           run_classify() — core gate logic (no I/O, testable)
   shim/
     bash                universal shell shim (installed by bouncer -g init)
+  integrations/         packaged harness assets copied out by bouncer init
+    codex/              PermissionRequest + legacy PreToolUse hooks
+    opencode/           bouncer_plugin.ts
+    notifiers/          example notify.command scripts
   providers/
     __init__.py         call_llm() dispatcher; _build_prompt, _parse_llm_text
   llmclient/            vendored llmclient library used for provider calls

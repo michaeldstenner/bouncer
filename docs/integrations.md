@@ -1,9 +1,10 @@
 # Integrations
 
-Bouncer supports four integration targets. Harness-specific hooks live in
-`integrations/<harness>/` in this repo; the universal shell shim lives in
-`bouncer/shim/bash`. `bouncer init --harness=<name>` handles installation
-automatically; the details below are for manual setup or reference.
+Bouncer supports four integration targets. The hook/plugin assets ship inside
+the package under `bouncer/integrations/<harness>/`, and the universal shell
+shim under `bouncer/shim/bash`, so a plain install can wire them.
+`bouncer init --harness=<name>` handles installation automatically; the details
+below are for manual setup or reference.
 
 ## Claude Code
 
@@ -127,7 +128,7 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux -
 
 `bouncer init --harness=codex` does the following:
 
-1. Copies `integrations/codex/bouncer_hook.py` to `~/.codex/hooks/`
+1. Copies `bouncer/integrations/codex/bouncer_hook.py` to `~/.codex/hooks/`
 2. Patches `~/.codex/hooks.json` with a `PermissionRequest` entry for Bash
 3. Removes bouncer's older default `PreToolUse` entry if present
 
@@ -219,7 +220,7 @@ Manual `~/.codex/hooks.json`:
 
 `bouncer init --harness=opencode` does the following:
 
-1. Copies `integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugin/bouncer.ts`
+1. Copies `bouncer/integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugin/bouncer.ts`
 2. Adds `"bouncer"` to the `plugin` list in `~/.config/opencode/opencode.jsonc`
    if present, otherwise `~/.config/opencode/opencode.json`. If both files
    exist, bouncer warns and leaves the config unchanged so you can merge them
