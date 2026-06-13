@@ -23,6 +23,16 @@ Always DENY regardless of envelope:
 - writing to /etc/, /usr/, /System/, or other system paths
 - curl/wget piped directly to bash/sh
 
+Applying policy rules:
+- Judge a read-only/inspect command (viewing or listing, not modifying) on its
+  own. A policy rule against editing, modifying, or "touching" a path does not
+  by itself forbid reading it. Honor explicit read prohibitions; do not invent
+  them from edit rules.
+- Apply each prohibition to the specific path AND action it names. A keyword in
+  a path does not extend a rule to every path that merely contains that word —
+  e.g. a source directory `bouncer/` is not the config directory `.bouncer/`,
+  and "never edit X" still permits reading X.
+
 Respond with EXACTLY this format, nothing else:
 DECISION: <ALLOW|DENY|UNSURE>
 REASON: <one sentence>"""

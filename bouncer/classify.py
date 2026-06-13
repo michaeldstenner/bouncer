@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import _merged_config, project_has_bouncer, project_log_file
 from .log import log_decision
-from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix
+from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix, parse_escalation
 from .hook import _emit_hook_response, resolve_fallback
 from .notify import notify_decision
 from .providers import call_llm
@@ -93,9 +93,9 @@ def get_classification(
 
     command = tool_input.get("command", "")
 
-    if command.lstrip().startswith("# ESCALATE:"):
-        first_line      = command.split("\n")[0]
-        escalate_reason = first_line.replace("# ESCALATE:", "").strip()
+    escalation = parse_escalation(command)
+    if escalation is not None:
+        escalate_reason, _underlying = escalation
         return "ESCALATE", escalate_reason, "ASK", None, None
 
     try:
@@ -156,7 +156,7 @@ def run_classify(
 
     # ESCALATE bypasses the LLM, so we log a single entry (no PENDING).
     command = tool_input.get("command", "")
-    if command.lstrip().startswith("# ESCALATE:"):
+    if parse_escalation(command) is not None:
         decision, reason, action, _, _snap = get_classification(tool_name, tool_input, cwd)
         if decision == "SKIP":
             sys.exit(0)
@@ -169,9 +169,11 @@ def run_classify(
             ttl = config.get("escalation_attempt_ttl", 300)
             if not was_attempted(underlying, session_id, ttl):
                 reject = (
-                    "This command hasn't been attempted yet. Run it directly "
-                    "(without the `# ESCALATE:` prefix) first; escalate only "
-                    "if that attempt is denied."
+                    "The command under your `# ESCALATE:` marker doesn't match "
+                    "a command you submitted recently. Resubmit it byte-for-byte "
+                    "(whitespace aside), changing only the marker, then escalate "
+                    "that exact text. Escalation is gated to a command bouncer "
+                    "has already seen this session."
                 )
                 log_decision(tool_name, tool_input, cwd, "DENY", reject,
                              config, proj_log)

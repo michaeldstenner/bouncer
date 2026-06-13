@@ -1679,7 +1679,7 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertEqual(out, "")
-        self.assertIn("hasn't been attempted", err)
+        self.assertIn("doesn't match", err)
 
     def test_escalate_denied_when_only_other_command_attempted(self):
         with tempfile.TemporaryDirectory() as shared:
@@ -1695,7 +1695,7 @@ class TestClassify(unittest.TestCase):
                 escalation_dir=shared,
             )
             self.assertEqual(code, 2)
-            self.assertIn("hasn't been attempted", err)
+            self.assertIn("doesn't match", err)
 
     def test_escalate_honored_after_bare_attempt(self):
         with tempfile.TemporaryDirectory() as shared:
@@ -1942,6 +1942,19 @@ class TestLint(unittest.TestCase):
                     cmd_lint(_A())
         self.assertEqual(ctx.exception.code, 1)
 
+    def test_valid_log_settings(self):
+        _, code = _lint("log:\n  verbosity: deny_only\n  max_entries: 5000\n")
+        self.assertEqual(code, 0)
+
+    def test_valid_llm_block(self):
+        yaml = "llm:\n  provider: ollama\n  model: llama3\n  timeout: 30\n"
+        _, code = _lint(yaml)
+        self.assertEqual(code, 0)
+
+    def test_disabled_project_is_valid(self):
+        _, code = _lint("enabled: false\n")
+        self.assertEqual(code, 0)
+
 
 # ---------------------------------------------------------------------------
 # llmclient configure() wiring
@@ -1987,19 +2000,6 @@ class TestLLMClientConfigure(unittest.TestCase):
         self.assertEqual(get_config_files()[0],
                          Path("/tmp/bouncer-cfgdir-test") / "config.yaml")
         llmclient_configure(config_dir=None)
-
-    def test_valid_log_settings(self):
-        _, code = _lint("log:\n  verbosity: deny_only\n  max_entries: 5000\n")
-        self.assertEqual(code, 0)
-
-    def test_valid_llm_block(self):
-        yaml = "llm:\n  provider: ollama\n  model: llama3\n  timeout: 30\n"
-        _, code = _lint(yaml)
-        self.assertEqual(code, 0)
-
-    def test_disabled_project_is_valid(self):
-        _, code = _lint("enabled: false\n")
-        self.assertEqual(code, 0)
 
 
 class TestParseLlmText(unittest.TestCase):
@@ -2345,6 +2345,47 @@ class TestEscalationCache(unittest.TestCase):
             "rm -rf dist/",
         )
 
+    def test_strip_escalate_trailing_inline_marker(self):
+        # A trailing inline marker must recover the real command, not strip to
+        # empty (the old first-line-discard behavior).
+        self.assertEqual(
+            escalation_mod.strip_escalate_prefix("rm -rf dist/  # ESCALATE: why"),
+            "rm -rf dist/",
+        )
+
+    def test_parse_escalation_leading_and_trailing(self):
+        self.assertEqual(
+            escalation_mod.parse_escalation("# ESCALATE: deploy\nrm -rf dist/"),
+            ("deploy", "rm -rf dist/"),
+        )
+        self.assertEqual(
+            escalation_mod.parse_escalation("rm -rf dist/  # ESCALATE: deploy"),
+            ("deploy", "rm -rf dist/"),
+        )
+
+    def test_parse_escalation_none_when_no_marker(self):
+        self.assertIsNone(escalation_mod.parse_escalation("rm -rf dist/"))
+
+    def test_parse_escalation_ignores_marker_inside_quotes(self):
+        # A marker buried in a quoted string is not a real escalation — the
+        # `#` is not at line start or preceded by whitespace.
+        self.assertIsNone(
+            escalation_mod.parse_escalation('grep "# ESCALATE:" file.txt')
+        )
+
+    def test_escalate_honored_after_bare_attempt_trailing_form(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
+                escalation_mod.record_attempt("rm -rf dist/", "sess")
+                # The trailing-marker form resolves to the same underlying
+                # command, so the gate honors it.
+                underlying = escalation_mod.strip_escalate_prefix(
+                    "rm -rf dist/  # ESCALATE: deploy"
+                )
+                self.assertTrue(
+                    escalation_mod.was_attempted(underlying, "sess", 300)
+                )
+
     def test_record_then_attempted_true(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
@@ -2394,6 +2435,48 @@ class TestEscalationCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
                 self.assertFalse(escalation_mod.was_attempted("ls", "nope", 300))
+
+
+class TestPackagedIntegrationAssets(unittest.TestCase):
+    """Portability contract: every asset `bouncer init` copies out must live
+    inside the package AND be declared in package-data, so a plain (non-editable)
+    install can wire harnesses — not just a source checkout. Regression guard
+    for the asset dir having lived at the repo root, outside the wheel."""
+
+    _PACKAGE_ROOT = Path(init_mod.__file__).parent.parent  # bouncer/ (init is in commands/)
+
+    # Path (relative to the package) of each asset an installer copies out.
+    _ASSETS = [
+        "shim/bash",
+        "integrations/codex/bouncer_hook.py",
+        "integrations/codex/bouncer_pre_tool_use.py",
+        "integrations/opencode/bouncer_plugin.ts",
+    ]
+
+    def test_assets_exist_inside_package(self):
+        for rel in self._ASSETS:
+            with self.subTest(asset=rel):
+                self.assertTrue((self._PACKAGE_ROOT / rel).is_file(),
+                                f"missing packaged asset: {rel}")
+
+    def test_asset_dir_anchors_to_package_not_repo_root(self):
+        self.assertEqual(init_mod._ASSET_DIR,
+                         self._PACKAGE_ROOT / "integrations")
+
+    def test_package_data_covers_every_copied_asset(self):
+        import tomllib
+        from fnmatch import fnmatch
+        pyproject = self._PACKAGE_ROOT.parent / "pyproject.toml"
+        if not pyproject.exists():
+            self.skipTest("pyproject.toml not present (installed, not source)")
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        patterns = data["tool"]["setuptools"]["package-data"]["bouncer"]
+        for rel in self._ASSETS:
+            with self.subTest(asset=rel):
+                self.assertTrue(
+                    any(fnmatch(rel, pat) for pat in patterns),
+                    f"{rel} not covered by package-data {patterns}",
+                )
 
 
 if __name__ == "__main__":

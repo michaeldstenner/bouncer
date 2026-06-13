@@ -30,16 +30,24 @@ Some harnesses have ASK available, and some do not.
   change.
 
 ── Escalating to the user (only when ASK is available) ──────────────────────
-ESCALATE is a retry mechanism, not a preemptive one. Submit the command
-normally first. If bouncer DENYs it and you believe that denial is wrong,
-retry the exact same command with an ESCALATE comment explaining why:
+ESCALATE is a retry, not a shortcut. Submit normally first — most commands are
+approved without involving the user. Escalating things bouncer would allow just
+spams the user; that's the failure this gate prevents.
+
+If denied, prefer another way: a safe equivalent within policy (read with your
+editor, not `cat` in a blocked path), a narrower command, or — if it's routine
+— a policy addition (see "Suggesting a policy addition" below). Escalate only
+genuine one-offs.
+
+To escalate a shell command, repeat the byte-identical command with a
+`# ESCALATE: <reason>` line prepended:
 
     # ESCALATE: clearing stale build artifacts before release
     rm -rf dist/ build/
 
-Bouncer skips the LLM and forwards the request to the user for a decision.
-This is enforced: an ESCALATE for a command you have not already submitted
-normally is rejected. Run the command first; escalate only if it is denied.
+If bouncer says your command "doesn't match a command you submitted recently,"
+the text after your marker differs from what you ran — resubmit it, then
+escalate that exact text.
 
 Current harness behavior:
   * Claude Code — ASK is available.
@@ -50,24 +58,28 @@ Current harness behavior:
   * Codex legacy PreToolUse / shell shim — ASK is not available; outward ASKs
     are delivered as denials or pass-through depending on integration.
 
-Do not use ESCALATE preemptively. Trying to anticipate what bouncer will
-decide wastes tokens and defeats the purpose of automated classification —
-most commands are allowed without user involvement.
+── Suggesting a policy addition ──────────────────────────────────────────────
+If an operation is routine for this project but keeps getting denied, suggest a
+policy addition to the user. Bouncer reads your policy as prose. Describe the
+project by location (where it may read/write), action (what it may do), and
+association (what the targets belong to — e.g. its mail config, or its launchd
+service). Keep it short.
 
-── Policy suggestions ───────────────────────────────────────────────────────
-If an operation is routine for this project but keeps getting denied, suggest
-a policy addition to the user. Policy is plain prose fed to an LLM — describe
-intent, scope, and expected effects rather than listing specific commands or
-paths. The bouncer LLM reasons about what a project legitimately does.
+Two common misses:
+  * Bless the ordinary. Say the agent may read anywhere and create/edit/move/
+    delete within its own tree. Reads are rarely the risk — don't make the
+    classifier guess.
+  * Avoid broad NEVERs. They're applied by keyword: "never touch bouncer" also
+    blocks reading a source file in bouncer/. Name location AND action — "never
+    edit ~/.config/bouncer/ or any .bouncer/ config dir" — and a read is not an
+    edit.
 
-Good:  "This project manages the user's shell environment and may read and
-        write files under ~/.config/ and ~/.local/share/."
-Poor:  "Allow rm, allow ~/.zshrc, allow pip install"
+Reserve caution for effects: deletes outside your tree, system/other-project
+changes, force-push, sending data out.
 
-To propose a policy change, tell the user what you'd add and why, then ask
-if they'd like you to append it to .bouncer/policy.md. Do not edit bouncer
-config or policy files directly — the agent cannot set its own permission
-scope.
+To propose a change, tell the user what you'd add and why, then ask if they'd
+like you to append it to .bouncer/policy.md. Do not edit bouncer config or
+policy files directly — the agent cannot set its own permission scope.
 
 ── User-level policy ────────────────────────────────────────────────────────
 ~/.config/bouncer/policy.md applies across all projects. Project-level policy
