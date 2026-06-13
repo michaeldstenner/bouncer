@@ -12,7 +12,8 @@ automatically; the details below are for manual setup or reference.
 1. Writes `~/.claude/hooks/bouncer_hook.py` (the wrapper script)
 2. Patches `~/.claude/settings.json` with two hooks:
    - `PreToolUse` on `Bash` — core classification hook
-   - `UserPromptSubmit` — appends a `·` break marker between interaction bursts
+   - `UserPromptSubmit` — logs a `·` break marker (a prompt boundary) into
+     the project decision log, which the activity strip renders
 
 Manual `~/.claude/settings.json`:
 
@@ -65,14 +66,14 @@ set `statusLine` in `~/.claude/settings.json`:
 }
 ```
 
-The statusline script must read `session_id` and `cwd` from its stdin JSON
-and pass them to `bouncer activity`:
+The statusline script reads `cwd` from its stdin JSON and passes it to
+`bouncer activity` (the strip is scoped to the project, so `cwd` is all it
+needs):
 
 ```bash
 input=$(cat)
-session_id=$(echo "$input" | jq -r '.session_id // empty')
 cwd=$(echo "$input" | jq -r '.cwd // empty')
-bouncer activity --session "$session_id" --cwd "$cwd" --as ansi 2>/dev/null
+bouncer activity --cwd "$cwd" --as ansi 2>/dev/null
 ```
 
 Activity indicator — one character per recent decision, newest on the left:
@@ -100,8 +101,9 @@ Tool characters: `B`=Bash, `W`=Write, `E`=Edit, `R`=Read, `G`=Glob/Grep,
 - `tmux` — tmux style segments (`#[fg=green]B#[default]`), suitable for
   `status-left` / `status-right`
 
-Colors for `ansi` and `tmux` output are driven by the same config map so the
-Claude Code statusline and tmux indicator stay synchronized:
+The Claude Code statusline and the tmux indicator render from the same source
+(the project decision log), so they always show the same thing; the `ansi`
+and `tmux` formats just draw it with the same configurable color map:
 
 ```yaml
 activity:
@@ -112,12 +114,13 @@ activity:
     ESCALATE: cyan
 ```
 
-For Codex, which does not currently expose a statusline hook, tmux can render
-the project log for the current pane:
+Because the strip reads the log, any harness gets the decision strip in tmux —
+including Codex, which has no statusline hook. Codex simply shows no `·` break
+markers, since it has no `UserPromptSubmit` hook to log them:
 
 ```tmux
 set -g status-interval 2
-set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
+set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
 ```
 
 ## OpenAI Codex CLI
@@ -186,7 +189,9 @@ behavior confusing across clients.
 Use `PermissionRequest` for Codex. The legacy `codex_pretool` installer remains
 available only for experiments or hard-guard debugging.
 
-There is no Codex equivalent of `UserPromptSubmit` or the statusline.
+There is no Codex equivalent of `UserPromptSubmit` or the statusline, so Codex
+produces no `·` break markers. The decision strip itself still works in tmux
+(it reads the project log) — see the tmux snippet under Claude Code above.
 
 Manual `~/.codex/hooks.json`:
 
@@ -260,7 +265,7 @@ color:
 ```jsonc
 // in your layout .jsonc file
 "commandStrip": {
-  "command": "bouncer activity --session {session_id} --cwd {cwd} --as json",
+  "command": "bouncer activity --cwd {cwd} --as json",
   "intervalMs": 3000
 }
 ```

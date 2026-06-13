@@ -7,7 +7,6 @@ USER_CONFIG_FILE   = USER_CONFIG_DIR / "config.yaml"
 USER_POLICY_FILE   = USER_CONFIG_DIR / "policy.md"
 USER_SYSTEM_PROMPT = USER_CONFIG_DIR / "system_prompt.txt"
 USER_LOG_FILE      = HOME / ".local" / "share" / "bouncer" / "log.jsonl"
-ACTIVITY_DIR       = HOME / ".local" / "share" / "bouncer" / "activity"
 PROJECT_DIR_NAME   = ".bouncer"
 
 CONFIG_DEFAULTS: dict = {
@@ -125,7 +124,9 @@ CONFIG_YAML_TEMPLATE = """\
 
 # Logging
 #log:
-#  verbosity: all         # all | deny_only | off
+#  verbosity: all         # all | deny_only | off  (deny_only still records a
+#                         #   compact marker for allows so the activity strip
+#                         #   stays complete; off empties the strip too)
 #  max_entries: 10000     # prune log when it exceeds this many entries
 #  llm_debug: false       # write redacted LLM request/response JSONL for debugging
 """
@@ -216,7 +217,9 @@ activity_width: 10
 
 # Logging
 log:
-  verbosity: all
+  verbosity: all            # all | deny_only | off  (deny_only keeps the
+                            #   activity strip complete via compact rows;
+                            #   off empties the strip too)
   max_entries: 10000
   llm_debug: false
 """
@@ -231,10 +234,6 @@ Global context for the LLM classifier:
 """
 
 _YAML = MicroYAML()
-
-
-def _activity_file(session_id: str) -> Path:
-    return ACTIVITY_DIR / f"{session_id}.json"
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

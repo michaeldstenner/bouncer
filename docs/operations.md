@@ -33,18 +33,25 @@ bouncer -g review             review user-level UNSURE decisions
 
 `bouncer activity` options:
 ```
---session <id>    session ID (required for statusline use)
---cwd <path>      project dir (enables inactive ○ indicator)
---project         render recent decisions from the project log for --cwd
---width <n>       number of recent decisions to show (default: 10)
+--cwd <path>      project dir; the strip renders this project's recent log
+--width <n>       number of recent decisions to show
+                  (default: config activity_width, or 10)
 --as <format>     plain | ansi | json | tmux
+--session <id>    accepted for backward compatibility; no longer used
+--project         accepted for backward compatibility; no longer needed
 ```
+
+The strip always renders from the project's decision log, so the Claude Code
+statusline and the tmux indicator are the same view. Break markers (the dim
+`·` separators) appear wherever a harness hook logs them — see
+[integrations](integrations.md). `--session`/`--project` are kept so existing
+statusline scripts and tmux configs keep working unchanged.
 
 For tmux status bars where the pane cwd usually matches the active project:
 
 ```tmux
 set -g status-interval 2
-set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
+set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
 ```
 
 ## Files at a glance
@@ -58,8 +65,6 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --project -
 ~/.local/share/bouncer/
   log.jsonl            global decision log
   tools.json           global observed harness/tool catalog
-  activity/
-    <session_id>.json  per-session activity strip data
 
 <project>/
   .bouncer/

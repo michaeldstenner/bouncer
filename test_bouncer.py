@@ -32,7 +32,13 @@ from bouncer.config import (
     CONFIG_YAML_TEMPLATE,
     USER_CONFIG_YAML_TEMPLATE,
 )
-from bouncer.log import _should_log, _maybe_prune_log, log_decision, log_llm_debug
+from bouncer.log import (
+    _log_mode,
+    _maybe_prune_log,
+    log_decision,
+    log_break,
+    log_llm_debug,
+)
 from bouncer.notify import notify_decision
 from bouncer.activity import _render_activity
 from bouncer.commands.lint import cmd_lint
@@ -412,22 +418,25 @@ class TestProjectDiscovery(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestLogging(unittest.TestCase):
-    def test_should_log_all_logs_everything(self):
+    def test_log_mode_all_is_full(self):
         config = {"log": {"verbosity": "all"}}
-        for decision in ("ALLOW", "DENY", "UNSURE", "ESCALATE"):
-            self.assertTrue(_should_log(decision, config), decision)
+        for decision in ("ALLOW", "DENY", "UNSURE", "ESCALATE", "BREAK"):
+            self.assertEqual(_log_mode(decision, config), "full", decision)
 
-    def test_should_log_deny_only(self):
+    def test_log_mode_deny_only_compacts_non_denials(self):
         config = {"log": {"verbosity": "deny_only"}}
-        self.assertTrue(_should_log("DENY", config))
-        self.assertTrue(_should_log("BLOCK", config))
-        self.assertFalse(_should_log("ALLOW", config))
-        self.assertFalse(_should_log("UNSURE", config))
+        self.assertEqual(_log_mode("DENY", config), "full")
+        self.assertEqual(_log_mode("BLOCK", config), "full")
+        # Non-denials (and breaks) stay in the log as compact markers so the
+        # activity strip survives a filtered verbosity.
+        self.assertEqual(_log_mode("ALLOW", config), "compact")
+        self.assertEqual(_log_mode("UNSURE", config), "compact")
+        self.assertEqual(_log_mode("BREAK", config), "compact")
 
-    def test_should_log_off_logs_nothing(self):
+    def test_log_mode_off_skips_everything(self):
         config = {"log": {"verbosity": "off"}}
-        for decision in ("ALLOW", "DENY", "UNSURE"):
-            self.assertFalse(_should_log(decision, config), decision)
+        for decision in ("ALLOW", "DENY", "UNSURE", "BREAK"):
+            self.assertEqual(_log_mode(decision, config), "skip", decision)
 
     def test_prune_removes_oldest_entries(self):
         with tempfile.NamedTemporaryFile(mode="wb", delete=False) as f:
@@ -483,16 +492,30 @@ class TestLogging(unittest.TestCase):
                 log_decision("Bash", {}, "/tmp", "ALLOW", "fine", cfg=config)
             self.assertFalse(log_path.exists())
 
-    def test_log_decision_deny_only_skips_allow(self):
+    def test_log_decision_deny_only_writes_compact_allow(self):
+        # deny_only keeps full detail for denials but records a compact marker
+        # for allows, so the activity strip stays complete without the noise.
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "log.jsonl"
             config = {"log": {"verbosity": "deny_only"}}
             with patch.object(cfg, "USER_LOG_FILE", log_path):
-                log_decision("Bash", {}, "/tmp", "ALLOW", "fine", cfg=config)
-                log_decision("Bash", {}, "/tmp", "DENY",  "bad",  cfg=config)
+                log_decision("Bash", {"command": "ls"}, "/tmp",
+                             "ALLOW", "fine", cfg=config)
+                log_decision("Bash", {"command": "rm"}, "/tmp",
+                             "DENY", "bad", cfg=config)
             lines = [ln for ln in log_path.read_text().splitlines() if ln]
-            self.assertEqual(len(lines), 1)
-            self.assertEqual(json.loads(lines[0])["decision"], "DENY")
+            self.assertEqual(len(lines), 2)
+            allow, deny = json.loads(lines[0]), json.loads(lines[1])
+            # Compact allow: enough for the strip, none of the heavy fields.
+            self.assertEqual(allow["decision"], "ALLOW")
+            self.assertEqual(allow["tool"], "Bash")
+            self.assertIn("timestamp", allow)
+            self.assertNotIn("input_summary", allow)
+            self.assertNotIn("reason", allow)
+            # Denials keep full detail.
+            self.assertEqual(deny["decision"], "DENY")
+            self.assertIn("command", deny["input_summary"])
+            self.assertEqual(deny["reason"], "bad")
 
     def test_log_decision_always_writes_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -513,6 +536,28 @@ class TestLogging(unittest.TestCase):
                              cfg=None, proj_log=proj_log)
             self.assertTrue(user_log.exists())
             self.assertTrue(proj_log.exists())
+
+    def test_log_break_writes_break_row_to_project_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bd = _make_bouncer_dir(tmp_path, config_yaml="enabled: true\n")
+            user_log = tmp_path / "user.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", user_log):
+                log_break(str(tmp_path), {"log": {"verbosity": "all"}})
+            proj_log = bd / "log.jsonl"
+            self.assertTrue(proj_log.exists())
+            row = json.loads(proj_log.read_text().splitlines()[0])
+            self.assertEqual(row["decision"], "BREAK")
+            self.assertIn("timestamp", row)
+            # Breaks never pollute the cross-project user log.
+            self.assertFalse(user_log.exists())
+
+    def test_log_break_suppressed_when_logging_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bd = _make_bouncer_dir(tmp_path, config_yaml="enabled: true\n")
+            log_break(str(tmp_path), {"log": {"verbosity": "off"}})
+            self.assertFalse((bd / "log.jsonl").exists())
 
     def test_log_decision_continues_if_user_log_write_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -749,6 +794,36 @@ class TestActivity(unittest.TestCase):
                 cmd_activity(_A())
 
         self.assertEqual(stdout_buf.getvalue(), "#[fg=yellow]B#[default]")
+
+    def test_project_activity_renders_break_dot(self):
+        # A BREAK row in the project log becomes a dim separator dot in the
+        # strip, the same marker the statusline shows — now unified on one
+        # source so both harness strips get it from the log.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bouncer_dir = _make_bouncer_dir(
+                tmp_path, config_yaml="enabled: true\n")
+            rows = [
+                {"tool": "Bash", "decision": "ALLOW"},
+                {"decision": "BREAK"},
+                {"tool": "Bash", "decision": "DENY"},
+            ]
+            (bouncer_dir / "log.jsonl").write_text(
+                "\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+            class _A:
+                width = 5
+                session = None
+                cwd = str(tmp_path)
+                as_format = "plain"
+                project = True
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                cmd_activity(_A())
+
+        # Newest-first: DENY(B), break(·), ALLOW(B).
+        self.assertEqual(stdout_buf.getvalue(), "B·B")
 
     def test_project_activity_tmux_marker_for_active_project(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .config import _merged_config, project_has_bouncer, project_log_file
 from .log import log_decision
-from .activity import _update_activity
 from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix
 from .hook import _emit_hook_response, resolve_fallback
 from .notify import notify_decision
@@ -146,7 +145,6 @@ def run_classify(
 
     config         = _merged_config(cwd_path)
     proj_log       = project_log_file(cwd_path)
-    activity_width = config.get("activity_width", 10)
     rid            = os.getpid()
 
     # Bail on the config-derived SKIP conditions (disabled, tool not in the
@@ -177,7 +175,6 @@ def run_classify(
                 )
                 log_decision(tool_name, tool_input, cwd, "DENY", reject,
                              config, proj_log)
-                _update_activity(tool_name, "DENY", session_id, activity_width)
                 notify_decision(
                     cfg=config,
                     tool_name=tool_name,
@@ -195,7 +192,6 @@ def run_classify(
 
         log_decision(tool_name, tool_input, cwd, "ESCALATE", reason,
                      config, proj_log)
-        _update_activity(tool_name, "ESCALATE", session_id, activity_width)
         notify_decision(
             cfg=config,
             tool_name=tool_name,
@@ -230,7 +226,6 @@ def run_classify(
                  config, proj_log, rid,
                  elapsed_s=elapsed, prompt_chars=prompt_chars,
                  queue_snapshot=snap)
-    _update_activity(tool_name, decision, session_id, activity_width)
     # Record this bare attempt so a later `# ESCALATE:` of the same command is
     # recognized as a genuine retry rather than a pre-emptive escalation.
     if config.get("escalation_requires_attempt", True):

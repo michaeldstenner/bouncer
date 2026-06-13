@@ -1,9 +1,3 @@
-import json
-from datetime import datetime
-from pathlib import Path
-
-from . import config as _config
-
 _TOOL_CHARS = {
     "Bash":      "B",
     "Write":     "W",
@@ -141,37 +135,3 @@ def _render_activity(entries: list[dict], as_format: str = "plain", cfg: dict | 
         else:
             parts.append(char)
     return "".join(parts)
-
-
-def _update_activity(tool_name: str, decision: str, session_id: str, width: int = 10) -> None:
-    try:
-        af = _config._activity_file(session_id)
-        entries = []
-        if af.exists():
-            try:
-                entries = json.loads(af.read_text(encoding="utf-8"))
-            except Exception:
-                entries = []
-        entries.append({"d": decision, "t": tool_name, "ts": datetime.now().isoformat()})
-        entries = entries[-width:]
-        _config.ACTIVITY_DIR.mkdir(parents=True, exist_ok=True)
-        af.write_text(json.dumps(entries), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _append_activity_entry(entry: dict, session_id: str, width: int = 10) -> None:
-    try:
-        af = _config._activity_file(session_id)
-        entries = []
-        if af.exists():
-            try:
-                entries = json.loads(af.read_text(encoding="utf-8"))
-            except Exception:
-                entries = []
-        entries.append(entry)
-        entries = entries[-width:]
-        _config.ACTIVITY_DIR.mkdir(parents=True, exist_ok=True)
-        af.write_text(json.dumps(entries), encoding="utf-8")
-    except Exception:
-        pass

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from ..activity import _render_activity
-from ..config import _activity_file, _merged_config, project_has_bouncer, project_log_file
+from ..config import _merged_config, project_has_bouncer, project_log_file
 
 
 def _marker(c: str, decision: str, as_format: str) -> str:
@@ -57,46 +57,28 @@ def _project_entries(cwd_path: Path, width: int) -> list[dict]:
 
 
 def cmd_activity(args):
-    width      = getattr(args, "width", 10)
-    session_id = getattr(args, "session", None)
-    cwd_arg    = getattr(args, "cwd", None)
-    as_format  = getattr(args, "as_format", "plain")
-    project    = getattr(args, "project", False)
+    # Both the Claude Code statusline and the tmux/Codex strip render from the
+    # same source — the project decision log — so break markers (logged by a
+    # harness's prompt hook) and decisions flow through one path.  --session
+    # and --project are kept for backward compatibility but no longer change
+    # behavior.
+    width     = getattr(args, "width", None)
+    cwd_arg   = getattr(args, "cwd", None)
+    as_format = getattr(args, "as_format", "plain")
 
     cwd_path = Path(cwd_arg) if cwd_arg else Path.cwd()
     cfg = _merged_config(cwd_path)
+    if width is None:
+        width = cfg.get("activity_width", 10)
 
-    if project:
-        entries = _project_entries(cwd_path, width)
-        if entries:
-            out = _render_activity(entries, as_format=as_format, cfg=cfg)
-            if out:
-                print(out, end="")
-        else:
-            _print_project_marker(cwd_path, as_format)
-        return
-
-    if not session_id:
-        return
-
-    af = _activity_file(session_id)
-
-    if not af.exists():
-        if cwd_arg:
-            _print_project_marker(cwd_path, as_format)
-        return
-
-    try:
-        import json
-        entries = json.loads(af.read_text(encoding="utf-8"))
-    except Exception:
-        return
-
-    entries = entries[-width:]
     if cwd_arg and not cfg.get("enabled", True):
         _print_project_marker(cwd_path, as_format)
         return
-    entries.reverse()
-    out = _render_activity(entries, as_format=as_format, cfg=cfg)
-    if out:
-        print(out, end="")
+
+    entries = _project_entries(cwd_path, width)
+    if entries:
+        out = _render_activity(entries, as_format=as_format, cfg=cfg)
+        if out:
+            print(out, end="")
+    elif cwd_arg:
+        _print_project_marker(cwd_path, as_format)

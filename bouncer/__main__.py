@@ -132,13 +132,16 @@ def main():
                           help="show full config breakdown")
 
     p_activity = sub.add_parser("activity", help="print recent-decision indicator")
-    p_activity.add_argument("--session", metavar="ID", help="session ID")
+    p_activity.add_argument("--session", metavar="ID",
+                            help="accepted for compatibility; no longer used")
     p_activity.add_argument("--project", action="store_true",
-                            help="render recent decisions from the project log for --cwd")
+                            help="accepted for compatibility; the strip always "
+                                 "renders from the project log")
     p_activity.add_argument("--cwd", metavar="PATH",
                             help="project directory (for inactive indicator)")
-    p_activity.add_argument("--width", metavar="N", type=int, default=10,
-                            help="number of recent decisions to show (default: 10)")
+    p_activity.add_argument("--width", metavar="N", type=int, default=None,
+                            help="number of recent decisions to show "
+                                 "(default: config activity_width, or 10)")
     p_activity.add_argument("--as", dest="as_format", metavar="FORMAT",
                             choices=["plain", "ansi", "json", "tmux"], default="plain",
                             help="output format: plain (default), ansi, json, or tmux")

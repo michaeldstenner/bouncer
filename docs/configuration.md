@@ -95,6 +95,15 @@ log:
   max_entries: 10000        # prune log when it exceeds this many entries
 ```
 
+`verbosity` controls how much each decision records:
+
+- `all` — every decision in full detail.
+- `deny_only` — denials in full; everything else (and prompt-boundary `·`
+  break markers) as a compact row of just timestamp, tool, and decision. This
+  keeps the audit log focused while leaving the activity strip complete.
+- `off` — log nothing. The activity strip is empty too, since it renders from
+  the log.
+
 
 **Edit:** `bouncer config` opens `.bouncer/config.yaml` in `$EDITOR`.
 `bouncer config -e` / `-d` enable or disable bouncer without opening the editor.

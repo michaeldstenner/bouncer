@@ -8,8 +8,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ..colors import RESET, BOLD, DIM, YELLOW, DECISION_COLORS, WHITE
-from ..activity import _append_activity_entry
-from ..config import USER_LOG_FILE, project_log_file, project_has_bouncer
+from ..log import log_break
+from ..config import (
+    USER_LOG_FILE,
+    project_log_file,
+    project_has_bouncer,
+    _merged_config,
+)
 
 
 def _parse_since(s: str | None) -> datetime | None:
@@ -118,13 +123,9 @@ def cmd_log(args):
         try:
             hook_input = json.load(sys.stdin)
             cwd = hook_input.get("cwd")
-            if project_has_bouncer(Path(cwd) if cwd else None):
-                session_id = hook_input.get("session_id", "unknown")
-                _append_activity_entry(
-                    {"d": "BREAK", "ts": datetime.now().isoformat()},
-                    session_id,
-                    width=50,
-                )
+            cwd_path = Path(cwd) if cwd else None
+            if project_has_bouncer(cwd_path):
+                log_break(cwd, _merged_config(cwd_path))
         except Exception:
             pass
         return

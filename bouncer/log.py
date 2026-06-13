@@ -5,13 +5,27 @@ from pathlib import Path
 from . import config as _config
 
 
-def _should_log(decision: str, cfg: dict) -> bool:
+def _log_mode(decision: str, cfg: dict) -> str:
+    """How much of a row to persist for `decision`, per `log.verbosity`.
+
+    Returns one of:
+      "full"    — write the complete entry
+      "compact" — write only the fields the activity strip needs
+                  (timestamp, tool, decision), dropping the noisy command
+                  text and reason so the strip stays complete without
+                  bloating the log
+      "skip"    — write nothing
+
+    The compact tier is what lets the strip survive a filtered verbosity:
+    `deny_only` keeps full detail for denials but still records a light
+    marker for everything else.  `off` is a true kill switch (strip empty).
+    """
     verbosity = cfg.get("log", {}).get("verbosity", "all")
     if verbosity == "off":
-        return False
+        return "skip"
     if verbosity == "deny_only":
-        return decision in ("DENY", "BLOCK")
-    return True
+        return "full" if decision in ("DENY", "BLOCK") else "compact"
+    return "full"
 
 
 def _maybe_prune_log(log_file: Path, max_entries: int | None) -> None:
@@ -84,6 +98,57 @@ def log_llm_debug(
         pass
 
 
+def _append_row(entry: dict, proj_log: Path | None) -> tuple[bool, bool]:
+    """Append one JSONL row to the user log and (if given) the project log.
+
+    Returns (wrote_user_log, wrote_proj_log).  Failures are swallowed so
+    logging never breaks a real decision.
+    """
+    line = (json.dumps(entry) + "\n").encode()
+    wrote_user_log = wrote_proj_log = False
+    try:
+        _config.USER_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_config.USER_LOG_FILE, "ab") as f:
+            f.write(line)
+        wrote_user_log = True
+    except OSError:
+        pass
+    if proj_log:
+        try:
+            proj_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(proj_log, "ab") as f:
+                f.write(line)
+            wrote_proj_log = True
+        except OSError:
+            pass
+    return wrote_user_log, wrote_proj_log
+
+
+def log_break(cwd: str | Path | None, cfg: dict) -> None:
+    """Append a turn-boundary marker so the activity strip can draw a dot.
+
+    Written into the project log as a minimal row, inserted by whatever
+    harness hook fires (e.g. Claude Code's UserPromptSubmit).  Harnesses
+    without such a hook simply produce no breaks.  Honors `log.verbosity`:
+    suppressed entirely under `off`.
+    """
+    if _log_mode("BREAK", cfg) == "skip":
+        return
+    proj_log = _config.project_log_file(Path(cwd) if cwd else None)
+    if not proj_log:
+        return
+    # Project log only: a break is a turn boundary for this project's strip,
+    # and would be meaningless interleaved into the cross-project user log.
+    entry = {"timestamp": datetime.now().isoformat(), "decision": "BREAK"}
+    line = (json.dumps(entry) + "\n").encode()
+    try:
+        proj_log.parent.mkdir(parents=True, exist_ok=True)
+        with open(proj_log, "ab") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
 def log_decision(
     tool_name: str,
     tool_input: dict,
@@ -97,48 +162,36 @@ def log_decision(
     prompt_chars: int | None = None,
     queue_snapshot: list[dict] | None = None,
 ) -> None:
-    if cfg and decision != "PENDING" and not _should_log(decision, cfg):
-        return
+    # PENDING is an in-flight placeholder (cfg is None there) and always
+    # written; real decisions consult verbosity for their detail level.
+    mode = "full"
+    if cfg and decision != "PENDING":
+        mode = _log_mode(decision, cfg)
+        if mode == "skip":
+            return
     entry: dict = {
-        "timestamp":     datetime.now().isoformat(),
-        "tool":          tool_name,
-        "cwd":           cwd,
-        "input_summary": json.dumps(tool_input, ensure_ascii=False)[:2000],
-        "decision":      decision,
-        "reason":        reason,
+        "timestamp": datetime.now().isoformat(),
+        "tool":      tool_name,
+        "decision":  decision,
     }
-    if request_id is not None:
-        entry["request_id"] = request_id
-    if elapsed_s is not None:
-        entry["elapsed_s"] = round(elapsed_s, 3)
-    if prompt_chars is not None:
-        entry["prompt_chars"] = prompt_chars
-    if queue_snapshot is not None:
-        entry["queue_snapshot"] = queue_snapshot
-    line = (json.dumps(entry) + "\n").encode()
-    user_log = _config.USER_LOG_FILE
-    wrote_user_log = False
-    try:
-        user_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(user_log, "ab") as f:
-            f.write(line)
-        wrote_user_log = True
-    except OSError:
-        pass
-    wrote_proj_log = False
-    if proj_log:
-        try:
-            proj_log.parent.mkdir(parents=True, exist_ok=True)
-            with open(proj_log, "ab") as f:
-                f.write(line)
-            wrote_proj_log = True
-        except OSError:
-            pass
+    if mode == "full":
+        entry["cwd"]           = cwd
+        entry["input_summary"] = json.dumps(tool_input, ensure_ascii=False)[:2000]
+        entry["reason"]        = reason
+        if request_id is not None:
+            entry["request_id"] = request_id
+        if elapsed_s is not None:
+            entry["elapsed_s"] = round(elapsed_s, 3)
+        if prompt_chars is not None:
+            entry["prompt_chars"] = prompt_chars
+        if queue_snapshot is not None:
+            entry["queue_snapshot"] = queue_snapshot
+    wrote_user_log, wrote_proj_log = _append_row(entry, proj_log)
     if cfg and decision != "PENDING":
         max_entries = cfg.get("log", {}).get("max_entries")
         if wrote_user_log:
             try:
-                _maybe_prune_log(user_log, max_entries)
+                _maybe_prune_log(_config.USER_LOG_FILE, max_entries)
             except OSError:
                 pass
         if proj_log and wrote_proj_log:
