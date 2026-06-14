@@ -21,6 +21,10 @@ bouncer check <cmd>           dry-run: shows what bouncer would decide
 bouncer check --llm <cmd>     dry-run: actually calls the LLM
 bouncer tools                 list documented and observed harness tool names
 bouncer review                interactive UNSURE decision review
+bouncer abort                 abort the pending LLM classification → ALLOW
+bouncer escalate [reason]     send your last denied tool call to the user,
+                              then re-issue that exact call (the out-of-band
+                              escalation path for non-Bash tools)
 bouncer classify --hook                 internal: hook interface (stdin → stdout)
 bouncer classify --hook --format plain  plain-text output (allow/deny/ask + reason)
 bouncer classify --hook --format codex-permission  Codex PermissionRequest output
