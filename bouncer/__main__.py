@@ -12,6 +12,7 @@ from .commands.tools    import cmd_tools
 from .commands.classify import cmd_classify
 from .commands.review   import cmd_review
 from .commands.abort    import cmd_abort
+from .commands.escalate import cmd_escalate
 
 
 _AGENT_HELP = """\
@@ -39,7 +40,7 @@ editor, not `cat` in a blocked path), a narrower command, or — if it's routine
 — a policy addition (see "Suggesting a policy addition" below). Escalate only
 genuine one-offs.
 
-To escalate a shell command, repeat the byte-identical command with a
+For a shell command, repeat the byte-identical command with a
 `# ESCALATE: <reason>` line prepended:
 
     # ESCALATE: clearing stale build artifacts before release
@@ -48,6 +49,13 @@ To escalate a shell command, repeat the byte-identical command with a
 If bouncer says your command "doesn't match a command you submitted recently,"
 the text after your marker differs from what you ran — resubmit it, then
 escalate that exact text.
+
+For any OTHER tool (Read, Write, Edit, WebFetch, MCP tools, ...) there is no
+comment to carry the marker, so use the out-of-band signal instead: after the
+denial, run `bouncer escalate "<reason>"`, then re-issue the exact same tool
+call. bouncer routes that one call to the user. (This also works for shell
+commands if you prefer it.) Same rule: it only escalates a call you actually
+submitted and got denied — you cannot escalate something pre-emptively.
 
 Current harness behavior:
   * Claude Code — ASK is available.
@@ -197,6 +205,11 @@ def main():
     sub.add_parser("abort",
                    help="abort pending LLM classification in this project → ALLOW")
 
+    p_escalate = sub.add_parser("escalate",
+                   help="send your last denied tool call to the user (then re-issue it)")
+    p_escalate.add_argument("reason", nargs="*",
+                            help="why this denied call should be allowed")
+
     args = parser.parse_args()
 
     if args.agent_help:
@@ -224,6 +237,7 @@ def main():
         "classify": cmd_classify,
         "review":   cmd_review,
         "abort":    cmd_abort,
+        "escalate": cmd_escalate,
     }
 
     dispatch[args.cmd_name](args)

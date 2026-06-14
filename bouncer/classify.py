@@ -5,9 +5,10 @@ import sys
 import time
 from pathlib import Path
 
-from .config import _merged_config, project_has_bouncer, project_log_file
+from .config import _merged_config, project_has_bouncer, project_log_file, _find_bouncer_dir
 from .log import log_decision
 from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix, parse_escalation
+from .escalation_grant import record_denial, arm_escalation, take_grant
 from .hook import _emit_hook_response, resolve_fallback
 from .notify import notify_decision
 from .providers import call_llm
@@ -46,6 +47,24 @@ def _is_bouncer_diagnostic_command(command: str) -> bool:
         index += 1
 
     return index < len(parts) and parts[index] in _BOUNCER_DIAGNOSTIC_COMMANDS
+
+
+def _parse_escalate_command(command: str) -> str | None:
+    """If `command` is a `bouncer escalate [reason]` invocation, return the
+    reason (possibly ""); otherwise None. This is the out-of-band escalation
+    signal that works for any tool, not just Bash."""
+    try:
+        parts = shlex.split(command.strip())
+    except ValueError:
+        return None
+    if not parts or Path(parts[0]).name != "bouncer":
+        return None
+    idx = 1
+    if idx < len(parts) and parts[idx] in ("-g", "--global"):
+        idx += 1
+    if idx < len(parts) and parts[idx] == "escalate":
+        return " ".join(parts[idx + 1:])
+    return None
 
 
 def _skip_reason(tool_name: str, tool_input: dict, config: dict) -> str | None:
@@ -145,7 +164,21 @@ def run_classify(
 
     config         = _merged_config(cwd_path)
     proj_log       = project_log_file(cwd_path)
+    bouncer_dir    = _find_bouncer_dir(cwd_path)  # non-None given the gate above
     rid            = os.getpid()
+    command        = tool_input.get("command", "")
+
+    # `bouncer escalate [reason]` is the out-of-band escalation signal that
+    # works for any tool: it arms a one-shot grant for this project's most
+    # recent denial, then the agent re-issues the denied call. Intercept it
+    # here (before skip/LLM) so the arming runs with the hook payload's
+    # session_id + cwd. Allowing the command lets the CLI print a confirmation.
+    escalate_reason = _parse_escalate_command(command)
+    if escalate_reason is not None:
+        if bouncer_dir is not None:
+            arm_escalation(bouncer_dir, escalate_reason)
+        _emit_hook_response("ALLOW", "bouncer: escalation armed", fmt)
+        return
 
     # Bail on the config-derived SKIP conditions (disabled, tool not in the
     # intercept list, bouncer's own diagnostic commands) BEFORE logging a
@@ -155,7 +188,6 @@ def run_classify(
         sys.exit(0)
 
     # ESCALATE bypasses the LLM, so we log a single entry (no PENDING).
-    command = tool_input.get("command", "")
     if parse_escalation(command) is not None:
         decision, reason, action, _, _snap = get_classification(tool_name, tool_input, cwd)
         if decision == "SKIP":
@@ -209,6 +241,29 @@ def run_classify(
         _emit_hook_response(action, f"agent escalation requested: {reason}", fmt)
         return
 
+    # Cross-tool escalation: if the agent armed a grant for this exact call (via
+    # `bouncer escalate`) after it was denied, honor it as an ESCALATE without
+    # consulting the LLM. One-shot — take_grant consumes it.
+    grant_reason = (take_grant(bouncer_dir, tool_name, tool_input)
+                    if bouncer_dir is not None else None)
+    if grant_reason is not None:
+        log_decision(tool_name, tool_input, cwd, "ESCALATE", grant_reason,
+                     config, proj_log)
+        notify_decision(
+            cfg=config,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            cwd=cwd,
+            session_id=session_id,
+            decision="ESCALATE",
+            action="ASK",
+            reason=grant_reason,
+            request_id=None,
+            proj_log=proj_log,
+        )
+        _emit_hook_response("ASK", f"agent escalation requested: {grant_reason}", fmt)
+        return
+
     signal.signal(signal.SIGUSR1, lambda sig, frame: ABORT_EVENT.set())
 
     log_decision(tool_name, tool_input, cwd, "PENDING", "calling LLM",
@@ -232,6 +287,10 @@ def run_classify(
     # recognized as a genuine retry rather than a pre-emptive escalation.
     if config.get("escalation_requires_attempt", True):
         record_attempt(command, session_id)
+    # Remember a denial so a later `bouncer escalate` can route this exact call
+    # to the user — the cross-tool equivalent of the bash attempt gate.
+    if decision == "DENY" and bouncer_dir is not None:
+        record_denial(bouncer_dir, tool_name, tool_input, reason)
     notify_decision(
         cfg=config,
         tool_name=tool_name,

@@ -3,7 +3,8 @@ import sys
 
 
 _DENY_HINT_WITH_ASK = (
-    "To escalate to the user: prefix your command with `# ESCALATE: <reason>` and retry. "
+    "To send this to the user: run `bouncer escalate \"<reason>\"`, then re-issue the exact same call. "
+    "(Shell-command shorthand: re-run it with a `# ESCALATE: <reason>` line prepended.) "
     "Run 'bouncer --agent-help' if you haven't already."
 )
 

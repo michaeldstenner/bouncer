@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import bouncer.config as cfg
 import bouncer.classify as classify_mod
 import bouncer.escalation_cache as escalation_mod
+import bouncer.escalation_grant as grant_mod
 import bouncer.commands.init as init_mod
 import bouncer.notify as notify_mod
 import bouncer.providers as providers_mod
@@ -105,6 +106,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
             patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
             patch.object(cfg, "USER_LOG_FILE",    user_dir / "log.jsonl"),
             patch.object(escalation_mod, "ESCALATION_DIR", esc_dir),
+            patch.object(grant_mod, "GRANT_DIR", esc_dir),
             call_llm_patch,
             patch("sys.stdin", io.StringIO(json.dumps(full_input))),
             redirect_stdout(stdout_buf),
@@ -2435,6 +2437,163 @@ class TestEscalationCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(escalation_mod, "ESCALATION_DIR", Path(tmp)):
                 self.assertFalse(escalation_mod.was_attempted("ls", "nope", 300))
+
+
+class TestEscalationGrant(unittest.TestCase):
+    """The out-of-band, project-keyed, fingerprint-bound grant used to escalate
+    non-Bash tool calls (Tool -> DENY -> `bouncer escalate` -> Tool again)."""
+
+    def test_fingerprint_stable_and_sensitive(self):
+        fp = grant_mod.fingerprint
+        a = fp("Write", {"file_path": "/x", "content": "hi"})
+        # canonical: key order doesn't matter
+        self.assertEqual(a, fp("Write", {"content": "hi", "file_path": "/x"}))
+        # different input or different tool -> different fingerprint
+        self.assertNotEqual(a, fp("Write", {"file_path": "/y", "content": "hi"}))
+        self.assertNotEqual(a, fp("Read", {"file_path": "/x", "content": "hi"}))
+
+    def test_record_arm_take_roundtrip_and_one_shot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp)
+            with patch.object(grant_mod, "GRANT_DIR", proj / "g"):
+                ti = {"file_path": "/etc/hosts", "content": "x"}
+                grant_mod.record_denial(proj, "Write", ti, "blocked by policy")
+                target = grant_mod.arm_escalation(proj, "please allow")
+                self.assertEqual(target["tool"], "Write")
+                self.assertEqual(grant_mod.take_grant(proj, "Write", ti), "please allow")
+                # one-shot: consumed
+                self.assertIsNone(grant_mod.take_grant(proj, "Write", ti))
+
+    def test_grant_is_fingerprint_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp)
+            with patch.object(grant_mod, "GRANT_DIR", proj / "g"):
+                grant_mod.record_denial(proj, "Write", {"file_path": "/a"}, "no")
+                grant_mod.arm_escalation(proj, "r")
+                # a different call cannot consume the grant
+                self.assertIsNone(grant_mod.take_grant(proj, "Write", {"file_path": "/b"}))
+                # the exact call can
+                self.assertEqual(grant_mod.take_grant(proj, "Write", {"file_path": "/a"}), "r")
+
+    def test_identical_calls_share_a_grant_accepted_tradeoff(self):
+        # Two byte-identical denied calls share a fingerprint, so either may
+        # consume the grant. This is the accepted residual (same call, still an
+        # ASK) — assert it explicitly so the behavior is intentional.
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp)
+            with patch.object(grant_mod, "GRANT_DIR", proj / "g"):
+                ti = {"file_path": "/shared"}
+                grant_mod.record_denial(proj, "Read", ti, "no")
+                grant_mod.arm_escalation(proj, "r")
+                self.assertEqual(grant_mod.take_grant(proj, "Read", dict(ti)), "r")
+
+    def test_arm_with_no_denial_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp)
+            with patch.object(grant_mod, "GRANT_DIR", proj / "g"):
+                self.assertIsNone(grant_mod.arm_escalation(proj, "r"))
+
+    def test_grant_ttl_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp)
+            with patch.object(grant_mod, "GRANT_DIR", proj / "g"), \
+                 patch.object(grant_mod, "_GRANT_TTL_S", 0.0):
+                ti = {"file_path": "/a"}
+                grant_mod.record_denial(proj, "Write", ti, "no")
+                grant_mod.arm_escalation(proj, "r")
+                self.assertIsNone(grant_mod.take_grant(proj, "Write", ti))
+
+    def test_parse_escalate_command(self):
+        from bouncer.classify import _parse_escalate_command
+        self.assertEqual(_parse_escalate_command('bouncer escalate "why now"'), "why now")
+        self.assertEqual(_parse_escalate_command("bouncer escalate"), "")
+        self.assertEqual(_parse_escalate_command("/usr/bin/bouncer escalate hi"), "hi")
+        self.assertIsNone(_parse_escalate_command("bouncer status"))
+        self.assertIsNone(_parse_escalate_command("echo bouncer escalate"))
+
+    def test_end_to_end_non_bash_escalation(self):
+        # Full flow against ONE shared project: Write DENY -> bouncer escalate
+        # (arms) -> Write re-issued -> ASK.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(tmp_path, config_yaml="enabled: true\ntools: all\n")
+            user_dir = tmp_path / "user"; user_dir.mkdir()
+            esc = tmp_path / "esc"
+
+            def run(hook_input, llm=("DENY", "blocked", None, None)):
+                full = dict(hook_input, cwd=str(tmp_path))
+                out, err, code = io.StringIO(), io.StringIO(), 0
+                with (
+                    patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                    patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
+                    patch.object(cfg, "USER_LOG_FILE", user_dir / "log.jsonl"),
+                    patch.object(escalation_mod, "ESCALATION_DIR", esc),
+                    patch.object(grant_mod, "GRANT_DIR", esc),
+                    patch.object(classify_mod, "call_llm", return_value=llm),
+                    patch("sys.stdin", io.StringIO(json.dumps(full))),
+                    redirect_stdout(out), redirect_stderr(err),
+                ):
+                    class _A:
+                        hook = True
+                        format = "json"
+                    try:
+                        cmd_classify(_A())
+                    except SystemExit as e:
+                        code = e.code
+                return out.getvalue(), err.getvalue(), code
+
+            write = {"tool_name": "Write",
+                     "tool_input": {"file_path": "/etc/hosts", "content": "x"}}
+
+            # 1) Write is denied -> denial recorded
+            _, _, code = run(write)
+            self.assertEqual(code, 2)
+
+            # 2) bouncer escalate arms a grant and is itself ALLOWed
+            out, _, code = run({"tool_name": "Bash",
+                                "tool_input": {"command": 'bouncer escalate "need it"'}})
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "allow")
+
+            # 3) Re-issue the exact Write -> grant fires -> ASK (no LLM)
+            out, _, code = run(write)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "ask")
+
+    def test_unrelated_call_does_not_consume_grant_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(tmp_path, config_yaml="enabled: true\ntools: all\n")
+            user_dir = tmp_path / "user"; user_dir.mkdir()
+            esc = tmp_path / "esc"
+
+            def run(hook_input, llm=("DENY", "blocked", None, None)):
+                full = dict(hook_input, cwd=str(tmp_path))
+                out, err, code = io.StringIO(), io.StringIO(), 0
+                with (
+                    patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
+                    patch.object(cfg, "USER_POLICY_FILE", user_dir / "policy.md"),
+                    patch.object(cfg, "USER_LOG_FILE", user_dir / "log.jsonl"),
+                    patch.object(escalation_mod, "ESCALATION_DIR", esc),
+                    patch.object(grant_mod, "GRANT_DIR", esc),
+                    patch.object(classify_mod, "call_llm", return_value=llm),
+                    patch("sys.stdin", io.StringIO(json.dumps(full))),
+                    redirect_stdout(out), redirect_stderr(err),
+                ):
+                    class _A:
+                        hook = True
+                        format = "json"
+                    try:
+                        cmd_classify(_A())
+                    except SystemExit as e:
+                        code = e.code
+                return out.getvalue(), err.getvalue(), code
+
+            run({"tool_name": "Write", "tool_input": {"file_path": "/a"}})
+            run({"tool_name": "Bash", "tool_input": {"command": "bouncer escalate x"}})
+            # A DIFFERENT write must not inherit the grant: still denied.
+            _, _, code = run({"tool_name": "Write", "tool_input": {"file_path": "/b"}})
+            self.assertEqual(code, 2)
 
 
 class TestPackagedIntegrationAssets(unittest.TestCase):
