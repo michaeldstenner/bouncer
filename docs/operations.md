@@ -159,3 +159,17 @@ Bouncer's own decision log remains separate from llmclient's provider-call log.
 ```sh
 python3 test_bouncer.py
 ```
+
+## Reporting a problem
+
+When something misbehaves, the useful diagnostics are:
+
+```sh
+bouncer status -v                          # effective config + LLM reachability
+bouncer check --llm 'pwd'                  # does a real classification succeed?
+tail -n 20 .bouncer/log.jsonl             # recent project decisions
+tail -n 20 ~/.local/share/bouncer/log.jsonl   # recent decisions, all projects
+```
+
+Also note which harness was in use (Claude Code, Codex, opencode, or the
+shell shim) — behavior around ASK and abstain differs by integration.
