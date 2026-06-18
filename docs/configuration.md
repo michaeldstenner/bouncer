@@ -9,11 +9,12 @@ user config (`~/.config/bouncer/config.yaml`) or built-in defaults.
 # Master on/off switch — disables bouncer without removing config
 #enabled: true
 
-# Tools to intercept. List specific tool names, or the string "all".
-# NOTE: setting this at the project level REPLACES the user-level list
-# entirely — it does not append to it.
+# Tools to intercept — an ordered list of ±ops folded onto the inherited set.
+# `+X` intercepts, `-X` skips; X may be a tool name, a glob, `@all`, or a group
+# like `@internal` (harness plumbing such as Claude's ToolSearch, skipped by
+# default). `all` = `+@all -@internal`. See the `tools` section below.
 #tools:
-#  - Bash
+#  - -Read
 
 # How this project's policy.md combines with user-level policy.md:
 #   append  (default): project policy appended after user policy
@@ -185,16 +186,42 @@ llm:
 
 ## `tools`
 
+`tools` is an **ordered list of `±` operations** folded left-to-right over a
+running set, evaluated per tool. `+X` intercepts tools matching `X`; `-X` skips
+them (bouncer abstains and the harness decides); the **last matching op wins**.
+`X` may be a tool name (`Bash`), a glob (`mcp__google_workspace__*`), `@all`
+(every tool), or a group such as `@internal`.
+
 | Value | Meaning |
 |---|---|
-| `["Bash"]` | Only intercept Bash (default) |
-| `["Bash", "Write"]` | Intercept Bash and Write |
-| `all` | Intercept every tool |
-| `[]` | Intercept nothing (bouncer inactive but config preserved) |
+| `all` | `+@all -@internal` — every tool except harness plumbing (the default) |
+| `[-Read]` | inherited set, minus Read |
+| `[+ToolSearch]` | inherited set, plus the normally-skipped ToolSearch |
+| `[-@all, +Bash]` | only Bash (absolute) |
+| `[Bash, Write]` | legacy shorthand for `[-@all, +Bash, +Write]` ("only these") |
+| `[]` | intercept nothing |
 
-**Replacement semantics:** setting `tools` at the project level replaces
-the user-level list entirely. There is no append/merge — whatever you
-write at the project level is the complete list for that project.
+`@internal` is harness plumbing — discovery/meta tools the harness already
+auto-allows, so classifying them only wastes an LLM call. Claude Code's
+`ToolSearch` (a no-op deferred-tool schema loader) is the default member;
+skipping it is free, because loading a tool's schema is not the same as calling
+it, and the call still hits bouncer's gate on its own.
+
+**Layering:** configs fold in order — user → project `config.yaml` →
+`config.local.yaml` — each applying its ops to the set it inherits (seeded with
+the default `all`). A bare list is "absolute" (it carries an implicit leading
+`-@all`); a list of `±`-prefixed ops modifies the inherited set.
+
+**Groups** are editable with the same `±` algebra via a `groups:` block, e.g.
+re-gate a plumbing tool everywhere:
+
+```yaml
+groups:
+  internal: -ToolSearch        # ToolSearch is now classified, not skipped
+```
+
+`bouncer lint` prints the resolved op list and warns on the deprecated bare
+`all` (which now resolves to `+@all -@internal`).
 
 Tool names are harness-specific. Run this to see bouncer's documented catalog
 merged with locally observed hook traffic:
