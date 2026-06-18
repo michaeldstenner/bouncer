@@ -1,3 +1,4 @@
+import fnmatch
 from pathlib import Path
 from .yaml import MicroYAML
 
@@ -48,6 +49,15 @@ CONFIG_DEFAULTS: dict = {
     },
 }
 
+# Built-in group memberships, the seed for the per-layer group fold. `internal`
+# is harness "plumbing" — discovery/meta tools the harness natively auto-allows,
+# so skipping them is free. Claude's `ToolSearch` is the canonical member (it
+# lives in Claude Code's read-only tool set); the entry is inert under harnesses
+# that expose no such tool. Editable via a `groups:` block in any config layer.
+DEFAULT_GROUPS: dict[str, frozenset] = {
+    "internal": frozenset({"ToolSearch"}),
+}
+
 CONFIG_YAML_TEMPLATE = """\
 # bouncer project config
 # All settings are optional — uncomment to override user-level defaults.
@@ -55,11 +65,22 @@ CONFIG_YAML_TEMPLATE = """\
 # Enable or disable bouncer for this project.
 #enabled: true
 
-# Tools to intercept (default: all).
-# NOTE: this REPLACES the user-level list entirely (no merging).
-# Use the string "all", or a list of tool names.
+# Tools to intercept. An ordered list of ±ops folded onto the inherited set
+# (user config -> this file -> config.local.yaml). `+X` intercepts, `-X` skips;
+# X may be a tool name, a glob (mcp__google_workspace__*), `@all`, or a group
+# such as `@internal` (harness plumbing — e.g. Claude's ToolSearch — skipped by
+# default). The last matching op wins.
+#   tools: [-Read]              # stop gating Read in this project
+#   tools: [+ToolSearch]        # do gate plumbing here
+#   tools: [-@all, +Bash]       # absolute: only Bash
+# A bare list like [Bash] is legacy shorthand for [-@all, +Bash] ("only Bash").
 #tools:
-#  - Bash
+#  - -Read
+
+# Define or edit groups (same ±fold over the membership set). e.g. drop a tool
+# from @internal to re-gate it everywhere:
+#groups:
+#  internal: -ToolSearch
 
 # How this project's policy.md combines with user-level policy.md:
 #   append  (default): project policy appended after user policy
@@ -154,10 +175,21 @@ USER_CONFIG_YAML_TEMPLATE = """\
 
 enabled: true
 
-# Tools to intercept. Use the string "all", or a list of tool names.
-# (bouncer only ever sees calls the harness escalates for approval, so "all"
-#  does not mean classifying every read — just every call that needs a decision.)
-tools: all
+# Tools to intercept — an ordered list of ±ops. `+X` intercepts, `-X` skips;
+# X may be a tool name, a glob, `@all`, or a group like `@internal` (harness
+# plumbing such as Claude's ToolSearch, which is a no-op to skip). The default
+# below means "every tool except plumbing". Project configs fold onto this set.
+#   tools: [+@all, -@internal, -Read]   # also stop gating Read
+#   tools: [-@all, +Bash]               # only Bash
+# (The bare string `all` still works but is deprecated; it now resolves to
+#  exactly [+@all, -@internal].)
+tools: [+@all, -@internal]
+
+# Define or edit tool groups, using the same ±fold over the membership set.
+# @internal seeds with the harness plumbing set; add/remove members to change
+# what `-@internal` skips:
+#groups:
+#  internal: [+TaskGet, +TaskList]   # also treat these as skippable plumbing
 
 # LLM backend
 # provider: ollama | openai | openai_compatible | anthropic
@@ -258,6 +290,164 @@ def load_policy(path: Path) -> str:
         return ""
 
 
+# --- intercept-set resolution -------------------------------------------------
+#
+# The set of tools bouncer classifies is an ordered, left-to-right fold of `±`
+# ops over a running set, evaluated per tool (no universe is materialized).
+# `+X` covers tools matching selector X; `-X` uncovers them; the last matching
+# op wins. `all` is sugar for `+@all -@internal`. See scratch/tools-fold-design.md.
+
+def _is_op(token: str) -> bool:
+    return token.startswith(("+", "-"))
+
+
+def _split_op(token: str) -> tuple[str, str]:
+    """Split a `±selector` token into (sign, selector). A bare token (no
+    prefix) is treated as `+`."""
+    token = token.strip()
+    if _is_op(token):
+        return token[0], token[1:].strip()
+    return "+", token
+
+
+def _norm_selector(sel: str) -> str:
+    """Normalize a selector: bare `all` -> `@all`, `none` -> `@all` (handled by
+    sign), case preserved for tool names (matching is case-insensitive)."""
+    return "@all" if sel.strip().lower() == "all" else sel.strip()
+
+
+def expand_tools(value) -> list[tuple[str, str]]:
+    """Expand a `tools:` config value into an ordered list of (sign, selector)
+    ops. Tolerant by design — this runs on the classify hot path.
+
+      - "all"  -> [+@all, -@internal]      (skip harness plumbing)
+      - "none" -> [-@all]
+      - other scalar S -> absolute single: [-@all, +S]
+      - delta list (every item ±-prefixed) -> folded onto the inherited set
+      - bare/mixed list -> legacy absolute: an implicit `-@all` is prepended
+    """
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        low = s.lower()
+        if low in ("all", "@all"):
+            return [("+", "@all"), ("-", "@internal")]
+        if low in ("none", "@none"):
+            return [("-", "@all")]
+        sign, sel = _split_op(s)
+        if _is_op(s):
+            return [(sign, _norm_selector(sel))]
+        return [("-", "@all"), ("+", _norm_selector(s))]
+    if not isinstance(value, (list, tuple)):
+        return []
+    items = [str(x).strip() for x in value if str(x).strip()]
+    if not items:
+        return [("-", "@all")]  # `tools: []` == intercept nothing
+    ops: list[tuple[str, str]] = []
+    if not all(_is_op(x) for x in items):
+        ops.append(("-", "@all"))  # legacy absolute set: clear, then add
+    for item in items:
+        sign, sel = _split_op(item)
+        ops.append((sign, _norm_selector(sel)))
+    return ops
+
+
+def _expand_member_ops(value) -> list[tuple[str, str]]:
+    """Ops for a `groups.<name>:` value — like expand_tools but with no
+    implicit `-@all` (bare names just add members) and no `all` sugar."""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    ops: list[tuple[str, str]] = []
+    for item in items:
+        s = str(item).strip()
+        if not s:
+            continue
+        ops.append(_split_op(s))
+    return ops
+
+
+def resolve_groups(group_layers: list[dict]) -> dict[str, frozenset]:
+    """Fold group definitions from each layer (in order) over DEFAULT_GROUPS.
+    Members are concrete tool names; `-all` clears a group."""
+    groups: dict[str, set] = {k: set(v) for k, v in DEFAULT_GROUPS.items()}
+    for layer in group_layers:
+        if not isinstance(layer, dict):
+            continue
+        for name, val in layer.items():
+            key = str(name).strip().lstrip("@").lower()
+            members = set(groups.get(key, set()))
+            for sign, sel in _expand_member_ops(val):
+                if sel.lower() in ("all", "@all"):
+                    if sign == "-":
+                        members.clear()
+                    continue
+                if sign == "+":
+                    members.add(sel)
+                else:
+                    members = {m for m in members if m.lower() != sel.lower()}
+            groups[key] = members
+    return {k: frozenset(v) for k, v in groups.items()}
+
+
+def _selector_matches(selector: str, tool_name: str, groups: dict) -> bool:
+    sel = selector.strip()
+    low = tool_name.lower()
+    if sel.lower() in ("all", "@all"):
+        return True
+    if sel.startswith("@"):
+        members = groups.get(sel[1:].lower(), frozenset())
+        return any(low == m.lower() for m in members)
+    if "*" in sel or "?" in sel:
+        return fnmatch.fnmatch(low, sel.lower())
+    return low == sel.lower()
+
+
+def _intercepted(tool_name: str, ops: list[tuple[str, str]], groups: dict) -> bool:
+    state = False
+    for sign, sel in ops:
+        if _selector_matches(sel, tool_name, groups):
+            state = sign == "+"
+    return state
+
+
+def tool_intercepted(tool_name: str, config: dict) -> bool:
+    """Whether bouncer should classify this tool (vs. skip and defer to the
+    harness). Uses the cross-layer fold stashed by `_merged_config`; falls back
+    to a single-layer fold for directly-built configs (tests, pure callers)."""
+    ops = config.get("_tools_ops")
+    groups = config.get("_groups")
+    if ops is None or groups is None:
+        groups = resolve_groups([config.get("groups", {})])
+        ops = expand_tools(CONFIG_DEFAULTS["tools"]) + expand_tools(config.get("tools"))
+    return _intercepted(tool_name, ops, groups)
+
+
+def resolve_intercept(raw_layers: list[dict]) -> tuple[list[tuple[str, str]], dict]:
+    """Fold the raw per-layer `tools`/`groups` (user -> project -> local) into
+    an ordered op stream and a resolved group table, seeded with the harness
+    default base (`all`) and DEFAULT_GROUPS."""
+    group_layers = [l.get("groups", {}) for l in raw_layers if isinstance(l, dict)]
+    groups = resolve_groups(group_layers)
+    ops = expand_tools(CONFIG_DEFAULTS["tools"])
+    for layer in raw_layers:
+        if isinstance(layer, dict) and "tools" in layer:
+            ops += expand_tools(layer["tools"])
+    return ops, groups
+
+
+def uses_bare_all(value) -> bool:
+    """True if a `tools:` value uses the deprecated bare `all` (scalar "all"
+    or "all"/"@all" appearing un-prefixed in a list). Used by management
+    commands to emit a deprecation notice; never called on the hot path."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("all", "@all")
+    if isinstance(value, (list, tuple)):
+        return any(str(x).strip().lower() in ("all", "@all") for x in value)
+    return False
+
+
 def _find_bouncer_dir(cwd: Path | None = None) -> Path | None:
     current = (cwd or Path.cwd()).resolve()
     home = HOME.resolve()
@@ -278,17 +468,28 @@ def project_has_bouncer(cwd: Path | None = None) -> bool:
 
 def _merged_config(cwd: Path | None = None) -> dict:
     config = dict(CONFIG_DEFAULTS)
+    raw_layers: list[dict] = []  # ordered: user -> project -> local
     user_cfg = load_yaml_config(USER_CONFIG_FILE)
     if user_cfg:
         config = _deep_merge(config, user_cfg)
+    raw_layers.append(user_cfg)
     d = _find_bouncer_dir(cwd)
     if d:
         proj_cfg = load_yaml_config(d / "config.yaml")
         if proj_cfg:
             config = _deep_merge(config, proj_cfg)
+        raw_layers.append(proj_cfg)
         local_cfg = load_yaml_config(d / "config.local.yaml")
         if local_cfg:
             config = _deep_merge(config, local_cfg)
+        raw_layers.append(local_cfg)
+    # The fold needs the raw per-layer tools/groups; _deep_merge replaces them,
+    # so resolve the intercept set separately and stash it for classify.
+    try:
+        config["_tools_ops"], config["_groups"] = resolve_intercept(raw_layers)
+    except Exception:
+        config["_tools_ops"] = expand_tools(CONFIG_DEFAULTS["tools"])
+        config["_groups"] = dict(DEFAULT_GROUPS)
     return config
 
 

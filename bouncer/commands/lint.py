@@ -2,9 +2,10 @@ import sys
 from pathlib import Path
 
 from ..colors import RESET, BOLD, GREEN, RED, YELLOW, DIM
-from ..config import _find_bouncer_dir, load_yaml_config, USER_CONFIG_FILE
+from ..config import (_find_bouncer_dir, load_yaml_config, USER_CONFIG_FILE,
+                      expand_tools, uses_bare_all)
 
-VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "policy_mode", "llm",
+VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "llm",
                                  "on_unsure", "on_unavailable", "log",
                                  "escalation_requires_attempt",
                                  "escalation_attempt_ttl",
@@ -50,14 +51,26 @@ def cmd_lint(args):
     enabled = data.get("enabled", True)
     print(f"  enabled:       {GREEN if enabled else DIM}{enabled}{RESET}")
 
-    tools = data.get("tools", "all")
-    if tools == "all":
-        print(f"  tools:         {YELLOW}all{RESET}")
-    elif isinstance(tools, list):
-        label = ", ".join(tools) if tools else f"{DIM}(none — bouncer won't intercept anything){RESET}"
-        print(f"  tools:         {label}")
-    else:
-        errors.append(f"'tools' must be a list or the string \"all\", got: {tools!r}")
+    if "tools" in data:
+        tools = data["tools"]
+        if not isinstance(tools, (str, list)):
+            errors.append(f"'tools' must be a string or a list of ±ops, got: {tools!r}")
+        else:
+            ops = expand_tools(tools)
+            label = " ".join(f"{s}{sel}" for s, sel in ops) or f"{DIM}(empty){RESET}"
+            print(f"  tools:         {label}")
+            if uses_bare_all(tools):
+                warnings.append(
+                    "bare 'all' is deprecated — it now means '+@all -@internal' "
+                    "(harness plumbing like ToolSearch is skipped). Write it "
+                    "explicitly, e.g. tools: [+@all, -@internal], or use '@all' "
+                    "if you really mean every tool including plumbing.")
+
+    groups = data.get("groups")
+    if groups is not None and not isinstance(groups, dict):
+        errors.append(f"'groups' must be a map of name -> ±members, got: {groups!r}")
+    elif groups:
+        print(f"  groups:        {', '.join(str(k) for k in groups)}")
 
     pm = data.get("policy_mode", "append")
     if pm not in VALID_POLICY_MODES:

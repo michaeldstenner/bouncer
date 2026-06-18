@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import _merged_config, project_has_bouncer, project_log_file, _find_bouncer_dir
+from .config import _merged_config, project_has_bouncer, project_log_file, _find_bouncer_dir, tool_intercepted
 from .log import log_decision
 from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix, parse_escalation
 from .escalation_grant import record_denial, arm_escalation, take_grant
@@ -78,9 +78,8 @@ def _skip_reason(tool_name: str, tool_input: dict, config: dict) -> str | None:
     """
     if not config.get("enabled", True):
         return "bouncer disabled in config"
-    tools = config.get("tools", "all")
-    if tools != "all" and tool_name.lower() not in [t.lower() for t in tools]:
-        return f"tool {tool_name!r} not in intercepted list"
+    if not tool_intercepted(tool_name, config):
+        return f"tool {tool_name!r} not intercepted (tools/groups config)"
     if _is_bouncer_diagnostic_command(tool_input.get("command", "")):
         return "bouncer diagnostic command"
     return None

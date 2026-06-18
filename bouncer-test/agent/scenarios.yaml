@@ -1,0 +1,40 @@
+# Shared scenario matrix for agent-based bouncer tests — the single source of
+# truth consumed by run.py (automated) and the interactive runbook (manual
+# Codex GUI). Each scenario embeds a sentinel in the tool call; the stub LLM
+# (stub_llm.py) maps that sentinel to a deterministic decision, so the test
+# observes the harness <-> bouncer protocol rather than model judgment.
+#
+# Fields:
+#   id        short name
+#   decision  the bouncer decision the stub will return (and we assert in the log)
+#   command   shell command template; {OUT}/{ID} are substituted per run. The
+#             sentinel (BNCR_ALLOW / BNCR_DENY / BNCR_UNSURE) lives in the path
+#             so it is both the stub key and a filesystem ground-truth flag.
+#   flag      expected filesystem outcome of the command: present | absent
+#   harnesses where this scenario applies (claude, codex_cli, codex_tui, opencode)
+#   note      operator guidance for the manual runbook
+
+scenarios:
+  - id: allow
+    decision: ALLOW
+    command: touch {OUT}/BNCR_ALLOW_{ID}
+    flag: present
+    harnesses: [claude, codex_cli, codex_tui, opencode]
+    note: command should run untouched; no user prompt
+
+  - id: deny
+    decision: DENY
+    command: touch {OUT}/BNCR_DENY_{ID}
+    flag: absent
+    harnesses: [claude, codex_cli, codex_tui, opencode]
+    note: command is blocked; agent receives the deny reason
+
+  - id: internal_skip
+    decision: SKIP
+    command: ""
+    flag: absent
+    harnesses: [claude]
+    note: >
+      Claude-only. Ask the agent to load a deferred tool (forces a ToolSearch
+      call). Expect NO bouncer decision logged for ToolSearch and the stub to
+      be left unconsulted — it is harness plumbing (@internal) and is skipped.

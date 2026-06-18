@@ -118,6 +118,48 @@ Every decision is logged. Optional activity output can be rendered wherever it
 fits your workflow: a Claude Code statusline, opencode command strip, tmux
 status bar, local notifier, or custom script.
 
+### Choosing which tools bouncer reviews
+
+The `tools:` setting controls which tool calls bouncer classifies; anything
+outside the set is **skipped** — bouncer expresses no opinion and the harness's
+own permission flow decides. It is an **ordered list of `±` operations** folded
+left-to-right over a running set:
+
+- `+X` — review tools matching `X`; `-X` — skip them. The **last matching op
+  wins**.
+- `X` may be a tool name (`Bash`), a glob (`mcp__google_workspace__*`), `@all`
+  (every tool), or a **group** such as `@internal`.
+- `all` is shorthand for `+@all -@internal` — every tool *except* harness
+  plumbing.
+
+```yaml
+tools: [+@all, -@internal]   # the default: everything except plumbing
+tools: [-Read]               # default set, but stop reviewing Read
+tools: [-@all, +Bash]        # only Bash (absolute)
+```
+
+The configs layer **user → project `config.yaml` → `config.local.yaml`**, each
+folding onto the one before (a list of bare names like `[Bash]` is legacy
+shorthand for `[-@all, +Bash]`, i.e. "only Bash").
+
+**`@internal` is harness plumbing** — discovery/meta tools that have no side
+effects and that the harness already auto-allows, so reviewing them only wastes
+an LLM call (and risks a spurious denial). Claude Code's `ToolSearch` — the
+deferred-tool schema loader — is the canonical member. Skipping it is free:
+loading a tool's schema is not the same as calling it, and the actual call still
+hits bouncer's gate on its own.
+
+Groups are editable with the same `±` algebra, so you can re-scope what counts
+as plumbing:
+
+```yaml
+groups:
+  internal: -ToolSearch        # re-gate ToolSearch everywhere
+  internal: [+TaskGet, +TaskList]   # also treat these as skippable
+```
+
+`bouncer lint` prints the resolved op list and flags the deprecated bare `all`.
+
 ### Harness auto-approval vs. bouncer
 
 Some harnesses have their own auto-approval mode. Codex has an auto-review mode

@@ -2255,7 +2255,15 @@ class TestSkipReason(unittest.TestCase):
         # tool not in an explicit list
         self.assertEqual(
             _skip_reason("Write", {}, {"enabled": True, "tools": ["Bash"]}),
-            "tool 'Write' not in intercepted list",
+            "tool 'Write' not intercepted (tools/groups config)",
+        )
+        # harness plumbing (@internal) is skipped under the default `all`
+        self.assertIsNotNone(
+            _skip_reason("ToolSearch", {}, {"enabled": True, "tools": "all"})
+        )
+        # ...but a non-internal read-only tool is still classified
+        self.assertIsNone(
+            _skip_reason("Read", {}, {"enabled": True, "tools": "all"})
         )
         # disabled
         self.assertEqual(
@@ -2268,6 +2276,90 @@ class TestSkipReason(unittest.TestCase):
             _skip_reason("Bash", {"command": "bouncer status"},
                          {"enabled": True, "tools": "all"}),
         )
+
+    def test_intercept_fold_and_groups(self):
+        from bouncer.config import (
+            expand_tools, resolve_groups, resolve_intercept,
+            _intercepted, tool_intercepted, uses_bare_all,
+        )
+
+        def gated(tool, layers):
+            ops, groups = resolve_intercept(layers)
+            return _intercepted(tool, ops, groups)
+
+        # default `all` => everything except @internal plumbing
+        self.assertTrue(gated("Bash", [{}]))
+        self.assertTrue(gated("Read", [{}]))
+        self.assertFalse(gated("ToolSearch", [{}]))
+
+        # delta: project skips Read on top of the inherited set
+        self.assertFalse(gated("Read", [{}, {"tools": ["-Read"]}]))
+        self.assertTrue(gated("Bash", [{}, {"tools": ["-Read"]}]))
+
+        # delta: force-gate a plumbing tool in one layer
+        self.assertTrue(gated("ToolSearch", [{"tools": ["+ToolSearch"]}]))
+
+        # legacy bare list == absolute "only Bash" (implicit -@all)
+        self.assertTrue(gated("Bash", [{"tools": ["Bash"]}]))
+        self.assertFalse(gated("Write", [{"tools": ["Bash"]}]))
+
+        # explicit absolute via -all reset, regardless of inherited base
+        self.assertTrue(gated("Bash", [{"tools": ["-all", "+Bash"]}]))
+        self.assertFalse(gated("Read", [{"tools": ["-all", "+Bash"]}]))
+
+        # later layer wins (last matching op)
+        self.assertTrue(
+            gated("Read", [{"tools": ["-Read"]}, {"tools": ["+Read"]}])
+        )
+
+        # glob selector
+        self.assertFalse(
+            gated("mcp__google_workspace__list_calendars",
+                  [{"tools": ["-mcp__google_workspace__*"]}])
+        )
+        self.assertTrue(
+            gated("mcp__squirrel__search",
+                  [{"tools": ["-mcp__google_workspace__*"]}])
+        )
+
+        # editing @internal globally re-gates ToolSearch (group fold + all sugar)
+        self.assertTrue(
+            gated("ToolSearch", [{"groups": {"internal": "-ToolSearch"}}])
+        )
+        # ...and a custom group can be skipped wholesale
+        self.assertFalse(
+            gated("Edit", [{"groups": {"risky": ["+Edit", "+Write"]}},
+                           {"tools": ["-@risky"]}])
+        )
+        self.assertTrue(
+            gated("Bash", [{"groups": {"risky": ["+Edit", "+Write"]}},
+                           {"tools": ["-@risky"]}])
+        )
+
+        # resolve_groups seeds DEFAULT_GROUPS and folds edits
+        self.assertEqual(resolve_groups([])["internal"], frozenset({"ToolSearch"}))
+        self.assertEqual(
+            resolve_groups([{"internal": "-ToolSearch"}])["internal"],
+            frozenset(),
+        )
+
+        # tool_intercepted fallback path (directly-built config, no _tools_ops)
+        self.assertFalse(tool_intercepted("ToolSearch", {"tools": "all"}))
+        self.assertTrue(tool_intercepted("Bash", {"tools": "all"}))
+        self.assertFalse(tool_intercepted("Write", {"tools": ["Bash"]}))
+
+        # expand_tools sugar
+        self.assertEqual(
+            expand_tools("all"), [("+", "@all"), ("-", "@internal")]
+        )
+        self.assertEqual(expand_tools("none"), [("-", "@all")])
+        self.assertEqual(expand_tools([]), [("-", "@all")])
+
+        # deprecation detector
+        self.assertTrue(uses_bare_all("all"))
+        self.assertTrue(uses_bare_all(["all", "+Bash"]))
+        self.assertFalse(uses_bare_all(["+@all", "-@internal"]))
+        self.assertFalse(uses_bare_all(["Bash"]))
 
     def test_skipped_tool_does_not_strand_pending(self):
         # Regression: a non-intercepted tool must not write a PENDING entry to
