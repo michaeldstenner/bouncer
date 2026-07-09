@@ -8,15 +8,18 @@ Two modes over one shared scenario matrix (scenarios.yaml):
                       proves the stub LLM, the tools-fold SKIP, and the
                       allow/deny protocol with no agent. Fast, CI-friendly.
 
-  --agent claude      The real slice. Drives a live Claude Code session in tmux
-                      (drivers/claude_tmux.py) and observes the same decisions
-                      end to end. Requires `claude` and `tmux`.
+  --agent claude      The real Claude slice. Drives `claude -p` and observes the
+                      same decisions end to end. Requires `claude`.
+
+  --agent codex_cli   The real Codex CLI slice. Drives `codex exec` and observes
+                      the same decisions end to end. Requires `codex`.
 
 Both point bouncer's LLM at an in-process stub (stub_llm.py) via a disposable
 project `.bouncer/config.yaml`, so verdicts are deterministic.
 
     uv run python bouncer-test/agent/run.py            # hook mode
     uv run python bouncer-test/agent/run.py --agent claude
+    uv run python bouncer-test/agent/run.py --agent codex_cli
 """
 
 from __future__ import annotations
@@ -124,9 +127,12 @@ def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
 # --- agent mode ---------------------------------------------------------------
 
 def run_agent_mode(scenarios, project, out_dir, log_path, harness) -> list[tuple]:
-    if harness != "claude":
-        raise SystemExit(f"agent driver for {harness!r} not implemented yet (slice = claude)")
-    from drivers.claude_headless import run_claude_scenario
+    if harness == "claude":
+        from drivers.claude_headless import run_claude_scenario as run_scenario
+    elif harness == "codex_cli":
+        from drivers.codex_headless import run_codex_scenario as run_scenario
+    else:
+        raise SystemExit(f"agent driver for {harness!r} not implemented yet")
 
     results = []
     for sc in scenarios:
@@ -136,7 +142,7 @@ def run_agent_mode(scenarios, project, out_dir, log_path, harness) -> list[tuple
         cid = uuid.uuid4().hex[:8]
         command = sc["command"].format(OUT=out_dir, ID=cid)
         flag_name = command.split("/")[-1]
-        obs = run_claude_scenario(
+        obs = run_scenario(
             session=f"bncr-agent-{sc['id']}",
             project_dir=project, out_dir=out_dir, command=command,
             sentinel=flag_name, flag_name=flag_name, log_path=log_path,

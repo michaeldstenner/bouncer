@@ -3,14 +3,13 @@ import sys
 
 
 _DENY_HINT_WITH_ASK = (
-    "To send this to the user: run `bouncer escalate \"<reason>\"`, then re-issue the exact same call. "
-    "(Shell-command shorthand: re-run it with a `# ESCALATE: <reason>` line prepended.) "
-    "Run 'bouncer --agent-help' if you haven't already."
+    "Source: bouncer policy denial, not a direct user denial. "
+    "Escalation support is available; run 'bouncer --agent-help' for protocol details."
 )
 
 _DENY_HINT_NO_ASK = (
-    "This harness does not have ASK available. Find another way or suggest a policy change. "
-    "Run 'bouncer --agent-help' if you haven't already."
+    "Source: bouncer policy denial, not a direct user denial. "
+    "This harness does not have ASK available; run 'bouncer --agent-help' for protocol details."
 )
 
 

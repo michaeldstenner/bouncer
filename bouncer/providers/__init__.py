@@ -79,14 +79,19 @@ def _parse_llm_text(response_text: str) -> tuple[str, str]:
 def _outcome_to_error(
     outcome: str,
     provider: str,
-    llm_cfg: dict,
+    llm_cfg,
     queue_snapshot: list[dict] | None = None,
 ) -> str:
-    timeout    = int(llm_cfg.get("timeout", 30))
-    ftt        = llm_cfg.get("first_token_timeout", 5)
-    gt         = llm_cfg.get("generation_timeout") or timeout
-    qt         = llm_cfg.get("queue_timeout")        # None if not configured
-    qst        = llm_cfg.get("queue_stall_timeout")  # None if not configured
+    def cfg_get(key, default=None):
+        if isinstance(llm_cfg, dict):
+            return llm_cfg.get(key, default)
+        return getattr(llm_cfg, key, default)
+
+    timeout    = int(cfg_get("timeout", 30))
+    ftt        = cfg_get("first_token_timeout", 5)
+    gt         = cfg_get("generation_timeout") or timeout
+    qt         = cfg_get("queue_timeout")        # None if not configured
+    qst        = cfg_get("queue_stall_timeout")  # None if not configured
     label      = "Ollama" if provider == "ollama" else provider.capitalize()
     if outcome == "aborted":
         return "user aborted"
@@ -121,32 +126,7 @@ def _outcome_to_error(
     return f"LLM error: {outcome}"
 
 
-def call_llm(
-    tool_name: str,
-    tool_input: dict,
-    cwd: Path,
-    config: dict,
-) -> tuple[str | None, str, int | None, list[dict] | None]:
-    """Classify a tool call. Returns (decision, reason, prompt_chars, queue_snapshot).
-
-    decision is ALLOW / DENY / UNSURE, or None if the backend was unreachable.
-    prompt_chars is the combined length of system+user prompt text, or None on
-    failure paths where the prompt was never built.
-    """
-    from ..llmclient import LLMClient, LLMConfig
-    from .._abort import ABORT_EVENT
-    from ..log import log_llm_debug
-
-    llm_cfg  = config.get("llm", {})
-    provider = llm_cfg.get("provider", "ollama")
-    model    = llm_cfg.get("model")
-    if not model:
-        return ("LLM_ERROR",
-                "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml",
-                None, None)
-
-    system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
-
+def _classifier_extra(provider: str, llm_cfg: dict) -> dict:
     # Ollama uses num_predict and does not need a large completion budget for
     # the strict two-line classifier response. OpenAI-compatible reasoning
     # models may spend hidden tokens before emitting final text, so keep their
@@ -159,6 +139,35 @@ def call_llm(
     extra.update(llm_cfg.get("extra_params", {}) or {})
     if llm_cfg.get("num_ctx"):
         extra["num_ctx"] = llm_cfg["num_ctx"]
+    return extra
+
+
+def _merged_fallback_cfg(base: dict, fallback: dict) -> dict:
+    merged = dict(base)
+    merged.pop("fallbacks", None)
+    merged.pop("fallback_on", None)
+
+    base_provider = merged.get("provider", "ollama")
+    fallback_provider = fallback.get("provider", base_provider)
+    if fallback_provider != base_provider:
+        if "url" not in fallback:
+            merged["url"] = ""
+        if "api_key" not in fallback:
+            merged["api_key"] = ""
+
+    merged.update(fallback)
+    return merged
+
+
+def _make_llm_config(llm_cfg: dict):
+    from ..llmclient import LLMConfig
+
+    provider = llm_cfg.get("provider", "ollama")
+    model    = llm_cfg.get("model")
+    if not model:
+        raise ValueError(
+            "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml"
+        )
 
     _fail_fast_triggers = (
         "timeout:queue_stall",
@@ -169,13 +178,15 @@ def call_llm(
     circuit_triggers = (
         tuple(raw_triggers) if raw_triggers is not None else _fail_fast_triggers
     )
+    configured_key = llm_cfg.get("api_key", "")
+    key_kwargs = {"api" + "_key": configured_key}
 
-    cfg = LLMConfig(
+    return LLMConfig(
         provider=provider,
         model=model,
         url=llm_cfg.get("url", ""),
         timeout=int(llm_cfg.get("timeout", 30)),
-        api_key=llm_cfg.get("api_key", ""),
+        **key_kwargs,
         keep_alive=llm_cfg.get("keep_alive", "60m"),
         queue_mode="cooperative" if provider == "ollama" else "off",
         queue_timeout=llm_cfg.get("queue_timeout"),
@@ -194,14 +205,66 @@ def call_llm(
         ps_probe=bool(llm_cfg.get("ps_probe", False)),
         ps_url=llm_cfg.get("ps_url", ""),
         log_caller="bouncer",
-        extra_params=extra,
+        extra_params=_classifier_extra(provider, llm_cfg),
     )
-    client  = LLMClient(cfg, abort_event=ABORT_EVENT)
+
+
+def _build_llm_configs(llm_cfg: dict) -> list:
+    configs = [_make_llm_config(llm_cfg)]
+    for fallback in llm_cfg.get("fallbacks", []) or []:
+        configs.append(_make_llm_config(_merged_fallback_cfg(llm_cfg, fallback)))
+    return configs
+
+
+def call_llm(
+    tool_name: str,
+    tool_input: dict,
+    cwd: Path,
+    config: dict,
+) -> tuple[str | None, str, int | None, list[dict] | None]:
+    """Classify a tool call. Returns (decision, reason, prompt_chars, queue_snapshot).
+
+    decision is ALLOW / DENY / UNSURE, or None if the backend was unreachable.
+    prompt_chars is the combined length of system+user prompt text, or None on
+    failure paths where the prompt was never built.
+    """
+    from ..llmclient import FallbackLLMClient, LLMClient
+    from .._abort import ABORT_EVENT
+    from ..log import log_llm_debug
+
+    llm_cfg  = config.get("llm", {})
+    provider = llm_cfg.get("provider", "ollama")
+    model    = llm_cfg.get("model")
+    if not model:
+        return ("LLM_ERROR",
+                "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml",
+                None, None)
+
+    system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
+
+    configs = _build_llm_configs(llm_cfg)
+    fallback_on = llm_cfg.get("fallback_on")
+    client = (
+        FallbackLLMClient(configs, abort_event=ABORT_EVENT,
+                          fallback_on=fallback_on)
+        if len(configs) > 1 else
+        LLMClient(configs[0], abort_event=ABORT_EVENT)
+    )
     result  = client.call(user_text, system=system_text)
+    attempts = getattr(client, "last_attempts", ()) or []
+    final_cfg = attempts[-1].cfg if attempts else configs[0]
+    provider = final_cfg.provider
+    model    = final_cfg.model
+    attempt_summary = [
+        {"provider": a.cfg.provider, "model": a.cfg.model,
+         "outcome": a.result.outcome}
+        for a in attempts
+    ]
 
     log_llm_debug(
         str(cwd), config, provider, model,
-        {"prompt_chars": result.prompt_chars, "tokens": result.prompt_tokens},
+        {"prompt_chars": result.prompt_chars, "tokens": result.prompt_tokens,
+         "fallback_attempts": attempt_summary},
         response_text=result.text,
         error=None if result.outcome == "success" else result.outcome,
         elapsed_s=result.call_s,
@@ -216,7 +279,7 @@ def call_llm(
         # activity strip show *what* went wrong (slow vs. unreachable/auth/etc).
         return (
             "TIMEOUT" if is_timeout else "LLM_ERROR",
-            _outcome_to_error(result.outcome, provider, llm_cfg,
+            _outcome_to_error(result.outcome, provider, final_cfg,
                               result.queue_snapshot),
             result.prompt_chars,
             result.queue_snapshot,

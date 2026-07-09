@@ -106,6 +106,10 @@ CONFIG_YAML_TEMPLATE = """\
 #                                #   futility; circuit_n is count-mode only.
 #  ps_probe: true                # cheap /api/ps liveness probe (ollama only)
 #  api_key: ...                  # openai / anthropic (or use env var)
+#  fallback_on: [timeout*, error:unreachable, http_5*, circuit_open, circuit_futile]
+#  fallbacks:                    # tried in order after llm.model
+#    - model: gpt-oss-120b       # inherits provider/url/api_key/timeouts
+#    - model: nemotron-3-ultra
 #  extra_params:                 # optional provider-specific request params
 #    max_tokens: 1000
 
@@ -210,6 +214,11 @@ llm:
                                 #   futility; circuit_n is count-mode only.
   ps_probe: true                # cheap /api/ps liveness probe (ollama only)
   # api_key: ...                # openai / anthropic (or env var)
+  # fallback_on: [timeout*, error:unreachable, http_5*, circuit_open, circuit_futile]
+  # fallbacks:                  # tried in order after llm.model
+  #   - model: gpt-oss-120b     # inherits provider/url/api_key/timeouts
+  #   - provider: anthropic     # cross-provider fallback clears url/api_key
+  #     model: claude-haiku-4-5-20251001
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
 
@@ -304,10 +313,10 @@ def _is_op(token: str) -> bool:
 def _split_op(token: str) -> tuple[str, str]:
     """Split a `±selector` token into (sign, selector). A bare token (no
     prefix) is treated as `+`."""
-    token = token.strip()
-    if _is_op(token):
-        return token[0], token[1:].strip()
-    return "+", token
+    op = token.strip()
+    if _is_op(op):
+        return op[0], op[1:].strip()
+    return "+", op
 
 
 def _norm_selector(sel: str) -> str:

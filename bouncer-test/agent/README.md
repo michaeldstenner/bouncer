@@ -43,6 +43,10 @@ uv run python bouncer-test/agent/run.py
 # same decisions. Needs `claude` and `tmux` on PATH.
 uv run python bouncer-test/agent/run.py --agent claude
 
+# Codex CLI slice: drives `codex exec` through the PermissionRequest hook.
+# Needs `codex` authenticated and bouncer's Codex hook installed/trusted.
+uv run python bouncer-test/agent/run.py --agent codex_cli
+
 # Stub alone, for manual poking of any harness:
 uv run python bouncer-test/agent/stub_llm.py --port 8900
 ```
@@ -57,7 +61,7 @@ tmux" pattern): the bouncer **decision log** (authoritative), the
 |---|---|
 | `classify --hook` | automated (`run.py`, hook mode) |
 | Claude Code | automated (`run.py --agent claude`, headless `claude -p`) |
-| Codex CLI | headless driver (planned, `codex exec`) |
+| Codex CLI | automated (`run.py --agent codex_cli`, headless `codex exec`) |
 | Codex TUI | tmux driver (planned, `drivers/claude_tmux.py` pattern) |
 | **Codex GUI** | **manual** — see below |
 

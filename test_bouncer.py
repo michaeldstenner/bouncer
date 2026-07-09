@@ -50,7 +50,10 @@ from bouncer.commands.log import _extract_command, cmd_log
 from bouncer.commands.check import cmd_check
 from bouncer.commands.tools import cmd_tools
 from bouncer.providers import _parse_llm_text
-from bouncer.llmclient.providers.openai import _extract_text as _extract_response_text
+from bouncer.llmclient.providers.openai import (
+    _extract_text as _extract_response_text,
+    call_openai,
+)
 from bouncer.llmclient.providers.ollama import _get_loaded_ctx, call_ollama
 from bouncer.llmclient import LLMConfig, configure as llmclient_configure
 from bouncer.llmclient._keys import resolve_api_key, resolve_url
@@ -1319,13 +1322,15 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("dangerous command", err)
 
-    def test_deny_stderr_includes_escalate_hint(self):
+    def test_deny_stderr_identifies_bouncer_source(self):
         _, err, _ = _classify(
             self._hook(),
             config_yaml=_BASIC_CONFIG,
             call_llm_result=("DENY", "bad", None, None),
         )
-        self.assertIn("ESCALATE", err)
+        self.assertIn("Source: bouncer policy denial", err)
+        self.assertIn("not a direct user denial", err)
+        self.assertIn("bouncer --agent-help", err)
 
     def test_unsure_default_asks_human(self):
         out, _, code = _classify(
@@ -1346,7 +1351,8 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertTrue(out.startswith("deny\tLLM unsure: unclear"))
         self.assertIn("does not have ASK available", out)
-        self.assertNotIn("To escalate to the user", out)
+        self.assertIn("Source: bouncer policy denial", out)
+        self.assertNotIn("To send this to the user", out)
 
     def test_codex_pretool_allow_is_silent_exit_0(self):
         out, err, code = _classify(
@@ -2242,6 +2248,28 @@ class TestOpenAIProvider(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "missing textual content"):
             _extract_response_text(body)
+
+    def test_default_temperature_is_integer_zero(self):
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured.update(json.loads(req.data))
+            response = MagicMock()
+            response.read.return_value = json.dumps({
+                "choices": [{"message": {"content": "DECISION: ALLOW\nREASON: ok"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 4},
+            }).encode()
+            response.__enter__.return_value = response
+            response.__exit__.return_value = False
+            return response
+
+        cfg = LLMConfig(provider="openai_compatible", model="test-model")
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = call_openai("", "user", cfg, "https://example.test", "k")
+
+        self.assertEqual(result.outcome, "success")
+        self.assertEqual(captured["temperature"], 0)
+        self.assertIs(type(captured["temperature"]), int)
 
 
 class TestSkipReason(unittest.TestCase):

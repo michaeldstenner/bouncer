@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -164,13 +165,20 @@ def run_case(case: Case) -> tuple[bool, str]:
 
 
 def build_cases(paths: dict[str, Path], *, live: bool) -> list[Case]:
+    session_id = f"bouncer-test-{uuid.uuid4().hex[:8]}"
+    bare_escalation_payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf build"},
+        "cwd": str(paths["child"]),
+        "session_id": session_id,
+    }
     escalation_payload = {
         "tool_name": "Bash",
         "tool_input": {
             "command": "# ESCALATE: verifying ask path\nrm -rf build"
         },
         "cwd": str(paths["child"]),
-        "session_id": "bouncer-test",
+        "session_id": session_id,
     }
     read_payload = {
         "tool_name": "Read",
@@ -203,6 +211,13 @@ def build_cases(paths: dict[str, Path], *, live: bool) -> list[Case]:
             argv=["classify", "--hook"],
             cwd=paths["child"],
             stdin=json.dumps(read_payload),
+        ),
+        Case(
+            name="bare command seeds escalation gate",
+            argv=["classify", "--hook"],
+            cwd=paths["child"],
+            stdin=json.dumps(bare_escalation_payload),
+            want_stdout=('"permissionDecision": "ask"', "LLM unavailable"),
         ),
         Case(
             name="escalation maps to json ask",

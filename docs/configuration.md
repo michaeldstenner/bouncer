@@ -58,6 +58,17 @@ llm:
   #   - timeout:first_token
   #   - error:unreachable
 
+  # Model fallback chain. The top-level llm block is tried first; each fallback
+  # inherits provider/url/api_key/timeouts unless it overrides them. If a
+  # fallback changes provider and omits url/api_key, those are cleared so the
+  # new provider can use its normal defaults/env vars.
+  # fallback_on: [timeout*, error:unreachable, http_5*, circuit_open, circuit_futile]
+  # fallbacks:
+  #   - model: gpt-oss-120b       # same provider/url/api_key as primary
+  #   - model: nemotron-3-ultra
+  #   - provider: anthropic       # e.g. home fallback from Ollama to Haiku
+  #     model: claude-haiku-4-5-20251001
+
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
 
@@ -179,7 +190,7 @@ llm:
   provider: openai_compatible
   model: llama-3.1-8b-instant
   url: https://api.groq.com/openai
-  # api_key: <groq-api-key>   # or export OPENAI_API_KEY
+  # Set a key here or export OPENAI_API_KEY.
   # extra_params:
   #   max_tokens: 1000
 ```
