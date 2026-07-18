@@ -44,13 +44,33 @@ def _load_system_prompt() -> str:
     return DEFAULT_SYSTEM_PROMPT
 
 
+_INPUT_CHAR_BUDGET = 2000
+
+
+def _render_tool_input(tool_input: dict) -> str:
+    file_path = tool_input.get("file_path")
+    if file_path is None:
+        rest = tool_input
+    else:
+        rest = {k: v for k, v in tool_input.items() if k != "file_path"}
+
+    rest_json = json.dumps(rest)
+    if len(rest_json) > _INPUT_CHAR_BUDGET:
+        overflow = len(rest_json) - _INPUT_CHAR_BUDGET
+        rest_json = f"{rest_json[:_INPUT_CHAR_BUDGET]}…[+{overflow} chars truncated]"
+
+    if file_path is None:
+        return rest_json
+    return f"file_path: {file_path}\nInput: {rest_json}"
+
+
 def _build_prompt(tool_name: str, tool_input: dict, cwd: Path, config: dict) -> tuple[str, str]:
     system_prompt  = _load_system_prompt()
     policy_context = _build_policy_context(cwd, config)
     command        = tool_input.get("command", "")
     tool_desc      = (f"Tool: {tool_name}\nCommand: {command}"
                       if command
-                      else f"Tool: {tool_name}\nInput: {json.dumps(tool_input)[:400]}")
+                      else f"Tool: {tool_name}\n{_render_tool_input(tool_input)}")
     system_text = "\n\n---\n\n".join([system_prompt, "Policy context:\n" + policy_context])
     return system_text, tool_desc
 
