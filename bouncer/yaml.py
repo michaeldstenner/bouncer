@@ -119,6 +119,42 @@ class MicroYAML:
                 return i
         return -1
 
+    @staticmethod
+    def _flow_depth(text):
+        """Net unclosed `[`/`{` outside quotes; 0 means balanced."""
+        quote, depth = None, 0
+        for ch in text:
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in '"\'':
+                quote = ch
+            elif ch in '[{':
+                depth += 1
+            elif ch in ']}':
+                depth -= 1
+        return depth
+
+    def _complete_flow(self, val):
+        """Absorb continuation lines until a flow collection closes.
+
+        A wrapped list is ordinary hand-written YAML:
+
+            NB: [nb01, nb02, nb03,
+                 nb04, nb05]        # 5 of 20
+
+        Consuming to balance keeps the rest of the parser line-oriented.
+        If EOF arrives first the value stays unbalanced and _parse_flow
+        raises, which is the honest outcome.
+        """
+        while (self._flow_depth(val) > 0
+               and self.line_idx < len(self.lines)):
+            nxt = self._strip_comment(self.lines[self.line_idx].strip())
+            self.line_idx += 1
+            if nxt:
+                val += ' ' + nxt
+        return val
+
     @classmethod
     def _strip_comment(cls, line):
         """Drop a trailing `# ...`, ignoring `#` inside quotes.
@@ -229,7 +265,7 @@ class MicroYAML:
         if not val:
             result.append(self._parse_block(indent + 1))
         elif val.startswith(('[', '{')):
-            result.append(self._parse_flow(val))
+            result.append(self._parse_flow(self._complete_flow(val)))
         elif (val.startswith('- ')
               or self._find_bare(val, ':', need_space=True) >= 0):
             # "- key: 1" and "- - 1" both mean "a nested node starts on
@@ -252,7 +288,7 @@ class MicroYAML:
             if val in self._BLOCK_HEADERS:
                 result[key] = self._parse_block_scalar(val, indent + 1)
             elif val.startswith(('[', '{')):
-                result[key] = self._parse_flow(val)
+                result[key] = self._parse_flow(self._complete_flow(val))
             else:
                 result[key] = self._parse_scalar(val)
             return
@@ -291,11 +327,15 @@ class MicroYAML:
         else:
             out, group = [], []
             for ln in lines:
-                if ln == '':
+                if ln == '' or ln[0] in ' \t':
+                    # A blank line ends a folded paragraph, and a line
+                    # indented deeper than the block keeps its break --
+                    # folding it into the previous line would silently
+                    # reflow code and templates.
                     if group:
                         out.append(' '.join(group))
                         group = []
-                    out.append('')
+                    out.append(ln)
                 else:
                     group.append(ln)
             if group:
