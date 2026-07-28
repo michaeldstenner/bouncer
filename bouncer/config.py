@@ -1,6 +1,7 @@
 import fnmatch
+import sys
 from pathlib import Path
-from .yaml import MicroYAML
+from .yaml import MicroYAML, MicroYAMLError
 
 HOME               = Path.home()
 USER_CONFIG_DIR    = HOME / ".config" / "bouncer"
@@ -286,9 +287,20 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_yaml_config(path: Path) -> dict:
+    """Load a config file, falling back to defaults if it is unusable.
+
+    MicroYAML raises on malformed input rather than returning a
+    plausible-looking partial parse. Falling back to defaults is right
+    for a hook that must not crash the tool call it is gating, but a
+    silent fallback would hide a typo that disables policy, so say so.
+    """
     try:
         return _YAML.load(path.read_text(encoding="utf-8")) or {}
     except OSError:
+        return {}
+    except MicroYAMLError as exc:
+        print(f"bouncer: ignoring malformed {path}: {exc}",
+              file=sys.stderr)
         return {}
 
 
