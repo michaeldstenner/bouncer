@@ -304,34 +304,49 @@ class MicroYAML:
             result[key] = self._parse_block(indent + 1)
 
     def _parse_block_scalar(self, header, min_indent):
-        lines = []
+        raw = []
         style, chomping = header[0], header[1:]
         found_indent = -1
         while self.line_idx < len(self.lines):
             line = self.lines[self.line_idx]
-            if not line.strip():
-                lines.append('')
-                self.line_idx += 1
-                continue
-            indent = self._get_indent(line)
-            if indent < min_indent:
-                break
-            if found_indent == -1:
-                found_indent = indent
-            lines.append(line[found_indent:])
+            if line.strip():
+                indent = self._get_indent(line)
+                if indent < min_indent:
+                    break
+                if found_indent == -1:
+                    found_indent = indent
+            raw.append(line)
             self.line_idx += 1
-        while lines and lines[-1] == '':
+        # Slice every line by the block's own indent, blank ones
+        # included. Replacing whitespace-only lines with '' instead ate
+        # the spaces a `|` block is meant to keep inside indented code
+        # or log output.
+        lines = [ln[max(found_indent, 0):] for ln in raw]
+        # Trailing blank lines are line breaks, not content: `+` keeps
+        # them and every other chomping mode drops them. Counting them
+        # here keeps the folding below free of chomping.
+        trailing = 0
+        while lines and not lines[-1].strip():
             lines.pop()
+            trailing += 1
         if style == '|':
             content = '\n'.join(lines)
         else:
             out, group = [], []
             for ln in lines:
-                if ln == '' or ln[0] in ' \t':
-                    # A blank line ends a folded paragraph, and a line
-                    # indented deeper than the block keeps its break --
-                    # folding it into the previous line would silently
-                    # reflow code and templates.
+                if not ln.strip():
+                    # A run of k blank lines is k line breaks, and the
+                    # join below supplies one of them -- emitting one
+                    # per blank line doubled every paragraph break.
+                    if group:
+                        out.append(' '.join(group))
+                        group = []
+                    else:
+                        out.append('')
+                elif ln[0] in ' \t':
+                    # A line indented deeper than the block keeps its
+                    # break -- folding it into the previous line would
+                    # silently reflow code and templates.
                     if group:
                         out.append(' '.join(group))
                         group = []
@@ -342,10 +357,11 @@ class MicroYAML:
                 out.append(' '.join(group))
             content = '\n'.join(out)
         if '-' in chomping:
-            return content.rstrip('\n')
+            return content
         if '+' in chomping:
-            return content + '\n'
-        return content.rstrip('\n') + '\n' if content else ''
+            return (content + '\n' * (trailing + 1) if content
+                    else '\n' * trailing)
+        return content + '\n' if content else ''
 
     # -- flow ------------------------------------------------------
     def _parse_flow(self, text):
