@@ -13,6 +13,7 @@ from .commands.classify import cmd_classify
 from .commands.review   import cmd_review
 from .commands.abort    import cmd_abort
 from .commands.escalate import cmd_escalate
+from .commands.profile  import cmd_profile
 
 
 _AGENT_HELP = """\
@@ -21,16 +22,19 @@ from AI coding agents. Each call is classified ALLOW / DENY / ASK against a
 plain-text project policy.
 
 ── Two workflow shapes ───────────────────────────────────────────────────────
-Some harnesses have ASK available, and some do not.
+Some sessions can reach a human, and some cannot.
 
-- If ASK is available, bouncer uses a three-option workflow: ALLOW / DENY / ASK.
-  A DENY can be retried with `# ESCALATE:` to send the request to the user.
-- If ASK is not available, bouncer uses a delivered two-option workflow:
-  ALLOW / DENY. The LLM may still internally return ASK, but bouncer delivers
-  it outward as a DENY with guidance to find another way or suggest a policy
-  change.
+- Where a human is reachable, bouncer uses a three-option workflow:
+  ALLOW / DENY / ASK. A DENY can be retried with `# ESCALATE:` to send the
+  request to the user.
+- Where none is, bouncer uses a delivered two-option workflow: ALLOW / DENY.
+  The LLM may still internally return ASK, but bouncer delivers it outward as
+  a DENY with guidance to find another way or suggest a policy change.
 
-── Escalating to the user (only when ASK is available) ──────────────────────
+Whether escalation is available depends on the session. Every DENY tells you.
+Do not assume.
+
+── Escalating to the user (when it is available) ────────────────────────────
 ESCALATE is a retry, not a shortcut. Submit normally first — most commands are
 approved without involving the user. Escalating things bouncer would allow just
 spams the user; that's the failure this gate prevents.
@@ -56,15 +60,6 @@ denial, run `bouncer escalate "<reason>"`, then re-issue the exact same tool
 call. bouncer routes that one call to the user. (This also works for shell
 commands if you prefer it.) Same rule: it only escalates a call you actually
 submitted and got denied — you cannot escalate something pre-emptively.
-
-Current harness behavior:
-  * Claude Code — ASK is available.
-  * Codex PermissionRequest — ASK is available by abstaining and letting Codex
-    show its normal approval prompt.
-  * opencode — ASK is available by abstaining from the native permission
-    prompt; optional plugin config can delay automatic ALLOW/DENY replies.
-  * Codex legacy PreToolUse / shell shim — ASK is not available; outward ASKs
-    are delivered as denials or pass-through depending on integration.
 
 ── Suggesting a policy addition ──────────────────────────────────────────────
 If an operation is routine for this project but keeps getting denied, suggest a
@@ -129,10 +124,11 @@ policy suggestions, or when a requested operation is clearly within the user's
 intent but outside the current policy. Give a short rationale and a paste-ready
 markdown block the user can apply.
 
-Do not edit bouncer config or policy files directly. Bouncer rejects agent
-attempts to set their own permission scope. The user must make policy changes
-themselves, for example by running `bouncer policy` and pasting the suggested
-text.
+Do not edit bouncer config or policy files directly, and do not run `bouncer
+profile <name>` — that is the switch deciding whether you may appeal at all,
+and a session does not set its own. Bouncer rejects agent attempts to set
+their own permission scope. The user must make policy changes themselves, for
+example by running `bouncer policy` and pasting the suggested text.
 
 ── User-level policy ────────────────────────────────────────────────────────
 ~/.config/bouncer/policy.md applies across all projects. Project-level policy
@@ -255,6 +251,20 @@ def main():
     p_escalate.add_argument("reason", nargs="*",
                             help="why this denied call should be allowed")
 
+    p_profile = sub.add_parser("profile",
+                   help="show the session profile for this project, or set it "
+                        "('bouncer profile live' / 'bouncer profile solo')")
+    p_profile.add_argument("name", nargs="?",
+                           help="profile to switch to: live | solo")
+    p_profile.add_argument("--cwd", metavar="PATH",
+                           help="project directory (for status lines that run "
+                                "outside the project)")
+    p_profile.add_argument("--as", dest="as_format", metavar="FORMAT",
+                           choices=["plain", "ansi", "json", "tmux"],
+                           default="plain",
+                           help="output format for the indicator: plain "
+                                "(default), ansi, json, or tmux")
+
     args = parser.parse_args()
 
     if args.agent_help:
@@ -283,6 +293,7 @@ def main():
         "review":   cmd_review,
         "abort":    cmd_abort,
         "escalate": cmd_escalate,
+        "profile":  cmd_profile,
     }
 
     dispatch[args.cmd_name](args)

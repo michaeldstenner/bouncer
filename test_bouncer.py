@@ -16,6 +16,11 @@ import bouncer.config as cfg
 import bouncer.classify as classify_mod
 import bouncer.escalation_cache as escalation_mod
 import bouncer.escalation_grant as grant_mod
+import bouncer.profile as profile_mod
+import bouncer.hook as hook_mod
+import bouncer.commands.lint as lint_mod
+import bouncer.commands.profile as profile_cmd
+from bouncer.commands.profile import effective_state
 import bouncer.commands.init as init_mod
 import bouncer.notify as notify_mod
 import bouncer.providers as providers_mod
@@ -45,7 +50,7 @@ from bouncer.activity import _render_activity
 from bouncer.commands.lint import cmd_lint
 from bouncer.commands.activity import cmd_activity
 from bouncer.commands.status import cmd_status
-from bouncer.commands.classify import cmd_classify
+from bouncer.commands.classify import cmd_classify, _infer_harness
 from bouncer.commands.log import _extract_command, cmd_log
 from bouncer.commands.check import cmd_check
 from bouncer.commands.tools import cmd_tools
@@ -57,6 +62,33 @@ from bouncer.llmclient.providers.openai import (
 from bouncer.llmclient.providers.ollama import _get_loaded_ctx, call_ollama
 from bouncer.llmclient import LLMConfig, configure as llmclient_configure
 from bouncer.llmclient._keys import resolve_api_key, resolve_url
+
+
+# ---------------------------------------------------------------------------
+# Isolation
+# ---------------------------------------------------------------------------
+
+# Bouncer keeps per-project file state under ~/.local/share/bouncer/. Tests
+# that drive the hook directly (rather than through the _classify helper)
+# would otherwise write into the developer's real state dir — harmless-looking
+# but real, and the profile state is written on every classified call. Redirect
+# the whole module at those dirs' temp equivalents; individual tests still
+# patch over this when they need a shared dir of their own.
+_ISOLATION_TMP = None
+
+
+def setUpModule():
+    global _ISOLATION_TMP
+    _ISOLATION_TMP = tempfile.TemporaryDirectory()
+    root = Path(_ISOLATION_TMP.name)
+    profile_mod.PROFILE_DIR = root / "profile"
+    grant_mod.GRANT_DIR = root / "escalation"
+    escalation_mod.ESCALATION_DIR = root / "escalation"
+
+
+def tearDownModule():
+    if _ISOLATION_TMP is not None:
+        _ISOLATION_TMP.cleanup()
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +107,7 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
               call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json",
-              escalation_dir=None):
+              escalation_dir=None, profile_dir=None):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
@@ -89,6 +121,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
         user_dir = tmp_path / "user"
         user_dir.mkdir()
         esc_dir = Path(escalation_dir) if escalation_dir else tmp_path / "escalation"
+        prof_dir = Path(profile_dir) if profile_dir else tmp_path / "profile"
 
         if config_yaml is not None or policy_md is not None:
             _make_bouncer_dir(tmp_path, config_yaml, policy_md)
@@ -110,6 +143,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
             patch.object(cfg, "USER_LOG_FILE",    user_dir / "log.jsonl"),
             patch.object(escalation_mod, "ESCALATION_DIR", esc_dir),
             patch.object(grant_mod, "GRANT_DIR", esc_dir),
+            patch.object(profile_mod, "PROFILE_DIR", prof_dir),
             call_llm_patch,
             patch("sys.stdin", io.StringIO(json.dumps(full_input))),
             redirect_stdout(stdout_buf),
@@ -2714,6 +2748,477 @@ class TestEscalationGrant(unittest.TestCase):
             # A DIFFERENT write must not inherit the grant: still denied.
             _, _, code = run({"tool_name": "Write", "tool_input": {"file_path": "/b"}})
             self.assertEqual(code, 2)
+
+
+# ---------------------------------------------------------------------------
+# Session profiles
+# ---------------------------------------------------------------------------
+
+_SOLO_YAML = """\
+default_profile: solo
+"""
+
+
+class _ProfileTestCase(unittest.TestCase):
+    """A temp project with its own user config and profile state dir."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.user_dir = self.root / "user"
+        self.user_dir.mkdir()
+        self.proj = self.root / "proj"
+        self.proj.mkdir()
+        self.bdir = _make_bouncer_dir(self.proj, config_yaml="")
+        self._patches = [
+            patch.object(cfg, "USER_CONFIG_FILE", self.user_dir / "config.yaml"),
+            patch.object(cfg, "USER_POLICY_FILE", self.user_dir / "policy.md"),
+            patch.object(cfg, "USER_LOG_FILE", self.user_dir / "log.jsonl"),
+            patch.object(profile_mod, "PROFILE_DIR", self.root / "profile"),
+        ]
+        for pt in self._patches:
+            pt.start()
+
+    def tearDown(self):
+        for pt in reversed(self._patches):
+            pt.stop()
+        self._tmp.cleanup()
+
+    def write_user(self, text):
+        (self.user_dir / "config.yaml").write_text(text, encoding="utf-8")
+
+    def write_project(self, text):
+        (self.bdir / "config.yaml").write_text(text, encoding="utf-8")
+
+    def write_local(self, text):
+        (self.bdir / "config.local.yaml").write_text(text, encoding="utf-8")
+
+
+class TestProfileMergeOrder(_ProfileTestCase):
+    """user.base -> user.profiles[P] -> project.base -> project.profiles[P]
+    -> local.base -> local.profiles[P]."""
+
+    def test_profile_fragment_beats_base_in_same_layer(self):
+        self.write_user("on_unsure: ask\nprofiles:\n  solo:\n    on_unsure: deny\n")
+        c = _merged_config(self.proj, profile="solo")
+        self.assertEqual(c["on_unsure"], "deny")
+
+    def test_later_layer_base_beats_earlier_layer_fragment(self):
+        self.write_user("profiles:\n  solo:\n    on_unsure: deny\n")
+        self.write_project("on_unsure: allow\n")
+        c = _merged_config(self.proj, profile="solo")
+        self.assertEqual(c["on_unsure"], "allow")
+
+    def test_local_fragment_wins_over_everything(self):
+        self.write_user("on_unsure: ask\nprofiles:\n  solo:\n    on_unsure: deny\n")
+        self.write_project("on_unsure: allow\nprofiles:\n  solo:\n    on_unsure: ask\n")
+        self.write_local("profiles:\n  solo:\n    on_unsure: abstain\n")
+        c = _merged_config(self.proj, profile="solo")
+        self.assertEqual(c["on_unsure"], "abstain")
+
+    def test_other_profiles_fragment_is_ignored(self):
+        self.write_user("on_unsure: ask\nprofiles:\n  solo:\n    on_unsure: deny\n")
+        c = _merged_config(self.proj, profile="live")
+        self.assertEqual(c["on_unsure"], "ask")
+
+    def test_builtin_solo_defaults_apply_with_no_config(self):
+        c = _merged_config(self.proj, profile="solo")
+        self.assertEqual(c["on_unsure"], "abstain")
+        self.assertEqual(c["on_unavailable"], "abstain")
+        self.assertFalse(c["escalation"])
+
+    def test_builtin_live_defaults_do_not_override_user_base(self):
+        # The builtin fragment sits in the defaults layer, so a user's own
+        # base setting still wins — existing configs keep working.
+        self.write_user("on_unsure: abstain\n")
+        c = _merged_config(self.proj, profile="live")
+        self.assertEqual(c["on_unsure"], "abstain")
+
+
+class TestProfileResolution(_ProfileTestCase):
+    def test_no_state_uses_default_profile(self):
+        self.write_user("default_profile: solo\n")
+        self.assertEqual(cfg.resolve_profile(self.proj), "solo")
+        self.assertEqual(_merged_config(self.proj)["_profile"], "solo")
+
+    def test_no_state_and_no_config_uses_builtin_default(self):
+        self.assertEqual(cfg.resolve_profile(self.proj), "live")
+
+    def test_default_path_still_allows_escalation(self):
+        # The regression that would silently turn every existing session into
+        # a no-ASK one: an empty config must resolve to live with escalation on.
+        c = _merged_config(self.proj)
+        self.assertEqual(c["_profile"], "live")
+        self.assertTrue(profile_mod.profile_allows_ask(c))
+        self.assertEqual(c["on_unsure"], "ask")
+
+    def test_default_profile_solo_turns_escalation_off(self):
+        self.write_user("default_profile: solo\n")
+        c = _merged_config(self.proj)
+        self.assertEqual(c["_profile"], "solo")
+        self.assertFalse(profile_mod.profile_allows_ask(c))
+
+    def test_state_beats_default_profile(self):
+        self.write_user("default_profile: live\n")
+        profile_mod.set_profile(self.bdir, "solo")
+        self.assertEqual(cfg.resolve_profile(self.proj), "solo")
+
+    def test_stale_state_name_falls_back_to_default_profile(self):
+        self.write_user("default_profile: solo\n")
+        profile_mod.set_profile(self.bdir, "midnight")
+        self.assertEqual(cfg.resolve_profile(self.proj), "solo")
+
+    def test_custom_profile_name_is_honored(self):
+        self.write_user("profiles:\n  midnight:\n    escalation: off\n")
+        profile_mod.set_profile(self.bdir, "midnight")
+        self.assertEqual(cfg.resolve_profile(self.proj), "midnight")
+        self.assertIn("midnight", cfg.known_profile_names(cfg._config_layers(self.proj)))
+
+    def test_profile_state_is_keyed_like_the_grant_state(self):
+        self.assertEqual(
+            profile_mod._state_file(self.bdir).name,
+            f"profile-{cfg.project_key(self.bdir)}.json")
+        self.assertEqual(
+            grant_mod._grant_file(self.bdir).name,
+            f"grant-{cfg.project_key(self.bdir)}.json")
+
+
+class TestProfileAndHarness(unittest.TestCase):
+    """Effective capability is profile AND harness — never one alone."""
+
+    def test_ask_needs_both_halves(self):
+        for fmt, allows, expect in (
+            ("json",  True,  True),
+            ("json",  False, False),
+            ("plain", True,  False),
+            ("plain", False, False),
+        ):
+            self.assertEqual(
+                hook_mod.harness_can_ask(fmt) and allows, expect,
+                f"{fmt} / profile_allows_ask={allows}")
+
+    def test_solo_deny_hint_replaces_the_escalation_advert(self):
+        _, err, code = hook_mod.format_hook_response(
+            "DENY", "nope", "json", profile_allows_ask=False)
+        self.assertEqual(code, 2)
+        self.assertIn("You may not perform this action at this time", err)
+        self.assertNotIn("Escalation support is available", err)
+
+    def test_live_deny_hint_still_advertises_escalation(self):
+        _, err, _ = hook_mod.format_hook_response(
+            "DENY", "nope", "json", profile_allows_ask=True)
+        self.assertIn("Escalation support is available", err)
+
+    def test_ask_becomes_deny_under_a_no_ask_profile(self):
+        # Every harness delivers the refusal in its own vocabulary; none of
+        # them may deliver an ASK, and none may quietly pass the call through.
+        out, err, code = hook_mod.format_hook_response(
+            "ASK", "unsure", "json", profile_allows_ask=False)
+        self.assertEqual(code, 2)
+        self.assertNotIn("permissionDecision", out)
+
+        for fmt in ("codex-pretool", "plain"):
+            out, err, code = hook_mod.format_hook_response(
+                "ASK", "unsure", fmt, profile_allows_ask=False)
+            self.assertEqual(code, 2, fmt)
+
+        # Codex PermissionRequest expresses a deny in JSON at exit 0; the
+        # thing that matters is that it is a deny, not an abstain into the
+        # user's approval prompt.
+        out, _, code = hook_mod.format_hook_response(
+            "ASK", "unsure", "codex-permission", profile_allows_ask=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(out)["hookSpecificOutput"]["decision"]["behavior"],
+            "deny")
+
+    def test_abstain_is_untouched_by_the_profile(self):
+        out, err, code = hook_mod.format_hook_response(
+            "ABSTAIN", "unsure", "json", profile_allows_ask=False)
+        self.assertEqual((out, err, code), ("", "", 0))
+
+    def test_floor_is_a_harness_property_not_a_format_one(self):
+        # json covers both Claude Code and opencode, and they abstain into
+        # very different places.
+        self.assertTrue(profile_mod.harness_has_unattended_floor("claude_code"))
+        self.assertFalse(profile_mod.harness_has_unattended_floor("opencode"))
+        self.assertFalse(profile_mod.harness_has_unattended_floor("codex"))
+        self.assertFalse(profile_mod.harness_has_unattended_floor("shim"))
+        self.assertFalse(profile_mod.harness_has_unattended_floor("unknown"))
+
+    def test_solo_resolves_ask_to_the_floor_or_to_deny(self):
+        r = profile_mod.resolve_unattended_action
+        self.assertEqual(r("ask", "claude_code"), "abstain")
+        self.assertEqual(r("ask", "opencode"), "deny")
+        self.assertEqual(r("abstain", "claude_code"), "abstain")
+        self.assertEqual(r("abstain", "shim"), "deny")
+        self.assertEqual(r("allow", "shim"), "allow")
+        self.assertEqual(r("deny", "claude_code"), "deny")
+
+    def test_infer_harness_names_claude_code(self):
+        self.assertEqual(
+            _infer_harness({"hook_event_name": "PreToolUse"}, "json"),
+            "claude_code")
+        self.assertEqual(
+            _infer_harness({"harness": "opencode"}, "json"), "opencode")
+        self.assertEqual(_infer_harness({}, "plain"), "shim")
+        self.assertEqual(_infer_harness({}, "codex-permission"), "codex")
+
+
+class TestEffectiveProfile(_ProfileTestCase):
+    """The indicator shows effective, not nominal (design item 13)."""
+
+    def test_live_on_an_asking_harness_is_live(self):
+        profile_mod.set_profile(self.bdir, "live")
+        profile_mod.note_harness(self.bdir, "claude_code", True)
+        st = effective_state(self.proj)
+        self.assertEqual(st["profile"], "live")
+        self.assertFalse(st["degraded"])
+
+    def test_live_on_a_harness_that_cannot_ask_shows_degraded_solo(self):
+        profile_mod.set_profile(self.bdir, "live")
+        profile_mod.note_harness(self.bdir, "shim", False)
+        st = effective_state(self.proj)
+        self.assertEqual(st["profile"], "solo")
+        self.assertTrue(st["degraded"], "must not show green live")
+        self.assertEqual(st["nominal"], "live")
+
+    def test_chosen_solo_is_not_degraded(self):
+        profile_mod.set_profile(self.bdir, "solo")
+        profile_mod.note_harness(self.bdir, "shim", False)
+        st = effective_state(self.proj)
+        self.assertEqual(st["profile"], "solo")
+        self.assertFalse(st["degraded"], "chosen solo is normal, not a warning")
+
+    def test_unseen_harness_reports_the_nominal_profile(self):
+        profile_mod.set_profile(self.bdir, "live")
+        st = effective_state(self.proj)
+        self.assertEqual(st["profile"], "live")
+        self.assertFalse(st["degraded"])
+        self.assertIsNone(st["harness"])
+
+    def test_degraded_and_chosen_solo_render_differently(self):
+        chosen = {"profile": "solo", "nominal": "solo", "degraded": False,
+                  "harness": "shim", "chosen": True}
+        degraded = dict(chosen, nominal="live", degraded=True)
+        for fmt in ("ansi", "tmux"):
+            a = profile_cmd._render(chosen, fmt)
+            b = profile_cmd._render(degraded, fmt)
+            self.assertNotEqual(a, b, fmt)
+            self.assertIn("solo", a)
+            self.assertIn("solo", b)
+
+    def test_note_harness_only_writes_when_the_answer_changes(self):
+        profile_mod.note_harness(self.bdir, "claude_code", True)
+        stamp = profile_mod._state_file(self.bdir).stat().st_mtime_ns
+        profile_mod.note_harness(self.bdir, "claude_code", True)
+        self.assertEqual(profile_mod._state_file(self.bdir).stat().st_mtime_ns,
+                         stamp)
+
+
+class TestSoloEscalationGating(unittest.TestCase):
+    """Both escalation entry points refuse under a no-ASK profile."""
+
+    ESC_CMD = "# ESCALATE: needed\nrm -rf build/"
+
+    def test_bash_escalate_marker_is_refused(self):
+        with tempfile.TemporaryDirectory() as esc:
+            _classify(
+                {"tool_name": "Bash", "tool_input": {"command": "rm -rf build/"},
+                 "session_id": "s1"},
+                call_llm_result=("DENY", "no", None, None),
+                config_yaml=_SOLO_YAML, escalation_dir=esc)
+            out, err, code = _classify(
+                {"tool_name": "Bash", "tool_input": {"command": self.ESC_CMD},
+                 "session_id": "s1"},
+                config_yaml=_SOLO_YAML, escalation_dir=esc)
+        self.assertEqual(code, 2)
+        self.assertNotIn("permissionDecision", out)
+        self.assertIn("Escalation is not available in this session", err)
+        self.assertIn("You may not perform this action at this time", err)
+
+    def test_bash_escalate_marker_still_works_under_live(self):
+        with tempfile.TemporaryDirectory() as esc:
+            _classify(
+                {"tool_name": "Bash", "tool_input": {"command": "rm -rf build/"},
+                 "session_id": "s1"},
+                call_llm_result=("DENY", "no", None, None),
+                config_yaml="default_profile: live\n", escalation_dir=esc)
+            out, _, code = _classify(
+                {"tool_name": "Bash", "tool_input": {"command": self.ESC_CMD},
+                 "session_id": "s1"},
+                config_yaml="default_profile: live\n", escalation_dir=esc)
+        self.assertEqual(code, 0)
+        self.assertIn('"permissionDecision": "ask"', out)
+
+    def test_bouncer_escalate_side_channel_is_refused(self):
+        with tempfile.TemporaryDirectory() as esc:
+            out, err, code = _classify(
+                {"tool_name": "Bash",
+                 "tool_input": {"command": 'bouncer escalate "please"'},
+                 "session_id": "s1"},
+                config_yaml=_SOLO_YAML, escalation_dir=esc)
+            armed = list(Path(esc).glob("grant-*.json"))
+        self.assertEqual(code, 2)
+        self.assertIn("Escalation is not available in this session", err)
+        self.assertEqual(armed, [], "no ASK state may be created under solo")
+
+    def test_an_armed_grant_is_not_consumed_under_solo(self):
+        call = {"tool_name": "Write",
+                "tool_input": {"file_path": "/tmp/x", "content": "hi"},
+                "session_id": "s1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            proj = Path(tmp) / "proj"
+            proj.mkdir()
+            esc = Path(tmp) / "esc"
+            _make_bouncer_dir(proj, config_yaml=_SOLO_YAML)
+            payload = dict(call, cwd=str(proj))
+            with patch.object(grant_mod, "GRANT_DIR", esc):
+                grant_mod.record_denial(proj / ".bouncer", "Write",
+                                        payload["tool_input"], "no")
+                grant_mod.arm_escalation(proj / ".bouncer", "please")
+                out, err, code = _classify(
+                    payload, call_llm_result=("DENY", "still no", None, None),
+                    escalation_dir=str(esc))
+                still = grant_mod._load(proj / ".bouncer").get("grant")
+        self.assertEqual(code, 2)
+        self.assertNotIn("escalation requested", out)
+        self.assertIsNotNone(still, "grant left to expire, not consumed")
+
+    def test_unsure_does_not_ask_under_solo(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"},
+             "session_id": "s1", "hook_event_name": "PreToolUse"},
+            call_llm_result=("UNSURE", "dunno", None, None),
+            config_yaml=_SOLO_YAML)
+        # Claude Code has an unattended floor, so solo abstains into it.
+        self.assertEqual((out, err, code), ("", "", 0))
+
+    def test_unsure_denies_under_solo_on_a_floorless_harness(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"},
+             "session_id": "s1", "harness": "opencode"},
+            call_llm_result=("UNSURE", "dunno", None, None),
+            config_yaml=_SOLO_YAML)
+        self.assertEqual(code, 2)
+        self.assertIn("You may not perform this action at this time", err)
+
+    def test_unavailable_denies_under_solo_on_a_floorless_harness(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"},
+             "session_id": "s1", "harness": "shim"},
+            call_llm_result=("TIMEOUT", "too slow", None, None),
+            config_yaml=_SOLO_YAML, fmt="plain")
+        self.assertEqual(code, 2)
+        self.assertIn("deny\t", out)
+
+    def test_session_may_not_set_its_own_profile(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash",
+             "tool_input": {"command": "bouncer profile live"},
+             "session_id": "s1"},
+            config_yaml=_SOLO_YAML)
+        self.assertEqual(code, 2)
+        self.assertIn("may not set its own bouncer profile", err)
+
+    def test_reading_the_profile_is_still_a_diagnostic(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash", "tool_input": {"command": "bouncer profile"},
+             "session_id": "s1"},
+            config_yaml=_SOLO_YAML)
+        self.assertEqual((out, err, code), ("", "", 0))
+
+
+class TestProfileCommand(_ProfileTestCase):
+    def _run(self, name=None, as_format="plain"):
+        class _A:
+            pass
+        _A.name = name
+        _A.as_format = as_format
+        buf = io.StringIO()
+        err = io.StringIO()
+        code = 0
+        with patch("pathlib.Path.cwd", return_value=self.proj), \
+                redirect_stdout(buf), redirect_stderr(err):
+            try:
+                profile_cmd.cmd_profile(_A())
+            except SystemExit as e:
+                code = e.code
+        return buf.getvalue(), err.getvalue(), code
+
+    def test_show_reports_the_default_profile_when_unset(self):
+        out, _, code = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("live", out)
+        self.assertIn("default_profile", out)
+
+    def test_set_and_show_round_trip(self):
+        self._run("solo")
+        self.assertEqual(profile_mod.get_profile(self.bdir), "solo")
+        out, _, _ = self._run()
+        self.assertIn("solo", out)
+        self.assertNotIn("default_profile", out)
+
+    def test_unknown_token_is_an_error_not_an_action(self):
+        _, err, code = self._run("yolo")
+        self.assertEqual(code, 2)
+        self.assertIn("unknown profile", err)
+        self.assertIsNone(profile_mod.get_profile(self.bdir))
+
+    def test_tmux_format_is_a_bare_styled_word(self):
+        self._run("solo")
+        out, _, _ = self._run(as_format="tmux")
+        self.assertEqual(out, "#[fg=yellow]solo#[default]")
+
+    def test_show_resolves_actions_through_the_harness(self):
+        self._run("solo")
+        profile_mod.note_harness(self.bdir, "opencode", True)
+        out, _, _ = self._run()
+        self.assertIn("abstain", out)
+        self.assertIn("deny", out)
+
+
+class TestProfileLint(unittest.TestCase):
+    def test_profiles_block_is_accepted(self):
+        out, code = _lint("default_profile: solo\n"
+                          "profiles:\n  solo:\n    escalation: off\n")
+        self.assertEqual(code, 0)
+        self.assertIn("default_profile: solo", out)
+
+    def test_unknown_default_profile_is_an_error(self):
+        out, code = _lint("default_profile: yolo\n")
+        self.assertEqual(code, 1)
+        self.assertIn("must name a known profile", out)
+
+    def test_solo_re_enabling_escalation_warns(self):
+        out, code = _lint("profiles:\n  solo:\n    escalation: on\n")
+        self.assertEqual(code, 0)
+        self.assertIn("solo means no ASK is ever produced", out)
+
+    def test_non_plumbing_key_in_a_profile_warns(self):
+        out, code = _lint("profiles:\n  solo:\n    policy_mode: replace\n")
+        self.assertEqual(code, 0)
+        self.assertIn("not a profile setting", out)
+
+    def test_bad_profile_action_is_an_error(self):
+        out, code = _lint("profiles:\n  solo:\n    on_unsure: maybe\n")
+        self.assertEqual(code, 1)
+        self.assertIn("profiles.solo.on_unsure", out)
+
+    def test_live_default_warns_when_a_no_ask_harness_is_installed(self):
+        with patch.object(lint_mod, "installed_harnesses",
+                          return_value=["shim"]):
+            out, code = _lint("default_profile: live\n")
+        self.assertEqual(code, 0)
+        self.assertIn("cannot ask a human at all", out)
+
+    def test_abstain_warns_when_no_installed_harness_has_a_floor(self):
+        with patch.object(lint_mod, "installed_harnesses",
+                          return_value=["opencode"]):
+            out, code = _lint("profiles:\n  solo:\n    escalation: off\n"
+                              "    on_unsure: abstain\n")
+        self.assertEqual(code, 0)
+        self.assertIn("no unattended", out)
 
 
 class TestPackagedIntegrationAssets(unittest.TestCase):

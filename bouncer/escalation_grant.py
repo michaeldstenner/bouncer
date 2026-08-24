@@ -47,8 +47,7 @@ def fingerprint(tool_name: str, tool_input: dict) -> str:
 
 
 def _grant_file(project_dir: Path) -> Path:
-    key = hashlib.sha1(str(project_dir.resolve()).encode("utf-8")).hexdigest()[:16]
-    return GRANT_DIR / f"grant-{key}.json"
+    return GRANT_DIR / f"grant-{_config.project_key(project_dir)}.json"
 
 
 def _load(project_dir: Path) -> dict:

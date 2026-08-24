@@ -209,7 +209,38 @@ only escalate after a denial, not preemptively.
 
 `ESCALATE` is a request, not an override: bouncer still defers to the user.
 Harnesses that do not have ASK available (the shell shim, for instance)
-deliver the escalation outward as a denial instead.
+deliver the escalation outward as a denial instead — and so does a session
+running under the `solo` profile, below.
+
+### Session profiles (`live` / `solo`)
+
+Escalation only makes sense if somebody is there to answer. The session
+profile says whether anybody is:
+
+```sh
+bouncer profile          # show the effective profile for this project
+bouncer profile solo     # this agent is running alone
+bouncer profile live     # a human is on the line
+```
+
+Under **`live`** (the default) escalation works and `on_unsure` /
+`on_unavailable` are used as written. Under **`solo`** no ASK is ever
+produced: escalation is refused up front — so an agent gets its denial back
+immediately instead of hanging on a prompt nobody will answer — and the
+unsure/unavailable fallbacks resolve to the harness's own floor where one
+exists, or to a deny where none does.
+
+A profile changes the plumbing, not the judgment: `policy.md` remains the only
+thing that decides ALLOW/DENY. The profile is per-project file state, so it
+can be changed mid-session and read by a status line:
+
+```tmux
+set -g status-right '#(bouncer profile --cwd "#{pane_current_path}" --as tmux) #(bouncer activity --cwd "#{pane_current_path}" --as tmux --width 6)'
+```
+
+Green `live`, amber `solo`, and inverted amber when a `live` profile is
+degraded because the harness has no way to ask anyone. See
+[docs/configuration.md](docs/configuration.md#session-profiles-live--solo).
 
 
 
@@ -231,6 +262,9 @@ bouncer check --llm 'git push origin main'  # ask the LLM directly
 bouncer tools                               # documented + observed harness tool names
 
 bouncer review          # interactive UNSURE decision review
+
+bouncer profile         # show the effective session profile (live / solo)
+bouncer profile solo    # switch this project to solo (no ASK is produced)
 ```
 
 Use `bouncer -g <cmd>` to operate on user-scope data instead of the project:
@@ -278,10 +312,11 @@ good place for personal norms ("never touch my dotfiles", "no force-push ever").
   permissive reviewer for existing approval prompts, not an extra lockdown
   layer.
 - [docs/configuration.md](docs/configuration.md) — `config.yaml` schema,
-  LLM providers, tools filter, fallback behavior, merge order, custom
-  system prompt.
+  LLM providers, tools filter, fallback behavior, session profiles, merge
+  order, custom system prompt.
 - [docs/integrations.md](docs/integrations.md) — per-harness install and
-  manual setup (Claude Code, Codex, opencode, shell shim).
+  manual setup (Claude Code, Codex, opencode, shell shim), and what an
+  abstain reaches on each.
 - [docs/auto-mode.md](docs/auto-mode.md) — how bouncer composes with Claude
   Code's auto-mode: the permission pipeline, precedence, and the full
   interaction matrix.

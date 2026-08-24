@@ -4,11 +4,16 @@ from pathlib import Path
 from ..colors import RESET, BOLD, GREEN, RED, YELLOW, DIM
 from ..config import (_find_bouncer_dir, load_yaml_config, USER_CONFIG_FILE,
                       expand_tools, uses_bare_all)
+from ..profile import (BUILTIN_PROFILE_NAMES, NO_ASK_HARNESSES, _truthy,
+                       harness_has_unattended_floor)
+from .init import installed_harnesses
 
 VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "llm",
                                  "on_unsure", "on_unavailable", "log",
+                                 "escalation",
                                  "escalation_requires_attempt",
                                  "escalation_attempt_ttl",
+                                 "default_profile", "profiles",
                                  "activity_width", "activity", "notify",
                                  # provider-keyed sections consumed by the
                                  # vendored llmclient for key/URL resolution
@@ -17,6 +22,103 @@ VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "ll
 VALID_POLICY_MODES = ("append", "replace")
 VALID_ACTIONS      = ("ask", "allow", "deny", "abstain")
 VALID_VERBOSITIES  = ("all", "deny_only", "off")
+
+# Keys a profile fragment may carry. A profile changes the plumbing — what
+# happens when bouncer cannot decide, and whether an agent may appeal — never
+# the judgment, so policy_mode and the LLM backend are not on the list.
+VALID_PROFILE_KEYS = frozenset({"escalation", "on_unsure", "on_unavailable",
+                                 "escalation_requires_attempt",
+                                 "escalation_attempt_ttl",
+                                 "notify", "log"})
+
+
+def _floorless_harnesses() -> list[str]:
+    """Installed integrations whose abstain reaches no unattended floor."""
+    return [h for h in installed_harnesses()
+            if not harness_has_unattended_floor(h)]
+
+
+def _no_ask_harnesses() -> list[str]:
+    """Installed integrations with no way to reach a human at all."""
+    return [h for h in installed_harnesses() if h in NO_ASK_HARNESSES]
+
+
+def _lint_profiles(data: dict, errors: list, warnings: list) -> None:
+    """Validate `default_profile` / `profiles:`, and warn about the two ways a
+    profile can quietly not do what it says (design item 10)."""
+    profiles = data.get("profiles")
+    if profiles is not None and not isinstance(profiles, dict):
+        errors.append(f"'profiles' must be a map of name -> settings, "
+                      f"got: {profiles!r}")
+        profiles = None
+
+    known = list(BUILTIN_PROFILE_NAMES)
+    for name in (profiles or {}):
+        if str(name) not in known:
+            known.append(str(name))
+
+    default = data.get("default_profile")
+    if default is not None:
+        if not isinstance(default, str) or default not in known:
+            errors.append(f"'default_profile' must name a known profile "
+                          f"{tuple(known)}, got: {default!r}")
+        else:
+            print(f"  default_profile: {default}")
+
+    if default is None and not profiles and "profiles" not in data:
+        return
+
+    listed = [str(k) for k in profiles] if profiles else known
+    print(f"  profiles:      {', '.join(listed)}")
+
+    for name, frag in (profiles or {}).items():
+        if not isinstance(frag, dict):
+            errors.append(f"'profiles.{name}' must be a map of settings, "
+                          f"got: {frag!r}")
+            continue
+        for key in frag:
+            if key not in VALID_PROFILE_KEYS:
+                warnings.append(
+                    f"'profiles.{name}.{key}' is not a profile setting — a "
+                    f"profile changes the plumbing, not the judgment")
+        for key in ("on_unsure", "on_unavailable"):
+            if key in frag and frag[key] not in VALID_ACTIONS:
+                errors.append(f"'profiles.{name}.{key}' must be one of "
+                              f"{VALID_ACTIONS}, got: {frag[key]!r}")
+        if "escalation" in frag and not isinstance(frag["escalation"], bool):
+            errors.append(f"'profiles.{name}.escalation' must be on or off, "
+                          f"got: {frag['escalation']!r}")
+            continue
+
+        # (b) a profile meant for unattended use that re-enables escalation.
+        # The layering deliberately lets a later layer win, so this is the
+        # place the mistake gets caught rather than being made impossible.
+        if name == "solo" and _truthy(frag.get("escalation"), False):
+            warnings.append(
+                "'profiles.solo.escalation' is on — solo means no ASK is "
+                "ever produced, so a session with nobody watching can stall "
+                "waiting for an answer. Remove it, or use a differently-named "
+                "profile.")
+
+        floorless = _floorless_harnesses()
+        if (not _truthy(frag.get("escalation"), True)
+                and frag.get("on_unsure") == "abstain" and floorless):
+            warnings.append(
+                f"'profiles.{name}' abstains with escalation off, but "
+                f"{', '.join(floorless)} "
+                f"{'has' if len(floorless) == 1 else 'have'} no unattended "
+                f"floor to abstain into — bouncer resolves those to deny "
+                f"instead. See docs/integrations.md.")
+
+    # (a) the configured profile cannot be honoured by the harness in use.
+    if default == "live":
+        no_ask = _no_ask_harnesses()
+        if no_ask:
+            warnings.append(
+                f"default_profile is 'live', but {', '.join(no_ask)} cannot "
+                f"ask a human at all — sessions on that harness run as "
+                f"'solo' whatever the profile says. 'bouncer profile' shows "
+                f"the effective state.")
 
 
 def cmd_lint(args):
@@ -84,6 +186,8 @@ def cmd_lint(args):
             errors.append(f"'{key}' must be one of {VALID_ACTIONS}, got: {val!r}")
         else:
             print(f"  {key:<16} {val}")
+
+    _lint_profiles(data, errors, warnings)
 
     if "escalation_requires_attempt" in data:
         era = data["escalation_requires_attempt"]

@@ -1,4 +1,5 @@
 import fnmatch
+import hashlib
 import sys
 from pathlib import Path
 from .yaml import MicroYAML, MicroYAMLError
@@ -41,8 +42,27 @@ CONFIG_DEFAULTS: dict = {
     },
     "on_unsure":      "ask",
     "on_unavailable": "ask",
+    "escalation": True,
     "escalation_requires_attempt": True,
     "escalation_attempt_ttl":      300,
+    # Session profiles. A profile changes the plumbing (what happens when
+    # bouncer cannot decide, and whether an agent may appeal to a human), never
+    # the judgment — policy.md alone decides ALLOW/DENY. All profiles are
+    # explicit: with no profile state for a project, `default_profile` names
+    # the one in force, so the indicator can always name a profile.
+    "default_profile": "live",
+    "profiles": {
+        "live": {
+            "escalation":     True,
+            "on_unsure":      "ask",
+            "on_unavailable": "ask",
+        },
+        "solo": {
+            "escalation":     False,
+            "on_unsure":      "abstain",
+            "on_unavailable": "abstain",
+        },
+    },
     "log": {
         "verbosity":   "all",
         "max_entries": 10000,
@@ -123,6 +143,24 @@ CONFIG_YAML_TEMPLATE = """\
 #            allow: risky calls still hit the harness's own gate.
 #on_unsure: ask
 #on_unavailable: ask
+
+# Session profiles. A profile changes the PLUMBING (what happens when bouncer
+# cannot decide, and whether an agent may appeal a denial to a human) — never
+# the judgment: policy.md alone decides ALLOW/DENY. Two ship:
+#   live   a human is on the line and can be asked
+#   solo   the agent runs alone — no ASK is ever produced
+# Switch with `bouncer profile live` / `bouncer profile solo`; `bouncer
+# profile` shows the effective state. With no profile set for a project,
+# default_profile names the one in force.
+#default_profile: live
+#profiles:
+#  solo:
+#    escalation: off        # no ASK may be produced in this profile
+#    on_unsure: abstain     # resolved per harness — see docs/integrations.md
+#    on_unavailable: abstain
+# A profile fragment beats base keys within its own layer, and later layers
+# still win: user.base -> user.profiles[P] -> project.base ->
+# project.profiles[P] -> local.base -> local.profiles[P].
 
 # Escalation gating. An agent escalates a denied command by re-running it with
 # a `# ESCALATE:` prefix. To curb agents that pre-emptively escalate commands
@@ -232,6 +270,24 @@ llm:
 #            allow: risky calls still hit the harness's own gate.
 on_unsure: ask
 on_unavailable: ask
+
+# Session profiles. A profile changes the PLUMBING (what happens when bouncer
+# cannot decide, and whether an agent may appeal a denial to a human) — never
+# the judgment: policy.md alone decides ALLOW/DENY. Two ship:
+#   live   a human is on the line and can be asked
+#   solo   the agent runs alone — no ASK is ever produced
+# Switch with `bouncer profile live` / `bouncer profile solo`; `bouncer
+# profile` shows the effective state. With no profile set for a project,
+# default_profile names the one in force.
+#default_profile: live
+#profiles:
+#  solo:
+#    escalation: off        # no ASK may be produced in this profile
+#    on_unsure: abstain     # resolved per harness — see docs/integrations.md
+#    on_unavailable: abstain
+# A profile fragment beats base keys within its own layer, and later layers
+# still win: user.base -> user.profiles[P] -> project.base ->
+# project.profiles[P] -> local.base -> local.profiles[P].
 
 # Escalation gating. An agent escalates a denied command by re-running it with
 # a `# ESCALATE:` prefix. To curb agents that pre-emptively escalate commands
@@ -487,27 +543,124 @@ def project_has_bouncer(cwd: Path | None = None) -> bool:
     return d is not None and (d / "config.yaml").exists()
 
 
-def _merged_config(cwd: Path | None = None) -> dict:
-    config = dict(CONFIG_DEFAULTS)
-    raw_layers: list[dict] = []  # ordered: user -> project -> local
-    user_cfg = load_yaml_config(USER_CONFIG_FILE)
-    if user_cfg:
-        config = _deep_merge(config, user_cfg)
-    raw_layers.append(user_cfg)
+def project_key(project_dir: Path) -> str:
+    """Stable per-project key for file state under ~/.local/share/bouncer/.
+
+    Shared by the escalation grant and the session profile so both are keyed
+    on the same thing: the resolved project dir, which every harness gives us
+    (unlike `session_id`, which several omit)."""
+    return hashlib.sha1(str(project_dir.resolve()).encode("utf-8")).hexdigest()[:16]
+
+
+def known_profile_names(raw_layers: list[dict]) -> list[str]:
+    """Every profile name a config layer defines, plus the two that ship.
+
+    The accepted-word set is closed: `bouncer profile <token>` only sets a name
+    that appears here, because an unrecognised token is never an action."""
+    from .profile import BUILTIN_PROFILE_NAMES
+    names = list(BUILTIN_PROFILE_NAMES)
+    for layer in raw_layers:
+        if not isinstance(layer, dict):
+            continue
+        block = layer.get("profiles")
+        if isinstance(block, dict):
+            for name in block:
+                if str(name) not in names:
+                    names.append(str(name))
+    return names
+
+
+def _config_layers(cwd: Path | None = None) -> list[dict]:
+    """The raw config layers in fold order: user -> project -> local."""
+    layers = [load_yaml_config(USER_CONFIG_FILE)]
     d = _find_bouncer_dir(cwd)
     if d:
-        proj_cfg = load_yaml_config(d / "config.yaml")
-        if proj_cfg:
-            config = _deep_merge(config, proj_cfg)
-        raw_layers.append(proj_cfg)
-        local_cfg = load_yaml_config(d / "config.local.yaml")
-        if local_cfg:
-            config = _deep_merge(config, local_cfg)
-        raw_layers.append(local_cfg)
+        layers.append(load_yaml_config(d / "config.yaml"))
+        layers.append(load_yaml_config(d / "config.local.yaml"))
+    return layers
+
+
+def _fold_layers(raw_layers: list[dict], profile: str | None) -> dict:
+    """Fold the layers, applying each layer's own profile fragment right after
+    its base keys:
+
+        defaults -> defaults.profiles[P]
+          -> user.base -> user.profiles[P]
+          -> project.base -> project.profiles[P]
+          -> local.base -> local.profiles[P]
+
+    So the profile fragment beats base keys **within its own layer**, and later
+    layers still win — the existing mental model, extended rather than
+    replaced. (Merging the profile dead-last would let it override every
+    project, but it would break that model to solve a lint problem; `bouncer
+    lint` flags the case instead.)"""
+    config: dict = {}
+    for layer in [CONFIG_DEFAULTS] + list(raw_layers):
+        if not isinstance(layer, dict) or not layer:
+            continue
+        base = {k: v for k, v in layer.items() if k != "profiles"}
+        if base:
+            config = _deep_merge(config, base)
+        if profile:
+            block = layer.get("profiles")
+            frag = block.get(profile) if isinstance(block, dict) else None
+            if isinstance(frag, dict):
+                config = _deep_merge(config, frag)
+    return config
+
+
+def _intercept_layers(raw_layers: list[dict], profile: str | None) -> list[dict]:
+    """The layer list `resolve_intercept` folds, with each layer's profile
+    fragment inserted directly after it (mirroring `_fold_layers`)."""
+    out: list[dict] = []
+    for layer in raw_layers:
+        if not isinstance(layer, dict):
+            continue
+        out.append(layer)
+        if profile:
+            block = layer.get("profiles")
+            frag = block.get(profile) if isinstance(block, dict) else None
+            if isinstance(frag, dict):
+                out.append(frag)
+    return out
+
+
+def resolve_profile(cwd: Path | None = None,
+                    raw_layers: list[dict] | None = None) -> str:
+    """The profile in force for this project.
+
+    Project state names it if set; otherwise `default_profile` does. Absence of
+    state means "use `default_profile`", never "use hardcoded behaviour", so
+    there is always a profile to name."""
+    from . import profile as _profile
+    if raw_layers is None:
+        raw_layers = _config_layers(cwd)
+    d = _find_bouncer_dir(cwd)
+    name = _profile.get_profile(d)
+    if name and name in known_profile_names(raw_layers):
+        return name
+    # A stale name (its `profiles:` entry was removed) falls back the same way
+    # as no state at all.
+    default = _fold_layers(raw_layers, None).get("default_profile")
+    if isinstance(default, str) and default:
+        return default
+    return CONFIG_DEFAULTS["default_profile"]
+
+
+def _merged_config(cwd: Path | None = None, profile: str | None = None) -> dict:
+    raw_layers = _config_layers(cwd)  # ordered: user -> project -> local
+    if profile is None:
+        profile = resolve_profile(cwd, raw_layers)
+    config = _fold_layers(raw_layers, profile)
+    config["_profile"] = profile
     # The fold needs the raw per-layer tools/groups; _deep_merge replaces them,
-    # so resolve the intercept set separately and stash it for classify.
+    # so resolve the intercept set separately and stash it for classify. Each
+    # layer contributes its base then its profile fragment, in the same order
+    # _fold_layers uses, so a `tools:` written into a profile lands where the
+    # rest of that profile does.
     try:
-        config["_tools_ops"], config["_groups"] = resolve_intercept(raw_layers)
+        config["_tools_ops"], config["_groups"] = resolve_intercept(
+            _intercept_layers(raw_layers, profile))
     except Exception:
         config["_tools_ops"] = expand_tools(CONFIG_DEFAULTS["tools"])
         config["_groups"] = dict(DEFAULT_GROUPS)

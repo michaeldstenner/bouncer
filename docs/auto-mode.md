@@ -93,7 +93,12 @@ Pick the composition you want:
   defer to auto-mode — it stops and asks you.
 - **Want bouncer fully in charge?** A confident, specific policy means bouncer
   decides most calls and auto-mode rarely matters.
-- **Want unattended auto-mode runs?** `on_unsure: ask` (the default) will pause
+- **Want unattended auto-mode runs?** Set the session profile to `solo`
+  (`bouncer profile solo`), which does exactly this and also refuses
+  escalation, so an agent cannot open a prompt nobody will answer. See
+  [`configuration.md`](configuration.md#session-profiles-live--solo). The
+  underlying keys, if you want them without the profile: `on_unsure: ask`
+  (the default) will pause
   the run for a human on any `UNSURE`. Set **`on_unsure: abstain`** (and
   **`on_unavailable: abstain`** so a flaky LLM backend doesn't stall the run):
   bouncer then emits no decision on those calls and hands them straight to

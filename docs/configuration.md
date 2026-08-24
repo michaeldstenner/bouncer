@@ -324,6 +324,109 @@ terminal output, a menu-bar app, or per-decision routing.
 | `ask` | Request human approval if ASK is available; otherwise delivered outward as a deny or pass-through depending on the integration (default) |
 | `allow` | Pass through silently |
 | `deny` | Block with the LLM's reason; ASK-capable harnesses include an `# ESCALATE:` hint, while no-ASK harnesses tell the agent to find another way or suggest a policy change |
+| `abstain` | Emit no decision at all — defer to the harness's own permission flow. Not the same as `allow`: risky calls still hit the harness's own gate, where it has one |
+
+Under a profile with no ASK channel (`solo`), these are resolved through the
+harness before being applied: `ask` becomes the harness's own unattended floor
+where one exists and `deny` where none does, and a configured `abstain` is
+honoured only where abstaining reaches a floor that decides without a human.
+See [Session profiles](#session-profiles-live--solo).
+
+## Session profiles (`live` / `solo`)
+
+A profile changes the **plumbing, not the judgment**. `policy.md` remains the
+only thing that decides ALLOW/DENY. A profile changes what bouncer does when
+it *cannot* decide, and whether an agent may appeal a denial to a human.
+
+Two profiles ship, and the names are used everywhere — config key, CLI
+argument, indicator text, and out loud:
+
+| Profile | Meaning |
+|---|---|
+| `live` | A human is on the line and can be asked. `on_unsure`/`on_unavailable` are used as written, and escalation works. |
+| `solo` | The agent runs alone. **No ASK is ever produced** — escalation, `on_unsure`, and `on_unavailable` all resolve to something else. |
+
+```sh
+bouncer profile          # show the effective profile for this project
+bouncer profile solo     # switch this project to solo
+bouncer profile live     # switch it back
+```
+
+One verb, values as arguments — there is deliberately no `bouncer solo`
+command, and an unrecognised name is an error rather than an action.
+
+### Where the profile lives
+
+Profile state is a plain JSON file under
+`~/.local/share/bouncer/profile/`, keyed on the project (the resolved
+`.bouncer/` dir) — the same key the escalation grant state uses. It is a file
+rather than an environment variable so the profile can be changed
+mid-session, and so a second process (a tmux status line) can read it.
+
+An agent may not set the profile of the project it is running in: bouncer
+denies `bouncer profile <name>` when it sees it as a tool call. This is
+footgun cover — an agent that notices the command exists and helpfully flips
+itself to `live` — not a security boundary.
+
+### Defining profiles in config
+
+`default_profile` names the profile in force when a project has no profile
+state. All profiles are explicit: absence of state means "use
+`default_profile`", never "use hardcoded behaviour".
+
+```yaml
+default_profile: live
+
+profiles:
+  solo:
+    escalation: off          # no ASK may be produced in this profile
+    on_unsure: abstain
+    on_unavailable: abstain
+```
+
+`escalation` is its own key rather than something derived from the profile
+name, so a variant of `solo` can change one without the other.
+
+A profile fragment beats base keys **within its own layer**, and later layers
+still win:
+
+```
+user.base -> user.profiles[P] -> project.base -> project.profiles[P]
+          -> local.base -> local.profiles[P]
+```
+
+Profile fragments carry plumbing keys only (`escalation`, `on_unsure`,
+`on_unavailable`, the escalation-gating keys, `notify`, `log`). `bouncer
+lint` warns about anything else in a fragment, about a `solo` profile that
+re-enables escalation, and about a `live` default on a harness that cannot
+ask.
+
+### What `solo` resolves to
+
+`solo` is honorable on every harness, but what it resolves *to* is
+harness-dependent, because "abstain" means *fall through to the harness's own
+floor* and not every harness has one. See
+[`integrations.md`](integrations.md#what-an-abstain-reaches) for the
+per-harness table. In short: on Claude Code, abstaining reaches auto-mode's
+safety classifier, which decides without a human; everywhere else abstaining
+reaches either a human prompt or nothing at all, so `solo` resolves to `deny`
+instead.
+
+### Effective vs nominal
+
+Capability is **profile AND harness**. A harness with no ASK channel cannot
+ask however the profile is set, so `live` degrades to `solo`'s behaviour
+there. `bouncer profile` and `bouncer status` show the *effective* state, and
+mark a degraded `solo` differently from a chosen one — a degraded `solo`
+means your request is not being honoured, while a chosen `solo` is normal.
+
+```tmux
+set -g status-right '#(bouncer profile --cwd "#{pane_current_path}" --as tmux) #(bouncer activity --cwd "#{pane_current_path}" --as tmux --width 6)'
+```
+
+`bouncer profile --as tmux` prints a bare styled word: green `live`, amber
+`solo`, and inverted amber for a degraded `solo`. Both names are four
+characters, so the status line does not jitter when it flips.
 
 ## Escalation gating
 
@@ -351,6 +454,10 @@ Later entries override earlier ones:
 2. `~/.config/bouncer/config.yaml` (user-level)
 3. `.bouncer/config.yaml` (project-level)
 4. `.bouncer/config.local.yaml` (machine-local overrides, gitignored)
+
+Each layer's `profiles:` fragment for the active profile is applied
+immediately after that layer's own base keys — see
+[Session profiles](#session-profiles-live--solo).
 
 ## Custom system prompt
 

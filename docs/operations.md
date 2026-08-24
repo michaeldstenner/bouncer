@@ -25,6 +25,8 @@ bouncer abort                 abort the pending LLM classification → ALLOW
 bouncer escalate [reason]     send your last denied tool call to the user,
                               then re-issue that exact call (the out-of-band
                               escalation path for non-Bash tools)
+bouncer profile               show the effective session profile
+bouncer profile live|solo     set this project's session profile
 bouncer classify --hook                 internal: hook interface (stdin → stdout)
 bouncer classify --hook --format plain  plain-text output (allow/deny/ask + reason)
 bouncer classify --hook --format codex-permission  Codex PermissionRequest output
@@ -34,6 +36,21 @@ bouncer -g policy             edit user-level policy.md
 bouncer -g log                view user-level log
 bouncer -g review             review user-level UNSURE decisions
 ```
+
+`bouncer profile` options:
+```
+--cwd <path>      project dir (for status lines run outside the project)
+--as <format>     plain | ansi | json | tmux
+```
+
+`bouncer profile` with no name shows the *effective* profile — the one in
+force after ANDing the configured profile with what the harness can actually
+do. A `live` profile on a harness with no ASK channel shows as a degraded
+`solo`, styled differently from a chosen one. See
+[configuration.md](configuration.md#session-profiles-live--solo).
+
+Agents cannot set the profile: bouncer denies `bouncer profile <name>` when it
+arrives as a tool call.
 
 `bouncer activity` options:
 ```
@@ -69,6 +86,8 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux -
 ~/.local/share/bouncer/
   log.jsonl            global decision log
   tools.json           global observed harness/tool catalog
+  escalation/          per-session attempt cache + per-project grant state
+  profile/             per-project session profile (live / solo)
 
 <project>/
   .bouncer/

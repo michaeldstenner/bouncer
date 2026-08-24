@@ -124,6 +124,50 @@ set -g status-interval 2
 set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux --width 6 2>/dev/null) #[fg=blue]#{window_width}'
 ```
 
+## What an abstain reaches
+
+Bouncer can emit **no decision at all** (`on_unsure: abstain`,
+`on_unavailable: abstain`), deferring the call to whatever the harness does
+on its own. What that actually reaches differs per harness, and the
+difference matters: it is what decides whether the `solo`
+[session profile](configuration.md#session-profiles-live--solo) can honour a
+configured `abstain` or has to resolve it to `deny` instead.
+
+| Integration | ASK channel | An abstain reaches | Verified? |
+|---|---|---|---|
+| Claude Code (`PreToolUse`, json) | yes — `permissionDecision: "ask"` | **auto-mode's safety classifier**, which decides without a human | verified for auto-mode (see [`auto-mode.md`](auto-mode.md)); **in `default` permission mode the fall-through is an interactive prompt instead** |
+| opencode (plugin, json) | yes — by abstaining | opencode's **native permission prompt**: a human | inferred from the plugin (a `skip` result leaves the request for the user) |
+| Codex `PermissionRequest` | yes — by abstaining | Codex's **normal approval prompt**: a human | inferred from the integration contract |
+| Codex legacy `PreToolUse` | no | **nothing** — the call simply runs | inferred from the hook protocol (exit 0, no output) |
+| Shell shim (`plain`) | no | **nothing** — the shim prints `allow` | verified from `format_hook_response` |
+
+Read the third column as "who decides if bouncer says nothing". Only Claude
+Code's answer is a machine. Everywhere else, abstaining either asks a person
+(fine when one is there, an ASK by another name when nobody is) or lets the
+call through unexamined — which would silently turn "the classifier was
+unreachable" into "everything is allowed".
+
+That is why `solo` does not abstain everywhere:
+
+- **on Claude Code**, `solo` resolves `ask` to `abstain` and keeps a
+  configured `abstain`, deferring to auto-mode's floor;
+- **on opencode, Codex, the shim, and any harness bouncer cannot identify**,
+  `solo` resolves both to `deny`, and the agent gets the denial back
+  immediately with guidance to work around it and report blocked at the end.
+
+Bouncer identifies the harness from the payload: Codex and opencode stamp a
+`harness` field themselves, and Claude Code is recognised by the `json` hook
+format plus a native `PreToolUse` event. An unidentified harness is treated as
+floorless.
+
+**Known imprecision.** Claude Code's floor is auto-mode's classifier, and
+Claude Code only runs that classifier in auto permission mode. Bouncer does
+not read the payload's `permission_mode`, so `solo` + Claude Code + a
+non-auto permission mode will abstain into an interactive prompt that nobody
+answers. If that combination matters, set `on_unsure: deny` /
+`on_unavailable: deny` in the `solo` profile fragment.
+
+
 ## OpenAI Codex CLI
 
 `bouncer init --harness=codex` does the following:

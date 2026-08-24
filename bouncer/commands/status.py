@@ -13,6 +13,7 @@ from ..config import (
     project_log_file,
 )
 from .init import format_installed_harnesses
+from .profile import effective_state
 
 
 def _print_config_summary(data: dict, prefix: str = "  ") -> None:
@@ -31,6 +32,10 @@ def _print_config_summary(data: dict, prefix: str = "  ") -> None:
     print(f"{prefix}llm:            {llm.get('provider', 'ollama')} / {llm.get('model', '?')}")
     print(f"{prefix}on_unsure:      {on_u}")
     print(f"{prefix}on_unavailable: {on_na}")
+    if data.get("default_profile") or data.get("profiles"):
+        dp = data.get("default_profile", "(inherited)")
+        names = ", ".join(str(k) for k in (data.get("profiles") or {})) or "-"
+        print(f"{prefix}profiles:       default={dp}, defined={names}")
     v  = log_cfg.get("verbosity", "all")
     me = log_cfg.get("max_entries", "?")
     print(f"{prefix}log:            verbosity={v}, max_entries={me}")
@@ -120,10 +125,14 @@ def cmd_status(args):
         return
 
     proj_name = d.parent.name
+    state     = effective_state(cwd)
+    prof      = state["profile"]
+    prof_note = "  ⚠ degraded" if state["degraded"] else ""
     print(f"{GREEN}● bouncer active{RESET}  "
           f"{BOLD}{tools_str}{RESET} via {model_str}  "
           f"{DIM}[{proj_name}]{RESET}")
-    print(f"  unsure→{on_u}  unavailable→{on_na}")
+    print(f"  profile: {BOLD}{prof}{RESET}{prof_note}  "
+          f"unsure→{on_u}  unavailable→{on_na}")
     print(f"  integrations: {format_installed_harnesses()}")
 
 
