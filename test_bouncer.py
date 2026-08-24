@@ -2940,20 +2940,49 @@ class TestProfileAndHarness(unittest.TestCase):
     def test_floor_is_a_harness_property_not_a_format_one(self):
         # json covers both Claude Code and opencode, and they abstain into
         # very different places.
-        self.assertTrue(profile_mod.harness_has_unattended_floor("claude_code"))
-        self.assertFalse(profile_mod.harness_has_unattended_floor("opencode"))
-        self.assertFalse(profile_mod.harness_has_unattended_floor("codex"))
-        self.assertFalse(profile_mod.harness_has_unattended_floor("shim"))
-        self.assertFalse(profile_mod.harness_has_unattended_floor("unknown"))
+        has = profile_mod.harness_has_unattended_floor
+        self.assertTrue(has("claude_code", "auto"))
+        self.assertFalse(has("opencode", "auto"))
+        self.assertFalse(has("codex", "auto"))
+        self.assertFalse(has("shim", "auto"))
+        self.assertFalse(has("unknown", "auto"))
+
+    def test_only_claude_codes_auto_mode_counts_as_a_floor(self):
+        has = profile_mod.harness_has_unattended_floor
+        self.assertTrue(has("claude_code", "auto"))
+        # An allowlist: everything else is floorless, including modes that
+        # exist today, a mode a future Claude Code might add, and no mode
+        # at all.
+        for mode in ("default", "acceptEdits", "bypassPermissions", "plan",
+                     "someFutureMode", "", None):
+            self.assertFalse(has("claude_code", mode), repr(mode))
+        self.assertFalse(has("claude_code"))
+
+    def test_abstain_floor_reports_unknown_outside_auto(self):
+        floor = profile_mod.abstain_floor
+        self.assertEqual(floor("claude_code", "auto"), "classifier")
+        self.assertEqual(floor("claude_code", "default"), "unknown")
+        self.assertEqual(floor("claude_code", None), "unknown")
+        # Other harnesses are unaffected by the mode — it is a Claude Code
+        # refinement, not a new axis.
+        self.assertEqual(floor("opencode", "auto"), "prompt")
+        self.assertEqual(floor("opencode", None), "prompt")
+        self.assertEqual(floor("shim", "default"), "passthrough")
+        self.assertEqual(floor("nonesuch", "auto"), "unknown")
 
     def test_solo_resolves_ask_to_the_floor_or_to_deny(self):
         r = profile_mod.resolve_unattended_action
-        self.assertEqual(r("ask", "claude_code"), "abstain")
-        self.assertEqual(r("ask", "opencode"), "deny")
-        self.assertEqual(r("abstain", "claude_code"), "abstain")
-        self.assertEqual(r("abstain", "shim"), "deny")
-        self.assertEqual(r("allow", "shim"), "allow")
-        self.assertEqual(r("deny", "claude_code"), "deny")
+        self.assertEqual(r("ask", "claude_code", "auto"), "abstain")
+        self.assertEqual(r("ask", "claude_code", "default"), "deny")
+        self.assertEqual(r("ask", "claude_code", None), "deny")
+        self.assertEqual(r("ask", "opencode", "auto"), "deny")
+        self.assertEqual(r("abstain", "claude_code", "auto"), "abstain")
+        self.assertEqual(r("abstain", "claude_code", "plan"), "deny")
+        self.assertEqual(r("abstain", "shim", None), "deny")
+        # allow/deny produce no ASK either way and are passed through.
+        self.assertEqual(r("allow", "shim", None), "allow")
+        self.assertEqual(r("allow", "claude_code", "default"), "allow")
+        self.assertEqual(r("deny", "claude_code", "auto"), "deny")
 
     def test_infer_harness_names_claude_code(self):
         self.assertEqual(
@@ -3085,13 +3114,67 @@ class TestSoloEscalationGating(unittest.TestCase):
         self.assertNotIn("escalation requested", out)
         self.assertIsNotNone(still, "grant left to expire, not consumed")
 
-    def test_unsure_does_not_ask_under_solo(self):
+    def test_unsure_abstains_under_solo_on_claude_code_auto(self):
+        # The one combination that earns an abstain: Claude Code in `auto`,
+        # whose floor is a machine that was observed deciding.
         out, err, code = _classify(
             {"tool_name": "Bash", "tool_input": {"command": "ls"},
-             "session_id": "s1", "hook_event_name": "PreToolUse"},
+             "session_id": "s1", "hook_event_name": "PreToolUse",
+             "permission_mode": "auto"},
             call_llm_result=("UNSURE", "dunno", None, None),
             config_yaml=_SOLO_YAML)
-        # Claude Code has an unattended floor, so solo abstains into it.
+        self.assertEqual((out, err, code), ("", "", 0))
+
+    def test_unsure_denies_under_solo_outside_auto_mode(self):
+        # Under solo bouncer must not produce an ASK, and must not abstain
+        # into something that will produce one on its behalf. Two real
+        # non-auto modes, one a future version might add, and a missing key.
+        for mode in ("default", "acceptEdits", "someFutureMode", None):
+            payload = {"tool_name": "Bash", "tool_input": {"command": "ls"},
+                       "session_id": "s1", "hook_event_name": "PreToolUse"}
+            if mode is not None:
+                payload["permission_mode"] = mode
+            out, err, code = _classify(
+                payload, call_llm_result=("UNSURE", "dunno", None, None),
+                config_yaml=_SOLO_YAML)
+            self.assertEqual(code, 2, repr(mode))
+            self.assertNotIn("permissionDecision", out, repr(mode))
+            self.assertIn("You may not perform this action at this time",
+                          err, repr(mode))
+
+    def test_unavailable_denies_under_solo_outside_auto_mode(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"},
+             "session_id": "s1", "hook_event_name": "PreToolUse",
+             "permission_mode": "default"},
+            call_llm_result=("TIMEOUT", "too slow", None, None),
+            config_yaml=_SOLO_YAML)
+        self.assertEqual(code, 2)
+        self.assertIn("You may not perform this action at this time", err)
+
+    def test_live_is_unaffected_by_permission_mode(self):
+        # The mode only narrows what `solo` may abstain into. Under `live`
+        # an UNSURE still asks, in every mode and with the key absent.
+        for mode in ("auto", "default", "someFutureMode", None):
+            payload = {"tool_name": "Bash", "tool_input": {"command": "ls"},
+                       "session_id": "s1", "hook_event_name": "PreToolUse"}
+            if mode is not None:
+                payload["permission_mode"] = mode
+            out, err, code = _classify(
+                payload, call_llm_result=("UNSURE", "dunno", None, None),
+                config_yaml="default_profile: live\n")
+            self.assertEqual(code, 0, repr(mode))
+            self.assertIn('"permissionDecision": "ask"', out, repr(mode))
+
+    def test_live_abstain_is_unaffected_by_permission_mode(self):
+        # A user who configured `abstain` under `live` still gets it, even
+        # outside auto mode — the narrowing belongs to solo, not to abstain.
+        out, err, code = _classify(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"},
+             "session_id": "s1", "hook_event_name": "PreToolUse",
+             "permission_mode": "default"},
+            call_llm_result=("UNSURE", "dunno", None, None),
+            config_yaml="default_profile: live\non_unsure: abstain\n")
         self.assertEqual((out, err, code), ("", "", 0))
 
     def test_unsure_denies_under_solo_on_a_floorless_harness(self):
@@ -3175,6 +3258,20 @@ class TestProfileCommand(_ProfileTestCase):
         profile_mod.note_harness(self.bdir, "opencode", True)
         out, _, _ = self._run()
         self.assertIn("abstain", out)
+        self.assertIn("deny", out)
+
+    def test_show_resolves_actions_through_the_permission_mode(self):
+        self._run("solo")
+        profile_mod.note_harness(self.bdir, "claude_code", True, "auto")
+        out, _, _ = self._run()
+        self.assertIn("claude_code/auto", out)
+        self.assertIn("abstain \u2192 classifier", out)
+        self.assertNotIn("deny", out)
+
+        profile_mod.note_harness(self.bdir, "claude_code", True, "default")
+        out, _, _ = self._run()
+        self.assertIn("claude_code/default", out)
+        self.assertIn("abstain \u2192 unknown", out)
         self.assertIn("deny", out)
 
 

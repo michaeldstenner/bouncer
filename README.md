@@ -225,10 +225,13 @@ bouncer profile live     # a human is on the line
 
 Under **`live`** (the default) escalation works and `on_unsure` /
 `on_unavailable` are used as written. Under **`solo`** no ASK is ever
-produced: escalation is refused up front — so an agent gets its denial back
-immediately instead of hanging on a prompt nobody will answer — and the
-unsure/unavailable fallbacks resolve to the harness's own floor where one
-exists, or to a deny where none does.
+produced — not by bouncer, and not by deferring to something that would ask
+on its behalf. Escalation is refused up front, so an agent gets its denial
+back immediately instead of hanging on a prompt nobody will answer; and the
+unsure/unavailable fallbacks defer only where the fall-through is known to
+decide without a human. In practice that is Claude Code running in `auto`
+permission mode, whose floor is auto-mode's own classifier. Everything else
+denies.
 
 A profile changes the plumbing, not the judgment: `policy.md` remains the only
 thing that decides ALLOW/DENY. The profile is per-project file state, so it

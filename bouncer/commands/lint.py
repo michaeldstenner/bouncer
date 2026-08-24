@@ -33,9 +33,15 @@ VALID_PROFILE_KEYS = frozenset({"escalation", "on_unsure", "on_unavailable",
 
 
 def _floorless_harnesses() -> list[str]:
-    """Installed integrations whose abstain reaches no unattended floor."""
+    """Installed integrations that can never abstain into an unattended
+    floor, in any session.
+
+    Asked in the harness's best case (`auto`), because lint sees config, not
+    a running session: whether a *given* Claude Code session's abstain
+    reaches auto-mode's classifier depends on its permission mode, which only
+    the hook payload carries."""
     return [h for h in installed_harnesses()
-            if not harness_has_unattended_floor(h)]
+            if not harness_has_unattended_floor(h, "auto")]
 
 
 def _no_ask_harnesses() -> list[str]:

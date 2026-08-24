@@ -50,6 +50,7 @@ def effective_state(cwd: Path) -> dict:
         "nominal":   nominal,
         "degraded":  degraded,
         "harness":   (seen or {}).get("name") if seen else None,
+        "mode":      (seen or {}).get("permission_mode") if seen else None,
         "chosen":    _profile.get_profile(project_dir) is not None,
     }
 
@@ -128,13 +129,15 @@ def _print_show(cwd: Path, state: dict) -> None:
         if allows_ask or not state["harness"]:
             print(f"  {key + ':':<15} {configured}")
             continue
-        resolved = _profile.resolve_unattended_action(configured,
-                                                      state["harness"])
+        resolved = _profile.resolve_unattended_action(
+            configured, state["harness"], state.get("mode"))
         arrow = "" if resolved == configured else f" {DIM}→{RESET} {resolved}"
         print(f"  {key + ':':<15} {configured}{arrow}")
     if state["harness"]:
-        floor = _profile.HARNESS_ABSTAIN_FLOOR.get(state["harness"], "unknown")
-        print(f"  harness:        {state['harness']} "
+        mode = state.get("mode")
+        floor = _profile.abstain_floor(state["harness"], mode)
+        label = f"{state['harness']}" + (f"/{mode}" if mode else "")
+        print(f"  harness:        {label} "
               f"{DIM}(abstain → {floor}){RESET}")
     else:
         print(f"  harness:        {DIM}not seen yet in this project{RESET}")

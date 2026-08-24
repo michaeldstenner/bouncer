@@ -128,45 +128,74 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux -
 
 Bouncer can emit **no decision at all** (`on_unsure: abstain`,
 `on_unavailable: abstain`), deferring the call to whatever the harness does
-on its own. What that actually reaches differs per harness, and the
-difference matters: it is what decides whether the `solo`
-[session profile](configuration.md#session-profiles-live--solo) can honour a
-configured `abstain` or has to resolve it to `deny` instead.
+on its own. What that actually reaches differs per harness — and, on Claude
+Code, per permission mode. The difference matters: it is what decides whether
+the `solo` [session profile](configuration.md#session-profiles-live--solo)
+can honour a configured `abstain` or has to resolve it to `deny` instead.
 
 | Integration | ASK channel | An abstain reaches | Verified? |
 |---|---|---|---|
-| Claude Code (`PreToolUse`, json) | yes — `permissionDecision: "ask"` | **auto-mode's safety classifier**, which decides without a human | verified for auto-mode (see [`auto-mode.md`](auto-mode.md)); **in `default` permission mode the fall-through is an interactive prompt instead** |
+| Claude Code, `--permission-mode auto` | yes — `permissionDecision: "ask"` | **auto-mode's safety classifier**, which decides without a human | **verified** — see [`auto-mode.md`](auto-mode.md), whose interaction matrix was established empirically, and which has been observed blocking a real call |
+| Claude Code, any other mode | yes | **not established** — treated as no floor | not claimed; covered by the allowlist default below |
 | opencode (plugin, json) | yes — by abstaining | opencode's **native permission prompt**: a human | inferred from the plugin (a `skip` result leaves the request for the user) |
 | Codex `PermissionRequest` | yes — by abstaining | Codex's **normal approval prompt**: a human | inferred from the integration contract |
 | Codex legacy `PreToolUse` | no | **nothing** — the call simply runs | inferred from the hook protocol (exit 0, no output) |
 | Shell shim (`plain`) | no | **nothing** — the shim prints `allow` | verified from `format_hook_response` |
 
-Read the third column as "who decides if bouncer says nothing". Only Claude
-Code's answer is a machine. Everywhere else, abstaining either asks a person
-(fine when one is there, an ASK by another name when nobody is) or lets the
-call through unexamined — which would silently turn "the classifier was
-unreachable" into "everything is allowed".
+Read the third column as "who decides if bouncer says nothing". Exactly one
+row is a machine. Everywhere else, abstaining either asks a person (fine when
+one is there, an ASK by another name when nobody is) or lets the call through
+unexamined — which would silently turn "the classifier was unreachable" into
+"everything is allowed".
 
-That is why `solo` does not abstain everywhere:
+So `solo` does not abstain everywhere:
 
-- **on Claude Code**, `solo` resolves `ask` to `abstain` and keeps a
+- **on Claude Code in `auto`**, `solo` resolves `ask` to `abstain` and keeps a
   configured `abstain`, deferring to auto-mode's floor;
-- **on opencode, Codex, the shim, and any harness bouncer cannot identify**,
-  `solo` resolves both to `deny`, and the agent gets the denial back
-  immediately with guidance to work around it and report blocked at the end.
+- **everywhere else** — Claude Code in any other permission mode, opencode,
+  Codex, the shim, and any harness bouncer cannot identify — `solo` resolves
+  both to `deny`, and the agent gets the denial back immediately with guidance
+  to work around it and report blocked at the end.
 
-Bouncer identifies the harness from the payload: Codex and opencode stamp a
-`harness` field themselves, and Claude Code is recognised by the `json` hook
-format plus a native `PreToolUse` event. An unidentified harness is treated as
-floorless.
+Under `solo` bouncer never produces an ASK: not itself, and not by abstaining
+into something that would produce one on its behalf.
 
-**Known imprecision.** Claude Code's floor is auto-mode's classifier, and
-Claude Code only runs that classifier in auto permission mode. Bouncer does
-not read the payload's `permission_mode`, so `solo` + Claude Code + a
-non-auto permission mode will abstain into an interactive prompt that nobody
-answers. If that combination matters, set `on_unsure: deny` /
-`on_unavailable: deny` in the `solo` profile fragment.
+### How the mode is matched
 
+`auto` is matched from an **allowlist** (`CLASSIFIER_PERMISSION_MODES` in
+`bouncer/profile.py`), never against a list of modes to exclude. It is the
+one value whose floor was actually observed deciding a call, so it is the one
+value that earns an abstain. Everything else falls to the default branch and
+denies, including:
+
+- the other modes Claude Code ships today (`default`, `acceptEdits`,
+  `bypassPermissions`, `plan`) — bouncer makes **no claim** about where their
+  abstain lands, and does not need to, because it never abstains there;
+- a mode a future Claude Code version adds, which fails safe rather than
+  silently re-opening the stall;
+- a payload with no `permission_mode` key at all.
+
+That last branch is load-bearing rather than defensive. `permission_mode` was
+present on every Claude Code `PreToolUse` payload captured during the
+2026-08-19 recon — across all five `--permission-mode` values and a flagless
+headless `claude -p` — but it is not a documented guarantee, an older Claude
+Code may not send it, and bouncer's other entry points (the Codex and
+opencode bridges, which build their own payloads) never do. All of those
+resolve to `deny` under `solo`.
+
+None of this applies under `live`, where the configured `on_unsure` /
+`on_unavailable` are used exactly as written in every permission mode. The
+mode narrows what `solo` may abstain into; it does not change `abstain`
+itself.
+
+### How the harness is identified
+
+Codex and opencode stamp a `harness` field into the payload themselves.
+Claude Code does not, and is recognised by the `json` hook format plus a
+native `PreToolUse` event. An unidentified harness is treated as floorless.
+
+`bouncer profile` shows what the last classified call in a project reported,
+e.g. `harness: claude_code/auto  (abstain → classifier)`.
 
 ## OpenAI Codex CLI
 

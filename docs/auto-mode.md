@@ -95,7 +95,10 @@ Pick the composition you want:
   decides most calls and auto-mode rarely matters.
 - **Want unattended auto-mode runs?** Set the session profile to `solo`
   (`bouncer profile solo`), which does exactly this and also refuses
-  escalation, so an agent cannot open a prompt nobody will answer. See
+  escalation, so an agent cannot open a prompt nobody will answer. `solo`
+  reads the payload's `permission_mode` and only defers to the floor
+  described here when the session is actually in `auto`; in any other mode
+  it denies instead of abstaining into a prompt. See
   [`configuration.md`](configuration.md#session-profiles-live--solo). The
   underlying keys, if you want them without the profile: `on_unsure: ask`
   (the default) will pause

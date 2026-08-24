@@ -129,18 +129,21 @@ def _skip_reason(tool_name: str, tool_input: dict, config: dict) -> str | None:
     return None
 
 
-def _fallback_action(config: dict, key: str, harness: str) -> str:
+def _fallback_action(config: dict, key: str, harness: str,
+                     permission_mode: str | None = None) -> str:
     """The configured `on_unsure` / `on_unavailable` action, resolved through
     the profile.
 
     Under a profile with no ASK channel (`solo`), every path that could produce
     an ASK resolves to something else: the harness's own floor where one is
-    known to decide without a human, and `deny` where none is. Under `live`
-    the configured action is used as written."""
+    known to decide without a human, and `deny` where none is. "Known" is
+    narrow on purpose — for Claude Code it means the `auto` permission mode
+    and nothing else, so an abstain can never turn into a prompt nobody
+    answers. Under `live` the configured action is used as written."""
     action = config.get(key, "ask")
     if profile_allows_ask(config):
         return action
-    return resolve_unattended_action(action, harness)
+    return resolve_unattended_action(action, harness, permission_mode)
 
 
 def get_classification(
@@ -148,6 +151,7 @@ def get_classification(
     tool_input: dict,
     cwd: str,
     harness: str = "unknown",
+    permission_mode: str | None = None,
 ) -> tuple[str, str, str | None, int | None, list[dict] | None]:
     """
     Pure logic: get decision and reason for a tool call.
@@ -184,7 +188,8 @@ def get_classification(
 
     if decision is None or decision in ("TIMEOUT", "LLM_ERROR"):
         display_dec = decision or "UNSURE"
-        fallback_action = _fallback_action(config, "on_unavailable", harness)
+        fallback_action = _fallback_action(config, "on_unavailable", harness,
+                                           permission_mode)
         final_dec, final_reason = resolve_fallback(
             fallback_action,
             f"LLM unavailable: {reason}"
@@ -195,7 +200,8 @@ def get_classification(
         return decision, reason, decision, prompt_chars, None
 
     # UNSURE
-    fallback_action = _fallback_action(config, "on_unsure", harness)
+    fallback_action = _fallback_action(config, "on_unsure", harness,
+                                       permission_mode)
     final_dec, final_reason = resolve_fallback(
         fallback_action,
         f"LLM unsure: {reason}"
@@ -210,6 +216,7 @@ def run_classify(
     session_id: str,
     fmt: str = "json",
     harness: str = "unknown",
+    permission_mode: str | None = None,
 ) -> None:
     """
     Legacy/CLI entry point: classifies, logs, updates activity,
@@ -234,7 +241,7 @@ def run_classify(
     # this harness has a channel to reach them at all. It feeds the DENY
     # wording below and, via note_harness, the indicator.
     profile_ask = profile_allows_ask(config)
-    note_harness(bouncer_dir, harness, harness_can_ask(fmt))
+    note_harness(bouncer_dir, harness, harness_can_ask(fmt), permission_mode)
 
     # Footgun cover, not a security boundary: an agent that notices `bouncer
     # profile` exists must not helpfully flip itself to `live`. The CLI
@@ -302,7 +309,7 @@ def run_classify(
             return
 
         decision, reason, action, _, _snap = get_classification(
-            tool_name, tool_input, cwd, harness)
+            tool_name, tool_input, cwd, harness, permission_mode)
         if decision == "SKIP":
             sys.exit(0)
 
@@ -391,7 +398,7 @@ def run_classify(
 
     t0 = time.monotonic()
     decision, reason, action, prompt_chars, snap = get_classification(
-        tool_name, tool_input, cwd, harness)
+        tool_name, tool_input, cwd, harness, permission_mode)
     elapsed = time.monotonic() - t0
 
     if decision == "SKIP":

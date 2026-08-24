@@ -53,27 +53,55 @@ BUILTIN_PROFILE_NAMES = ("live", "solo")
 #   "passthrough" nothing to defer to — the call simply runs. Under `solo`
 #                 that would silently turn "classifier unreachable" into
 #                 "everything allowed", which is the one outcome to avoid.
+#   "unknown"     we do not know, so we do not defer to it.
 #
 # Keyed on the harness, not the hook format, because `json` covers both Claude
 # Code and opencode and those two abstain into different places.
 HARNESS_ABSTAIN_FLOOR = {
-    "claude_code":   "classifier",
+    "claude_code":   "classifier",   # in `auto` only — see abstain_floor()
     "opencode":      "prompt",
     "codex":         "prompt",
     "codex_pretool": "passthrough",
     "shim":          "passthrough",
 }
 
+# Claude Code's abstain does not always land in the same place: only its
+# `auto` permission mode runs the auto-mode safety classifier. Every other
+# mode either asks a human or does something we have not established.
+#
+# This is an ALLOWLIST on purpose. `auto` is the one value that earns an
+# abstain — the one mode whose floor was actually observed firing. Anything
+# else, including a mode a future Claude Code adds and a payload with no
+# `permission_mode` at all, falls to "no floor" and therefore to deny. A
+# denylist would silently re-open the stall the first time the value changed.
+CLASSIFIER_PERMISSION_MODES = frozenset({"auto"})
+
 # Integrations with no channel to a human at all, whatever the profile says.
 # These are the ones where `live` cannot be honoured and degrades to `solo`.
 NO_ASK_HARNESSES = frozenset({"shim", "codex_pretool"})
 
 
-def harness_has_unattended_floor(harness: str) -> bool:
-    """True if abstaining on this harness reaches something that decides the
-    call without a human. Unknown harnesses count as floorless: `solo` then
-    denies rather than guessing."""
-    return HARNESS_ABSTAIN_FLOOR.get(harness) == "classifier"
+def abstain_floor(harness: str, permission_mode: str | None = None) -> str:
+    """Where an abstain lands for this harness in this permission mode.
+
+    Returns one of the four values above. The only way to get "classifier"
+    is Claude Code in `auto`; a Claude Code session in any other mode
+    reports "unknown", because we deliberately do not claim to know where
+    its abstain lands and do not need to.
+    """
+    floor = HARNESS_ABSTAIN_FLOOR.get(harness, "unknown")
+    if floor == "classifier":
+        if permission_mode not in CLASSIFIER_PERMISSION_MODES:
+            return "unknown"
+    return floor
+
+
+def harness_has_unattended_floor(harness: str,
+                                 permission_mode: str | None = None) -> bool:
+    """True if abstaining reaches something that decides the call without a
+    human. Everything we have not established counts as floorless: `solo`
+    then denies rather than guessing."""
+    return abstain_floor(harness, permission_mode) == "classifier"
 
 
 # --- profile semantics --------------------------------------------------------
@@ -100,7 +128,8 @@ def profile_allows_ask(config: dict) -> bool:
     return _truthy(config.get("escalation"), True)
 
 
-def resolve_unattended_action(action: str, harness: str) -> str:
+def resolve_unattended_action(action: str, harness: str,
+                              permission_mode: str | None = None) -> str:
     """Map a fallback action to one that cannot produce an ASK.
 
     Used for `on_unsure` / `on_unavailable` under a profile with no ASK
@@ -108,10 +137,17 @@ def resolve_unattended_action(action: str, harness: str) -> str:
     untouched. Everything else resolves to the harness's own floor if that
     floor decides without a human, and to `deny` if it does not — a `prompt`
     floor is an ASK by another name, and a `passthrough` floor would turn an
-    unreachable classifier into a blanket allow."""
+    unreachable classifier into a blanket allow.
+
+    Under `solo`, bouncer must never produce an ASK — not itself, and not by
+    abstaining into something that will produce one on its behalf. That is
+    why the permission mode is part of this decision and not just the
+    harness."""
     if action in ("allow", "deny"):
         return action
-    return "abstain" if harness_has_unattended_floor(harness) else "deny"
+    if harness_has_unattended_floor(harness, permission_mode):
+        return "abstain"
+    return "deny"
 
 
 def effective_profile(nominal: str,
@@ -166,9 +202,11 @@ def set_profile(project_dir: Path, name: str) -> None:
     _store(project_dir, data)
 
 
-def note_harness(project_dir: Path | None, harness: str, can_ask: bool) -> None:
-    """Record which harness last classified a call in this project, so the
-    indicator can show *effective* capability rather than the nominal profile.
+def note_harness(project_dir: Path | None, harness: str, can_ask: bool,
+                 permission_mode: str | None = None) -> None:
+    """Record which harness last classified a call in this project, and in
+    which permission mode, so the indicator can show *effective* capability
+    rather than the nominal profile.
 
     Writes only when the answer changes, so the steady state is a read."""
     if project_dir is None:
@@ -176,12 +214,14 @@ def note_harness(project_dir: Path | None, harness: str, can_ask: bool) -> None:
     data = _load(project_dir)
     prev = data.get("harness")
     if (isinstance(prev, dict) and prev.get("name") == harness
-            and prev.get("can_ask") is can_ask):
+            and prev.get("can_ask") is can_ask
+            and prev.get("permission_mode") == permission_mode):
         return
     data["harness"] = {
         "name": harness,
         "can_ask": bool(can_ask),
-        "floor": HARNESS_ABSTAIN_FLOOR.get(harness, "unknown"),
+        "permission_mode": permission_mode,
+        "floor": abstain_floor(harness, permission_mode),
         "seen_at": time.time(),
     }
     _store(project_dir, data)

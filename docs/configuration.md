@@ -327,10 +327,11 @@ terminal output, a menu-bar app, or per-decision routing.
 | `abstain` | Emit no decision at all — defer to the harness's own permission flow. Not the same as `allow`: risky calls still hit the harness's own gate, where it has one |
 
 Under a profile with no ASK channel (`solo`), these are resolved through the
-harness before being applied: `ask` becomes the harness's own unattended floor
-where one exists and `deny` where none does, and a configured `abstain` is
-honoured only where abstaining reaches a floor that decides without a human.
-See [Session profiles](#session-profiles-live--solo).
+harness and its permission mode before being applied: `ask` becomes an
+abstain where the fall-through is known to decide without a human, and `deny`
+where it is not; a configured `abstain` is honoured on the same condition.
+In practice that condition is Claude Code in `auto` and nothing else. See
+[Session profiles](#session-profiles-live--solo).
 
 ## Session profiles (`live` / `solo`)
 
@@ -403,14 +404,23 @@ ask.
 
 ### What `solo` resolves to
 
-`solo` is honorable on every harness, but what it resolves *to* is
-harness-dependent, because "abstain" means *fall through to the harness's own
-floor* and not every harness has one. See
-[`integrations.md`](integrations.md#what-an-abstain-reaches) for the
-per-harness table. In short: on Claude Code, abstaining reaches auto-mode's
-safety classifier, which decides without a human; everywhere else abstaining
-reaches either a human prompt or nothing at all, so `solo` resolves to `deny`
-instead.
+`solo` is honorable on every harness, but what it resolves *to* depends on
+where an abstain would land, because "abstain" means *fall through to the
+harness's own floor* and not every harness has one. See
+[`integrations.md`](integrations.md#what-an-abstain-reaches) for the full
+table.
+
+In short: `solo` abstains **only** on Claude Code running in `auto`
+permission mode, whose floor is auto-mode's safety classifier — a machine.
+Every other case resolves to `deny`: Claude Code in any other permission
+mode, opencode and Codex (whose abstain asks a human, which under `solo` is
+an ASK by another name), the shell shim (whose abstain lets the call
+through), and any harness bouncer cannot identify.
+
+The permission mode is read from the hook payload and matched from an
+allowlist, so a mode a future Claude Code adds — or a payload that omits the
+key — denies rather than silently re-opening the stall. Under `live` none of
+this applies: `on_unsure` and `on_unavailable` are used exactly as written.
 
 ### Effective vs nominal
 

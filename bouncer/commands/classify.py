@@ -39,7 +39,15 @@ def cmd_classify(args):
     session_id = hook_input.get("session_id", "unknown")
     fmt        = getattr(args, "format", "json")
     harness    = _infer_harness(hook_input, fmt)
+    # Claude Code stamps the session's permission mode into the payload. It
+    # decides whether an abstain reaches auto-mode's classifier or a human,
+    # so `solo` needs it. Absent for every other harness, and treated as
+    # unknown — which denies rather than abstains.
+    perm_mode  = hook_input.get("permission_mode")
+    if not isinstance(perm_mode, str) or not perm_mode:
+        perm_mode = None
 
     record_tool_observation(harness, tool_name)
 
-    run_classify(tool_name, tool_input, cwd, session_id, fmt, harness)
+    run_classify(tool_name, tool_input, cwd, session_id, fmt, harness,
+                 perm_mode)
