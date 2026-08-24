@@ -22,31 +22,186 @@ _BOUNCER_DIAGNOSTIC_COMMANDS = {
     "status",
 }
 
+_BOUNCER_SELF_MANAGEMENT_COMMANDS = {
+    "config",
+    "init",
+    "policy",
+    "review",
+}
+
 
 def _is_bouncer_diagnostic_command(command: str) -> bool:
-    try:
-        parts = shlex.split(command.strip())
-    except ValueError:
+    segments = _shell_segments(command)
+    if len(segments) != 1:
         return False
-
-    if not parts:
-        return False
-
-    executable = Path(parts[0]).name
-    if executable != "bouncer":
-        return False
-
-    if len(parts) == 1:
-        return False
-
-    if parts[1] in ("--agent-help", "--help", "-h"):
+    parts = segments[0]
+    if len(parts) > 1 and Path(parts[0]).name == "bouncer" \
+            and parts[1] in ("--agent-help", "--help", "-h"):
         return True
+    return _segment_bouncer_subcommand(parts) in _BOUNCER_DIAGNOSTIC_COMMANDS
 
-    index = 1
-    if parts[index] in ("-g", "--global"):
+
+def _shell_segments(command: str) -> list[list[str]]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        parts = list(lexer)
+    except ValueError:
+        return []
+    segments, current = [], []
+    for part in parts:
+        if part and all(char in ";&|()" for char in part):
+            if current:
+                segments.append(current)
+                current = []
+        else:
+            current.append(part)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _segment_bouncer_subcommand(parts: list[str]) -> str | None:
+    index = 0
+    while index < len(parts) and "=" in parts[index] and not parts[index].startswith("="):
         index += 1
+    while index < len(parts) and Path(parts[index]).name in (
+        "command", "exec", "env", "nice", "nohup", "sudo",
+    ):
+        wrapper = Path(parts[index]).name
+        index += 1
+        while index < len(parts):
+            part = parts[index]
+            if wrapper == "env" and "=" in part and not part.startswith("="):
+                index += 1
+                continue
+            if not part.startswith("-"):
+                break
+            option = part.split("=", 1)[0]
+            index += 1
+            takes_value = (
+                (wrapper == "env" and option in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"))
+                or (wrapper == "sudo" and option in ("-u", "--user", "-g", "--group", "-h", "--host",
+                                                         "-p", "--prompt", "-C", "--close-from",
+                                                         "-R", "--chroot", "-D", "--chdir"))
+                or (wrapper == "nice" and option in ("-n", "--adjustment"))
+            )
+            if takes_value and "=" not in part and index < len(parts):
+                index += 1
+    if index >= len(parts):
+        return None
+    executable = Path(parts[index]).name
+    index += 1
+    if executable.startswith("python"):
+        try:
+            module_index = parts.index("-m", index)
+        except ValueError:
+            return None
+        if module_index + 1 >= len(parts) or parts[module_index + 1] != "bouncer":
+            return None
+        index = module_index + 2
+    elif executable != "bouncer":
+        if executable in ("bash", "sh", "zsh") and index < len(parts):
+            try:
+                command_index = parts.index("-c", index)
+            except ValueError:
+                return None
+            nested = _bouncer_subcommand(parts[command_index + 1]) \
+                if command_index + 1 < len(parts) else None
+            return nested
+        return None
+    if index < len(parts) and parts[index] in ("-g", "--global"):
+        index += 1
+    return parts[index] if index < len(parts) else None
 
-    return index < len(parts) and parts[index] in _BOUNCER_DIAGNOSTIC_COMMANDS
+
+def _bouncer_subcommand(command: str) -> str | None:
+    for segment in _shell_segments(command):
+        subcommand = _segment_bouncer_subcommand(segment)
+        if subcommand:
+            return subcommand
+    return None
+
+
+def _is_bouncer_self_management_command(command: str) -> bool:
+    return any(
+        _segment_bouncer_subcommand(segment) in _BOUNCER_SELF_MANAGEMENT_COMMANDS
+        for segment in _shell_segments(command)
+    )
+
+
+def _is_protected_bouncer_path(value: str, cwd: Path) -> bool:
+    try:
+        path = Path(value).expanduser()
+        lexical = (cwd / path).absolute() if not path.is_absolute() else path.absolute()
+        resolved = lexical.resolve()
+    except (OSError, ValueError):
+        return False
+    protected_user_files = {
+        (Path.home() / ".config" / "bouncer" / name).resolve()
+        for name in ("config.yaml", "policy.md", "system_prompt.txt")
+    }
+    def protected(candidate: Path) -> bool:
+        if candidate in protected_user_files:
+            return True
+        return candidate.parent.name == ".bouncer" and candidate.name in {
+            "config.yaml", "config.local.yaml", "policy.md", "policy.local.md",
+        }
+    return protected(lexical) or protected(resolved)
+
+
+def _shell_mutates_protected_path(command: str, cwd: Path) -> bool:
+    mutators = {
+        "chmod", "chown", "cp", "install", "ln", "mv", "perl", "rm", "sed",
+        "tee", "touch", "truncate",
+    }
+    for segment in _shell_segments(command):
+        if not segment:
+            continue
+        executable = Path(segment[0]).name
+        for index, part in enumerate(segment):
+            if part in (">", ">>") and index + 1 < len(segment):
+                if _is_protected_bouncer_path(segment[index + 1], cwd):
+                    return True
+            if executable in mutators and _is_protected_bouncer_path(part, cwd):
+                return True
+    return False
+
+
+def _management_denial_reason(
+    tool_name: str,
+    tool_input: dict,
+    cwd: Path,
+) -> str | None:
+    if _is_bouncer_self_management_command(tool_input.get("command", "")):
+        return ("Bouncer policy and configuration management must be run directly "
+                "by the user, outside an agent tool call")
+    if _shell_mutates_protected_path(tool_input.get("command", ""), cwd):
+        return ("Bouncer policy and configuration files cannot be modified "
+                "by an agent shell command")
+    mutating_tool = any(word in tool_name.lower() for word in ("write", "edit", "move", "delete"))
+    if mutating_tool:
+        for key in (
+            "file_path", "path", "source", "source_path", "destination",
+            "destination_path", "target", "target_path",
+        ):
+            value = tool_input.get(key)
+            if isinstance(value, str) and _is_protected_bouncer_path(value, cwd):
+                return ("Bouncer policy and configuration files cannot be modified "
+                        "by an agent tool call")
+    if "patch" in tool_name.lower():
+        patch_text = tool_input.get("patchText") or tool_input.get("patch_text") or ""
+        for line in str(patch_text).splitlines():
+            prefixes = ("*** Add File: ", "*** Update File: ", "*** Delete File: ",
+                        "*** Move to: ")
+            for prefix in prefixes:
+                if line.startswith(prefix) and _is_protected_bouncer_path(
+                    line[len(prefix):].strip(), cwd
+                ):
+                    return ("Bouncer policy and configuration files cannot be modified "
+                            "by an agent patch tool call")
+    return None
 
 
 def _parse_escalate_command(command: str) -> str | None:
@@ -103,6 +258,10 @@ def get_classification(
 
     if not project_has_bouncer(cwd_path):
         return "SKIP", "no project config", None, None, None
+
+    management_denial = _management_denial_reason(tool_name, tool_input, cwd_path)
+    if management_denial:
+        return "DENY", management_denial, "DENY", 0, None
 
     config = _merged_config(cwd_path)
     skip = _skip_reason(tool_name, tool_input, config)
@@ -166,6 +325,25 @@ def run_classify(
     bouncer_dir    = _find_bouncer_dir(cwd_path)  # non-None given the gate above
     rid            = os.getpid()
     command        = tool_input.get("command", "")
+
+    management_denial = _management_denial_reason(tool_name, tool_input, cwd_path)
+    if management_denial:
+        log_decision(tool_name, tool_input, cwd, "DENY", management_denial,
+                     config, proj_log)
+        notify_decision(
+            cfg=config,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            cwd=cwd,
+            session_id=session_id,
+            decision="DENY",
+            action="DENY",
+            reason=management_denial,
+            request_id=None,
+            proj_log=proj_log,
+        )
+        _emit_hook_response("DENY", management_denial, fmt)
+        return
 
     # `bouncer escalate [reason]` is the out-of-band escalation signal that
     # works for any tool: it arms a one-shot grant for this project's most

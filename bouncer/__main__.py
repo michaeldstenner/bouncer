@@ -132,7 +132,8 @@ markdown block the user can apply.
 Do not edit bouncer config or policy files directly. Bouncer rejects agent
 attempts to set their own permission scope. The user must make policy changes
 themselves, for example by running `bouncer policy` and pasting the suggested
-text.
+text. `bouncer review` is also human-only; do not invoke it through an agent
+tool call.
 
 ── User-level policy ────────────────────────────────────────────────────────
 ~/.config/bouncer/policy.md applies across all projects. Project-level policy
@@ -243,9 +244,15 @@ def main():
                              choices=["json", "plain", "codex-permission", "codex-pretool"],
                              help="output format: json (default), plain, codex-permission, or codex-pretool")
 
-    p_review = sub.add_parser("review", help="interactive review of UNSURE decisions")
-    p_review.add_argument("--all", action="store_true", help="review all decisions (ALLOW, DENY, UNSURE)")
-    p_review.add_argument("--deny", action="store_true", help="review only DENY decisions")
+    p_review = sub.add_parser(
+        "review", help="cluster logged requests and draft policy improvements")
+    p_review.add_argument("--deny", action="store_true",
+                          help="review only DENY decisions")
+    p_review.add_argument("--all", action="store_true", help=argparse.SUPPRESS)
+    p_review.add_argument("--since", metavar="DURATION",
+                          help="override cursor with a time window (e.g. 14d, 2h)")
+    p_review.add_argument("--all-history", action="store_true",
+                          help="ignore the review cursor and analyze the retained log")
 
     sub.add_parser("abort",
                    help="abort pending LLM classification in this project → ALLOW")
