@@ -264,7 +264,9 @@ bouncer check 'git push origin main'        # what would bouncer decide?
 bouncer check --llm 'git push origin main'  # ask the LLM directly
 bouncer tools                               # documented + observed harness tool names
 
-bouncer review          # interactive UNSURE decision review
+bouncer review          # cluster new decisions and draft policy improvements
+bouncer review --since 14d      # override the review cursor
+bouncer review --all-history    # review the full retained project log
 
 bouncer profile         # show the effective session profile (live / solo)
 bouncer profile solo    # switch this project to solo (no ASK is produced)
@@ -274,7 +276,7 @@ Use `bouncer -g <cmd>` to operate on user-scope data instead of the project:
 
 ```sh
 bouncer -g log     # global log (all projects)
-bouncer -g review  # review user-level UNSURE decisions
+bouncer -g review  # review cross-project evidence for user policy
 ```
 
 Full command reference: [docs/operations.md](docs/operations.md).
@@ -306,6 +308,13 @@ completely different risk profile.
 
 **User-level policy** (`bouncer -g policy`) applies to all projects and is a
 good place for personal norms ("never touch my dotfiles", "no force-push ever").
+
+**Review:** `bouncer review` sends new detailed decision-log requests to a
+separately configured, tool-less model. It semantically clusters the requests,
+asks you whether each cluster should be allowed, denied, or treated as a
+one-off, then opens a proposed policy revision in `$EDITOR`. Saving the draft
+does not immediately apply it: bouncer shows the exact final diff and asks once
+more before writing. See [Policy review](docs/operations.md#policy-review).
 
 ---
 

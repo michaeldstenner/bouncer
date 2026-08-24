@@ -20,7 +20,10 @@ bouncer log --break           append prompt separator (called by hook)
 bouncer check <cmd>           dry-run: shows what bouncer would decide
 bouncer check --llm <cmd>     dry-run: actually calls the LLM
 bouncer tools                 list documented and observed harness tool names
-bouncer review                interactive UNSURE decision review
+bouncer review                guided clustering and policy refinement
+bouncer review --deny         review only DENY decisions
+bouncer review --since 14d    ignore cursor; review a recent window
+bouncer review --all-history  ignore cursor; review the retained log
 bouncer abort                 abort the pending LLM classification → ALLOW
 bouncer escalate [reason]     send your last denied tool call to the user,
                               then re-issue that exact call (the out-of-band
@@ -34,7 +37,7 @@ bouncer classify --hook --format codex-permission  Codex PermissionRequest outpu
 bouncer -g config             edit user-level config.yaml
 bouncer -g policy             edit user-level policy.md
 bouncer -g log                view user-level log
-bouncer -g review             review user-level UNSURE decisions
+bouncer -g review             review cross-project evidence for user policy
 ```
 
 `bouncer profile` options:
@@ -88,6 +91,7 @@ set -g status-right '#(bouncer activity --cwd "#{pane_current_path}" --as tmux -
   tools.json           global observed harness/tool catalog
   escalation/          per-session attempt cache + per-project grant state
   profile/             per-project session profile (live / solo)
+  reviews/             private review cursors and reports (mode 0700/0600)
 
 <project>/
   .bouncer/
@@ -108,6 +112,7 @@ Decisions are written as JSONL to two locations:
 Each entry:
 ```json
 {
+  "event_id": "e3d8bb1f09f04cc89d93cb2a22a3e7d2",
   "timestamp": "2026-04-17T09:01:34.123",
   "tool": "Bash",
   "cwd": "/Users/you/project",
@@ -118,9 +123,52 @@ Each entry:
 }
 ```
 
-`input_summary` is a JSON-encoded copy of the tool input (truncated to 2000
-chars). `request_id` links a `PENDING` entry (LLM call in flight) with its
-resolution; `bouncer log` uses this to display per-decision latency.
+`input_summary` is a JSON-encoded copy of the tool input bounded to 2000
+characters. Oversized values are truncated while preserving valid JSON and
+priority fields such as `file_path` and `command`. `event_id` is the stable
+review-cursor identity. `request_id` links a `PENDING` entry (LLM call in flight)
+with its resolution; `bouncer log` uses this to display per-decision latency.
+
+## Policy review
+
+Configure a separate model under `review.llm` in
+`~/.config/bouncer/config.yaml`, then run `bouncer review` directly from an
+interactive terminal. The workflow is:
+
+1. Read detailed project-log events not present in the local review cursor.
+2. Exclude operational failures and report compact rows lacking request data.
+3. Send current source-separated policy plus untrusted request/decision records
+   to the independent reviewer.
+4. Semantically cluster requests and validate that every event appears exactly
+   once; oversized inputs use batch clustering plus consolidation.
+5. Show each cluster with local decision counts and representative raw requests.
+6. Record your disposition: agree, allow, deny, one-off, comment, or skip.
+7. Ask the reviewer for the smallest policy revision consistent with those
+   dispositions.
+8. Replay representative history and fixed negative canaries against current
+   and proposed policy using the normal classifier model.
+9. Open the proposed committed/local policy in a temporary `$EDITOR` buffer.
+10. After save, re-check source bytes, show the exact diff, ask for confirmation,
+    re-check for drift, and atomically stage the policy writes.
+
+The reviewer has no tools and its output is inert until the editor and final
+confirmation complete. A failed canary blocks the editor. If no policy is
+applied, bouncer asks separately whether to advance the cursor; declining leaves
+the requests for the next run. Reports and cursor state are outside the project
+under `~/.local/share/bouncer/reviews/` with private permissions.
+
+Project review can propose only `.bouncer/policy.md` and
+`.bouncer/policy.local.md`. Global review can propose only the user policy and
+includes project/cwd provenance so project-specific behavior is not silently
+generalized. Project config cannot override the reviewer endpoint.
+
+Direct agent invocations of `bouncer review`, `bouncer policy`, mutating
+`bouncer config`, and `bouncer init` are deterministically denied when they pass
+through an active Bouncer hook. Native Write/Edit-style calls targeting policy
+or config files are denied before the configured tool filter. This prevents the
+review workflow from becoming an obvious self-authorization path, but Bouncer
+is not an OS sandbox: an agent that can bypass harness hooks or write files as
+the user remains outside this guarantee.
 
 ## Internals
 
@@ -136,6 +184,7 @@ bouncer/
   config.py             path constants, CONFIG_DEFAULTS, config load/merge,
                         policy context, project discovery, templates
   log.py                log_decision(), pruning, verbosity filter
+  review.py             review ingestion, model clustering/synthesis, replay
   activity.py           activity strip: tool-char map, update, render
   hook.py               format_hook_response(), resolve_fallback() — hot path
   classify.py           run_classify() — core gate logic (no I/O, testable)

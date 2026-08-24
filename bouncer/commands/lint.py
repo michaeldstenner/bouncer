@@ -8,7 +8,7 @@ from ..profile import (BUILTIN_PROFILE_NAMES, NO_ASK_HARNESSES, _truthy,
                        harness_has_unattended_floor)
 from .init import installed_harnesses
 
-VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "llm",
+VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "llm", "review",
                                  "on_unsure", "on_unavailable", "log",
                                  "escalation",
                                  "escalation_requires_attempt",
@@ -22,6 +22,9 @@ VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "ll
 VALID_POLICY_MODES = ("append", "replace")
 VALID_ACTIONS      = ("ask", "allow", "deny", "abstain")
 VALID_VERBOSITIES  = ("all", "deny_only", "off")
+VALID_REVIEW_PROVIDERS = (
+    "ollama", "openai", "openai_compatible", "openrouter", "anthropic",
+)
 
 # Keys a profile fragment may carry. A profile changes the plumbing — what
 # happens when bouncer cannot decide, and whether an agent may appeal — never
@@ -220,6 +223,29 @@ def cmd_lint(args):
             warnings.append(
                 "'llm.model' is not set — it is required and has no default. "
                 "Set it here or in ~/.config/bouncer/config.yaml.")
+
+    review = data.get("review")
+    if review is not None:
+        if not isinstance(review, dict):
+            errors.append("'review' must be a map")
+        else:
+            review_llm = review.get("llm", {})
+            if not isinstance(review_llm, dict):
+                errors.append("'review.llm' must be a map")
+            elif not review_llm.get("model"):
+                errors.append("'review.llm.model' is required when 'review' is set")
+            else:
+                review_provider = review_llm.get("provider", llm.get("provider", "ollama"))
+                print("  review.llm:    provider="
+                      f"{review_provider}, "
+                      f"model={review_llm['model']}")
+                if review_provider not in VALID_REVIEW_PROVIDERS:
+                    errors.append("'review.llm.provider' must be a direct model "
+                                  f"provider in {VALID_REVIEW_PROVIDERS}, got: "
+                                  f"{review_provider!r}")
+            if path.parent.name == ".bouncer":
+                errors.append("'review' is user-config only; move it to "
+                              "~/.config/bouncer/config.yaml")
 
     log_cfg = data.get("log", {})
     if log_cfg:

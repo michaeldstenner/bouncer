@@ -64,9 +64,16 @@ def _render_tool_input(tool_input: dict) -> str:
     return f"file_path: {file_path}\nInput: {rest_json}"
 
 
-def _build_prompt(tool_name: str, tool_input: dict, cwd: Path, config: dict) -> tuple[str, str]:
+def _build_prompt(
+    tool_name: str,
+    tool_input: dict,
+    cwd: Path,
+    config: dict,
+    policy_context: str | None = None,
+) -> tuple[str, str]:
     system_prompt  = _load_system_prompt()
-    policy_context = _build_policy_context(cwd, config)
+    if policy_context is None:
+        policy_context = _build_policy_context(cwd, config)
     command        = tool_input.get("command", "")
     tool_desc      = (f"Tool: {tool_name}\nCommand: {command}"
                       if command
@@ -241,6 +248,8 @@ def call_llm(
     tool_input: dict,
     cwd: Path,
     config: dict,
+    *,
+    policy_context: str | None = None,
 ) -> tuple[str | None, str, int | None, list[dict] | None]:
     """Classify a tool call. Returns (decision, reason, prompt_chars, queue_snapshot).
 
@@ -260,7 +269,9 @@ def call_llm(
                 "No LLM model configured — set llm.model in ~/.config/bouncer/config.yaml",
                 None, None)
 
-    system_text, user_text = _build_prompt(tool_name, tool_input, cwd, config)
+    system_text, user_text = _build_prompt(
+        tool_name, tool_input, cwd, config, policy_context=policy_context
+    )
 
     configs = _build_llm_configs(llm_cfg)
     fallback_on = llm_cfg.get("fallback_on")

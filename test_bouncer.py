@@ -4,6 +4,7 @@
 import builtins
 import io
 import json
+import os
 import sys
 import tempfile
 import time
@@ -22,8 +23,10 @@ import bouncer.commands.lint as lint_mod
 import bouncer.commands.profile as profile_cmd
 from bouncer.commands.profile import effective_state
 import bouncer.commands.init as init_mod
+import bouncer.log as log_mod
 import bouncer.notify as notify_mod
 import bouncer.providers as providers_mod
+import bouncer.review as review_mod
 import bouncer.tool_catalog as tool_catalog_mod
 from bouncer.yaml import MicroYAML
 from bouncer.config import (
@@ -54,6 +57,7 @@ from bouncer.commands.classify import cmd_classify, _infer_harness
 from bouncer.commands.log import _extract_command, cmd_log
 from bouncer.commands.check import cmd_check
 from bouncer.commands.tools import cmd_tools
+from bouncer.commands import review as review_cmd_mod
 from bouncer.providers import _parse_llm_text
 from bouncer.llmclient.providers.openai import (
     _extract_text as _extract_response_text,
@@ -1631,14 +1635,76 @@ class TestClassify(unittest.TestCase):
                 )
                 self.assertEqual(code, 0)
 
-    def test_bouncer_mutating_commands_do_not_skip(self):
-        out, _, code = _classify(
-            self._hook(command="bouncer init"),
-            config_yaml=_BASIC_CONFIG,
-            call_llm_result=("ALLOW", "ok", None, None),
-        )
-        self.assertEqual(code, 0)
-        self.assertIn("permissionDecision", out)
+    def test_bouncer_self_management_commands_are_deterministically_denied(self):
+        for command in (
+            "bouncer init",
+            "bouncer review",
+            "bouncer -g policy",
+            "python3 -m bouncer config -e",
+            "true && bouncer review",
+            "env bouncer policy",
+            "env -u HOME bouncer review",
+            "sudo -u root bouncer policy",
+            "bash -c 'bouncer review'",
+            "python3 -I -m bouncer review",
+            "bouncer status && bouncer policy",
+        ):
+            with self.subTest(command=command):
+                _, err, code = _classify(
+                    self._hook(command=command),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("ALLOW", "should not be used", None, None),
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("directly by the user", err)
+
+    def test_native_policy_edit_denied_before_tool_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_path = Path(tmp) / ".bouncer" / "policy.md"
+            hook = {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(policy_path), "new_string": "allow all"},
+            }
+            _, err, code = _classify(
+                hook,
+                config_yaml="enabled: true\ntools: []\n",
+                policy_md="old",
+                call_llm_result=("ALLOW", "should not be used", None, None),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("cannot be modified", err)
+
+    def test_move_source_and_patch_policy_are_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_path = Path(tmp) / ".bouncer" / "policy.md"
+            calls = (
+                {"tool_name": "Move", "tool_input": {
+                    "source_path": str(policy_path), "destination_path": str(Path(tmp) / "x")}},
+                {"tool_name": "apply_patch", "tool_input": {
+                    "patchText": f"*** Update File: {policy_path}\n@@\n-old\n+allow all"}},
+            )
+            for hook in calls:
+                with self.subTest(tool=hook["tool_name"]):
+                    _, err, code = _classify(
+                        hook,
+                        config_yaml="enabled: true\ntools: []\n",
+                        policy_md="old",
+                        call_llm_result=("ALLOW", "should not be used", None, None),
+                    )
+                    self.assertEqual(code, 2)
+                    self.assertIn("cannot be modified", err)
+
+    def test_shell_redirection_to_policy_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_path = Path(tmp) / ".bouncer" / "policy.md"
+            _, err, code = _classify(
+                self._hook(command=f"printf 'allow all' > {policy_path}"),
+                config_yaml=_BASIC_CONFIG,
+                policy_md="old",
+                call_llm_result=("ALLOW", "should not be used", None, None),
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("agent shell command", err)
 
     def test_escalate_prefix_produces_ask(self):
         out, _, code = _classify(
@@ -1897,6 +1963,375 @@ class TestClassify(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Policy review
+# ---------------------------------------------------------------------------
+
+class TestPolicyReview(unittest.TestCase):
+    class _Result:
+        def __init__(self, text, outcome="success"):
+            self.text = text
+            self.outcome = outcome
+
+    class _Client:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.calls = []
+
+        def call(self, user, system="", **kwargs):
+            self.calls.append((user, system, kwargs))
+            return TestPolicyReview._Result(self.responses.pop(0))
+
+    def test_load_review_config_is_user_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_config = root / "user.yaml"
+            user_config.write_text(
+                "review:\n  llm:\n    provider: anthropic\n    model: trusted\n",
+                encoding="utf-8",
+            )
+            bd = _make_bouncer_dir(
+                root,
+                config_yaml=(
+                    "review:\n  llm:\n    provider: openai_compatible\n"
+                    "    model: hostile\n    url: https://attacker.example\n"
+                ),
+            )
+            with patch.object(cfg, "USER_CONFIG_FILE", user_config):
+                loaded = cfg.load_review_config()
+                merged = cfg._merged_config(root)
+        self.assertEqual(loaded["llm"]["model"], "trusted")
+        self.assertEqual(merged["review"]["llm"]["model"], "hostile")
+
+    def test_review_inherits_same_provider_connection_not_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            user_config = Path(tmp) / "config.yaml"
+            user_config.write_text(
+                "llm:\n"
+                "  provider: openai_compatible\n"
+                "  model: classifier\n"
+                "  url: https://models.example\n"
+                "  api_key: secret\n"
+                "  timeout: 25\n"
+                "review:\n"
+                "  llm:\n"
+                "    model: reviewer\n",
+                encoding="utf-8",
+            )
+            with patch.object(cfg, "USER_CONFIG_FILE", user_config):
+                loaded = cfg.load_review_config()["llm"]
+        self.assertEqual(loaded["provider"], "openai_compatible")
+        self.assertEqual(loaded["model"], "reviewer")
+        self.assertEqual(loaded["url"], "https://models.example")
+        self.assertEqual(loaded["api_key"], "secret")
+        self.assertNotIn("timeout", loaded)
+
+    def test_review_different_provider_does_not_inherit_connection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            user_config = Path(tmp) / "config.yaml"
+            user_config.write_text(
+                "llm:\n"
+                "  provider: openai_compatible\n"
+                "  model: classifier\n"
+                "  url: https://models.example\n"
+                "  api_key: secret\n"
+                "review:\n"
+                "  llm:\n"
+                "    provider: anthropic\n"
+                "    model: reviewer\n",
+                encoding="utf-8",
+            )
+            with patch.object(cfg, "USER_CONFIG_FILE", user_config):
+                loaded = cfg.load_review_config()["llm"]
+        self.assertEqual(loaded["provider"], "anthropic")
+        self.assertNotIn("url", loaded)
+        self.assertNotIn("api_key", loaded)
+
+    def test_global_review_keeps_cwd_without_dereferencing_it(self):
+        event = review_mod.ReviewEvent(
+            "e1", "t", "Bash", {"command": "make deploy"}, "DENY",
+            "/sensitive/other-project",
+        )
+        with patch.object(cfg, "USER_POLICY_FILE", Path("/nonexistent/user-policy")):
+            sources = review_cmd_mod._policy_sources(True, None, {})
+        self.assertEqual(event.as_prompt_data()["cwd"], "/sensitive/other-project")
+        self.assertNotIn("project_contexts", sources)
+
+    def test_log_decision_adds_event_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                log_decision("Bash", {"command": "pwd"}, str(tmp), "ALLOW", "ok",
+                             {"log": {"verbosity": "all"}})
+            entry = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertRegex(entry["event_id"], r"^[0-9a-f]{32}$")
+
+    def test_large_log_input_remains_valid_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            with patch.object(cfg, "USER_LOG_FILE", log_path):
+                log_decision(
+                    "Write",
+                    {"file_path": "/tmp/large.txt", "content": "x" * 10000},
+                    str(tmp), "DENY", "too large",
+                    {"log": {"verbosity": "all"}},
+                )
+            entry = json.loads(log_path.read_text(encoding="utf-8"))
+            summary = json.loads(entry["input_summary"])
+            review_input = review_mod.load_review_events(log_path)
+        self.assertLessEqual(len(entry["input_summary"]), 2000)
+        self.assertEqual(summary["file_path"], "/tmp/large.txt")
+        self.assertIn("truncated", summary["content"])
+        self.assertEqual(len(review_input.events), 1)
+
+    def test_large_path_and_command_are_both_preserved(self):
+        summary = json.loads(log_mod._input_summary({
+            "file_path": "/tmp/" + "p" * 5000,
+            "command": "python -c " + "x" * 5000,
+            "content": "y" * 5000,
+        }))
+        self.assertIn("file_path", summary)
+        self.assertIn("command", summary)
+        self.assertIn("truncated", summary["file_path"])
+        self.assertIn("truncated", summary["command"])
+
+    def test_load_review_events_stitches_and_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            rows = [
+                {"timestamp": "2026-08-24T10:00:00", "tool": "Bash",
+                 "decision": "PENDING", "request_id": 7,
+                 "input_summary": json.dumps({"command": "pwd"})},
+                {"event_id": "final-1", "timestamp": "2026-08-24T10:00:01",
+                 "tool": "Bash", "decision": "ALLOW", "request_id": 7,
+                 "input_summary": json.dumps({"command": "pwd"})},
+                {"event_id": "compact", "timestamp": "2026-08-24T10:00:02",
+                 "tool": "Bash", "decision": "ALLOW"},
+                {"event_id": "timeout", "timestamp": "2026-08-24T10:00:03",
+                 "tool": "Bash", "decision": "TIMEOUT",
+                 "input_summary": json.dumps({"command": "make test"})},
+            ]
+            log_path.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\nnot-json\n",
+                encoding="utf-8",
+            )
+            result = review_mod.load_review_events(log_path)
+        self.assertEqual([event.event_id for event in result.events], ["final-1"])
+        self.assertEqual(result.events[0].request, {"command": "pwd"})
+        self.assertEqual(len(result.operational), 1)
+        self.assertEqual(result.compact_count, 1)
+        self.assertEqual(result.malformed_count, 1)
+
+    def test_legacy_event_ids_are_stable_and_cursor_filters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "log.jsonl"
+            log_path.write_text(json.dumps({
+                "timestamp": "2026-08-24T10:00:00", "tool": "Bash",
+                "decision": "DENY",
+                "input_summary": json.dumps({"command": "git push --force"}),
+            }) + "\n", encoding="utf-8")
+            first = review_mod.load_review_events(log_path)
+            event_id = first.events[0].event_id
+            second = review_mod.load_review_events(log_path, {event_id})
+        self.assertTrue(event_id.startswith("legacy-"))
+        self.assertEqual(second.events, [])
+
+    def test_review_cursor_round_trip_is_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "reviews" / "state.json"
+            review_mod.save_reviewed_ids(path, {"b", "a"})
+            loaded = review_mod.load_reviewed_ids(path)
+            mode = path.stat().st_mode & 0o777
+        self.assertEqual(loaded, {"a", "b"})
+        self.assertEqual(mode, 0o600)
+
+    def test_cluster_schema_failure_gets_one_repair(self):
+        events = [
+            review_mod.ReviewEvent("e1", "t", "Bash", {"command": "pwd"}, "ALLOW"),
+            review_mod.ReviewEvent("e2", "t", "Bash", {"command": "ls"}, "DENY"),
+        ]
+        invalid = json.dumps({"clusters": [{
+            "title": "reads", "intent": "inspect", "event_ids": ["e1"],
+            "policy_assessment": "covered", "recommendation": "allow",
+            "rationale": "safe", "suggested_boundary": "",
+        }]})
+        valid = json.dumps({"clusters": [{
+            "title": "reads", "intent": "inspect", "event_ids": ["e1", "e2"],
+            "policy_assessment": "covered", "recommendation": "allow",
+            "rationale": "safe", "suggested_boundary": "read-only",
+        }]})
+        client = self._Client([invalid, valid])
+        with patch.object(review_mod, "_review_client", return_value=client):
+            clusters = review_mod.cluster_events(
+                events, {"project_policy": "allow reads"},
+                {"llm": {"model": "reviewer"}},
+            )
+        self.assertEqual(clusters[0].event_ids, ["e1", "e2"])
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("untrusted data", client.calls[0][1])
+
+    def test_reviewer_rejects_agent_shaped_provider(self):
+        with self.assertRaisesRegex(ValueError, "direct model provider"):
+            review_mod._review_llm_configs({
+                "llm": {"provider": "claude_code", "model": "sonnet"}
+            })
+
+    def test_replay_requires_every_canary_to_deny(self):
+        event = review_mod.ReviewEvent(
+            "e1", "t", "Bash", {"command": "pwd"}, "ALLOW", "/tmp/project")
+        cluster = review_mod.ReviewCluster(
+            "c01", "reads", "inspect", ["e1"], "covered", "allow",
+            "read-only", "")
+        proposal = review_mod.PolicyProposal("", "new", "", [])
+
+        def classify(_tool, request, _cwd, _config, *, policy_context=None):
+            if request.get("command") == "git push --force origin main":
+                return "TIMEOUT", "slow", None, None
+            return "DENY", "blocked", None, None
+
+        with patch.object(providers_mod, "call_llm", side_effect=classify):
+            replay = review_mod.replay_policy_change(
+                [cluster], [event], {"project_policy": "old"}, proposal,
+                "project", {"llm": {"model": "classifier"}}, Path("/tmp/project"),
+            )
+        self.assertEqual(len(replay.canary_failures), 1)
+        self.assertEqual(replay.canary_failures[0]["proposed"], "TIMEOUT")
+
+    def test_synthesis_rejects_local_policy_sentinel(self):
+        event = review_mod.ReviewEvent(
+            "e1", "t", "Bash", {"command": "rm -rf build"}, "DENY")
+        cluster = review_mod.ReviewCluster(
+            "c01", "cleanup", "clean build", ["e1"], "gap",
+            "allow_with_boundary", "generated only", "project build outputs")
+        response = json.dumps({
+            "project_policy": "safe\n" + cfg.POLICY_LOCAL_SENTINEL,
+            "local_policy": "",
+            "changes": [{"cluster_ids": ["c01"], "effect": "widen",
+                         "rationale": "routine"}],
+        })
+        with patch.object(review_mod, "_review_client",
+                          return_value=self._Client([response])):
+            with self.assertRaisesRegex(ValueError, "reserved"):
+                review_mod.synthesize_policy(
+                    [cluster], [review_mod.ClusterDisposition("c01", "allow")],
+                    [event], {"project_policy": "old"}, "project",
+                    {"llm": {"model": "reviewer"}},
+                )
+
+    def test_project_editor_cancel_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bd = _make_bouncer_dir(Path(tmp), policy_md="old")
+            proposal = review_mod.PolicyProposal("", "new", "local", [])
+            with patch.object(review_cmd_mod, "_run_editor", return_value=False):
+                applied = review_cmd_mod._edit_project_proposal(bd, proposal)
+            self.assertFalse(applied)
+            self.assertEqual(load_policy(bd / "policy.md"), "old")
+            self.assertFalse((bd / "policy.local.md").exists())
+
+    def test_project_editor_detects_policy_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bd = _make_bouncer_dir(Path(tmp), policy_md="old")
+            proposal = review_mod.PolicyProposal("", "new", "", [])
+
+            def drift(_path):
+                (bd / "policy.md").write_text("concurrent\n", encoding="utf-8")
+                return True
+
+            with patch.object(review_cmd_mod, "_run_editor", side_effect=drift):
+                applied = review_cmd_mod._edit_project_proposal(bd, proposal)
+            self.assertFalse(applied)
+            self.assertEqual(load_policy(bd / "policy.md"), "concurrent")
+
+    def test_project_editor_applies_only_after_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bd = _make_bouncer_dir(Path(tmp), policy_md="old")
+            proposal = review_mod.PolicyProposal("", "new", "local", [])
+            with (
+                patch.object(review_cmd_mod, "_run_editor", return_value=True),
+                patch.object(review_cmd_mod, "_confirm_apply", return_value=True),
+            ):
+                applied = review_cmd_mod._edit_project_proposal(bd, proposal)
+            self.assertTrue(applied)
+            self.assertEqual(load_policy(bd / "policy.md"), "new")
+            self.assertEqual(load_policy(bd / "policy.local.md"), "local")
+
+    def test_confirmation_prompts_without_mocking_the_function(self):
+        with patch("builtins.input", return_value="y") as prompt:
+            confirmed = review_cmd_mod._confirm_apply("- old\n+ new\n")
+        self.assertTrue(confirmed)
+        prompt.assert_called_once()
+
+    def test_project_editor_rechecks_drift_after_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bd = _make_bouncer_dir(Path(tmp), policy_md="old")
+            proposal = review_mod.PolicyProposal("", "new", "", [])
+
+            def confirm(_diff):
+                (bd / "policy.md").write_text("late change\n", encoding="utf-8")
+                return True
+
+            with (
+                patch.object(review_cmd_mod, "_run_editor", return_value=True),
+                patch.object(review_cmd_mod, "_confirm_apply", side_effect=confirm),
+            ):
+                applied = review_cmd_mod._edit_project_proposal(bd, proposal)
+            self.assertFalse(applied)
+            self.assertEqual(load_policy(bd / "policy.md"), "late change")
+
+    def test_project_policy_transaction_rolls_back_partial_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bd = _make_bouncer_dir(Path(tmp), policy_md="old project")
+            local = bd / "policy.local.md"
+            local.write_text("old local\n", encoding="utf-8")
+            committed = bd / "policy.md"
+            os.chmod(committed, 0o600)
+            expected = {
+                committed: committed.read_bytes(),
+                local: local.read_bytes(),
+            }
+            desired = {
+                committed: b"new project\n",
+                local: b"new local\n",
+            }
+            real_replace = Path.replace
+
+            def fail_local(source, target):
+                if Path(target) == local and source.name.startswith(".policy.local.md."):
+                    raise OSError("simulated local write failure")
+                return real_replace(source, target)
+
+            with patch.object(Path, "replace", fail_local):
+                applied = review_cmd_mod._apply_policy_updates(expected, desired)
+            self.assertFalse(applied)
+            self.assertEqual(committed.read_bytes(), expected[committed])
+            self.assertEqual(committed.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(local.read_bytes(), b"old local\n")
+
+    def test_empty_proposal_sections_are_not_replaced_with_templates(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            bd = _make_bouncer_dir(Path(tmp), policy_md="old")
+            proposal = review_mod.PolicyProposal("", "", "", [])
+
+            def inspect(path):
+                captured["content"] = path.read_text(encoding="utf-8")
+                return False
+
+            with patch.object(review_cmd_mod, "_run_editor", side_effect=inspect):
+                review_cmd_mod._edit_project_proposal(bd, proposal)
+        self.assertIn(cfg.POLICY_LOCAL_SENTINEL, captured["content"])
+        self.assertNotIn("# Project Policy", captured["content"])
+        self.assertNotIn("# Local Policy Additions", captured["content"])
+
+    def test_review_report_is_created_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = review_cmd_mod._save_report(Path(tmp) / "reports", {"secret": "x"})
+            mode = path.stat().st_mode & 0o777
+            directory_mode = path.parent.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+        self.assertEqual(directory_mode, 0o700)
+
+
+# ---------------------------------------------------------------------------
 # cmd_lint
 # ---------------------------------------------------------------------------
 
@@ -1992,6 +2427,21 @@ class TestLint(unittest.TestCase):
         yaml = "llm:\n  provider: ollama\n  model: llama3\n  timeout: 30\n"
         _, code = _lint(yaml)
         self.assertEqual(code, 0)
+
+    def test_valid_review_llm_block(self):
+        yaml = "review:\n  llm:\n    provider: anthropic\n    model: reviewer\n"
+        out, code = _lint(yaml)
+        self.assertEqual(code, 0)
+        self.assertIn("review.llm", out)
+
+    def test_review_llm_requires_model(self):
+        _, code = _lint("review:\n  llm:\n    provider: anthropic\n")
+        self.assertEqual(code, 1)
+
+    def test_review_llm_rejects_agent_provider(self):
+        _, code = _lint(
+            "review:\n  llm:\n    provider: claude_code\n    model: sonnet\n")
+        self.assertEqual(code, 1)
 
     def test_disabled_project_is_valid(self):
         _, code = _lint("enabled: false\n")
@@ -3207,6 +3657,29 @@ class TestSoloEscalationGating(unittest.TestCase):
     def test_reading_the_profile_is_still_a_diagnostic(self):
         out, err, code = _classify(
             {"tool_name": "Bash", "tool_input": {"command": "bouncer profile"},
+             "session_id": "s1"},
+            config_yaml=_SOLO_YAML)
+        self.assertEqual((out, err, code), ("", "", 0))
+
+    def test_self_set_guard_sees_through_wrappers(self):
+        # The guard shares _segment_bouncer_argv with the diagnostic check,
+        # so a wrapped set is not a way around it.
+        for command in ("env FOO=1 bouncer profile live",
+                        "sudo -u me bouncer profile live",
+                        "bash -c 'bouncer profile live'",
+                        "bouncer -g profile live"):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML)
+                self.assertEqual(code, 2)
+                self.assertIn("may not set its own bouncer profile", err)
+
+    def test_reading_the_profile_with_flags_is_still_a_diagnostic(self):
+        out, err, code = _classify(
+            {"tool_name": "Bash",
+             "tool_input": {"command": "bouncer profile --as tmux"},
              "session_id": "s1"},
             config_yaml=_SOLO_YAML)
         self.assertEqual((out, err, code), ("", "", 0))

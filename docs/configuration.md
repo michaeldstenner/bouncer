@@ -195,6 +195,53 @@ llm:
   #   max_tokens: 1000
 ```
 
+## Policy review model
+
+`bouncer review` uses an independent model configuration. It does not silently
+reuse or fall back to the hot-path classifier model:
+
+```yaml
+# ~/.config/bouncer/config.yaml only
+review:
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    timeout: 120
+    # fallback_on: [timeout*, error:unreachable, http_5*]
+    # fallbacks:
+    #   - provider: openai
+    #     model: gpt-4.1
+    # extra_params:
+    #   max_tokens: 8192
+  max_batch_chars: 80000
+  max_replay_events: 8
+```
+
+The `review` section is **user-config only**. Project config cannot choose the
+review provider, model, URL, or credentials, because review sends aggregated
+policy and log data rather than one request at a time. Direct model providers
+(`ollama`, `openai`, `openai_compatible`, `openrouter`, and `anthropic`) are
+supported. Agent-shaped providers such as `claude_code` are rejected because
+they can load project hooks, memory, and MCP configuration even with tools
+disabled.
+
+`review.llm.model` is always explicit and never inherited from the classifier.
+When the review provider is the same as the user-level `llm.provider`, its
+`provider`, `url`, `api_key`, and `key_name` connection settings are inherited;
+the model, timeout, fallbacks, and generation parameters remain review-specific.
+A different review provider does not inherit the classifier endpoint or key.
+
+Review payloads contain paths, command text, tool arguments, and current policy.
+Choosing a remote provider therefore authorizes a larger disclosure than normal
+single-request classification. Use a local provider if that aggregation should
+not leave the machine.
+
+`max_batch_chars` bounds each semantic-clustering call; larger review sets are
+clustered in batches and consolidated. `max_replay_events` limits historical
+examples in the current-versus-proposed classifier replay. Four fixed negative
+canaries are always replayed, and every proposed canary result must be `DENY`
+before the policy editor can open.
+
 ## `tools`
 
 `tools` is an **ordered list of `±` operations** folded left-to-right over a
@@ -468,6 +515,9 @@ Later entries override earlier ones:
 Each layer's `profiles:` fragment for the active profile is applied
 immediately after that layer's own base keys — see
 [Session profiles](#session-profiles-live--solo).
+
+`review` is the exception: it is loaded directly from user config and is never
+merged from either project layer.
 
 ## Custom system prompt
 

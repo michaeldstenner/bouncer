@@ -139,7 +139,16 @@ def cmd_status(args):
 def _cmd_status_verbose(config: dict, cwd: Path) -> None:
     print(f"{BOLD}User config:{RESET}  {USER_CONFIG_FILE}")
     if USER_CONFIG_FILE.exists():
-        _print_config_summary(load_yaml_config(USER_CONFIG_FILE))
+        user_config = load_yaml_config(USER_CONFIG_FILE)
+        _print_config_summary(user_config)
+        review_cfg = user_config.get("review", {})
+        review_llm = review_cfg.get("llm", {}) if isinstance(review_cfg, dict) else {}
+        if review_llm:
+            classifier_llm = user_config.get("llm", {})
+            classifier_provider = (classifier_llm.get("provider", "ollama")
+                                   if isinstance(classifier_llm, dict) else "ollama")
+            print(f"  review.llm:     {review_llm.get('provider', classifier_provider)} / "
+                  f"{review_llm.get('model', '?')}")
     else:
         print(f"  {DIM}(not found — run 'bouncer -g config' to create){RESET}")
 

@@ -1,8 +1,63 @@
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from . import config as _config
+
+
+_INPUT_SUMMARY_BUDGET = 2000
+
+
+def _input_summary(tool_input: dict) -> str:
+    """Serialize a bounded request without cutting JSON mid-token."""
+    full = json.dumps(tool_input, ensure_ascii=False)
+    if len(full) <= _INPUT_SUMMARY_BUDGET:
+        return full
+
+    summary = {}
+    marker = "…[truncated]"
+
+    def add_field(key: str, value, budget: int) -> bool:
+        nonlocal summary
+        candidate = dict(summary)
+        candidate[key] = value
+        if len(json.dumps(candidate, ensure_ascii=False)) <= budget:
+            summary = candidate
+            return True
+        source = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        low, high = 0, len(source)
+        best = None
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = dict(summary)
+            candidate[key] = source[:middle] + marker
+            if len(json.dumps(candidate, ensure_ascii=False)) <= budget:
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        if best is not None:
+            summary = best
+            return True
+        return False
+
+    # Reserve independent space for path and command so one cannot crowd the
+    # other out of a security review record.
+    if "file_path" in tool_input:
+        add_field("file_path", tool_input["file_path"], 600)
+    if "command" in tool_input:
+        add_field("command", tool_input["command"], 1700)
+
+    omitted = []
+    for key, value in tool_input.items():
+        if key in summary or key in ("file_path", "command"):
+            continue
+        if not add_field(key, value, 1880):
+            omitted.append(key)
+    if omitted:
+        add_field("_omitted_fields", omitted, _INPUT_SUMMARY_BUDGET)
+    return json.dumps(summary, ensure_ascii=False)
 
 
 def _log_mode(decision: str, cfg: dict) -> str:
@@ -170,13 +225,14 @@ def log_decision(
         if mode == "skip":
             return
     entry: dict = {
+        "event_id":  uuid.uuid4().hex,
         "timestamp": datetime.now().isoformat(),
         "tool":      tool_name,
         "decision":  decision,
     }
     if mode == "full":
         entry["cwd"]           = cwd
-        entry["input_summary"] = json.dumps(tool_input, ensure_ascii=False)[:2000]
+        entry["input_summary"] = _input_summary(tool_input)
         entry["reason"]        = reason
         if request_id is not None:
             entry["request_id"] = request_id

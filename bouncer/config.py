@@ -10,6 +10,7 @@ USER_CONFIG_FILE   = USER_CONFIG_DIR / "config.yaml"
 USER_POLICY_FILE   = USER_CONFIG_DIR / "policy.md"
 USER_SYSTEM_PROMPT = USER_CONFIG_DIR / "system_prompt.txt"
 USER_LOG_FILE      = HOME / ".local" / "share" / "bouncer" / "log.jsonl"
+USER_REVIEW_DIR    = HOME / ".local" / "share" / "bouncer" / "reviews"
 PROJECT_DIR_NAME   = ".bouncer"
 
 CONFIG_DEFAULTS: dict = {
@@ -133,6 +134,16 @@ CONFIG_YAML_TEMPLATE = """\
 #    - model: nemotron-3-ultra
 #  extra_params:                 # optional provider-specific request params
 #    max_tokens: 1000
+
+# Independent policy-review model. This section is user-config only: project
+# config cannot redirect aggregated policy/log data to another provider.
+#review:
+#  llm:
+#    provider: anthropic
+#    model: claude-sonnet-4-20250514
+#    timeout: 120
+#    extra_params:
+#      max_tokens: 8192
 
 # Fallback when the LLM is uncertain (on_unsure) or unreachable (on_unavailable):
 #   ask      prompt the user (default)
@@ -261,6 +272,16 @@ llm:
   # extra_params:               # optional provider-specific request params
   #   max_tokens: 1000
 
+# Independent policy-review model. It is deliberately separate from `llm` and
+# has no implicit fallback to the classifier model.
+#review:
+#  llm:
+#    provider: anthropic
+#    model: claude-sonnet-4-20250514
+#    timeout: 120
+#    extra_params:
+#      max_tokens: 8192
+
 # Fallback when the LLM is uncertain (on_unsure) or unreachable (on_unavailable):
 #   ask      prompt the user (default)
 #   allow    let the call through
@@ -358,6 +379,35 @@ def load_yaml_config(path: Path) -> dict:
         print(f"bouncer: ignoring malformed {path}: {exc}",
               file=sys.stderr)
         return {}
+
+
+def load_review_config() -> dict:
+    """Load user-only reviewer settings with same-provider connection reuse.
+
+    The reviewer model never inherits from the classifier. Provider transport
+    settings may: using another model on the same endpoint should not require a
+    second copy of its URL or credential.
+    """
+    user_config = load_yaml_config(USER_CONFIG_FILE)
+    review = user_config.get("review", {})
+    if not isinstance(review, dict):
+        return {}
+    raw_review_llm = review.get("llm")
+    if not isinstance(raw_review_llm, dict):
+        return review
+    classifier_llm = user_config.get("llm", {})
+    classifier_llm = classifier_llm if isinstance(classifier_llm, dict) else {}
+    classifier_provider = classifier_llm.get("provider", "ollama")
+    review_provider = raw_review_llm.get("provider", classifier_provider)
+    inherited = {"provider": review_provider}
+    if review_provider == classifier_provider:
+        for key in ("url", "api_key", "key_name"):
+            if classifier_llm.get(key):
+                inherited[key] = classifier_llm[key]
+    inherited.update(raw_review_llm)
+    result = dict(review)
+    result["llm"] = inherited
+    return result
 
 
 def load_policy(path: Path) -> str:

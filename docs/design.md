@@ -45,3 +45,23 @@ For Codex, this means `PermissionRequest` is the primary integration point.
 `PreToolUse` is not recommended for bouncer. It cannot route `UNSURE` or
 `ESCALATE` through Codex's normal approval prompt, and Codex GUI/TUI behavior
 may differ in whether that hook is actually run.
+
+## Policy Evolution
+
+Historical decisions can reveal repeated friction and unclear boundaries, but
+they do not reveal what the user ultimately chose in every harness. Policy
+review therefore treats prior decisions as classifier behavior, not ground
+truth. An independent model clusters requests and recommends a disposition; the
+user supplies the authoritative allow, deny, context-dependent, or one-off
+judgment during review.
+
+Analysis and authority remain separate. The review model has no tools, project
+configuration cannot redirect it, log text is treated as untrusted data, and a
+model response cannot directly update active policy. A candidate must pass
+counterfactual replay, be saved through a temporary editor buffer, survive an
+exact-byte drift check, and receive final confirmation on its visible diff.
+
+These controls prevent policy refinement from being an intentional
+self-authorization interface for agents. They do not turn Bouncer into a
+same-user containment boundary; harness coverage and operating-system controls
+still determine whether an agent can bypass the hook entirely.
