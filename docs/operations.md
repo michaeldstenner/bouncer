@@ -53,7 +53,15 @@ do. A `live` profile on a harness with no ASK channel shows as a degraded
 [configuration.md](configuration.md#session-profiles-live--solo).
 
 Agents cannot set the profile: bouncer denies `bouncer profile <name>` when it
-arrives as a tool call.
+arrives as a tool call. The check parses the command rather than matching the
+string, so wrapping it — `env FOO=1 bouncer …`, `sudo -u me bouncer …`,
+`bash -c '…'`, `python -m bouncer …` — does not get past it. Bare `bouncer
+profile` stays a read, and so does one carrying only `--cwd` / `--as`.
+
+The same parser backs a second refusal: `bouncer config`, `init`, `policy`,
+and `review` are human-only, as are writes to any `.bouncer/` or
+`~/.config/bouncer/` config or policy file. Reads of those files are allowed
+by design.
 
 `bouncer activity` options:
 ```
