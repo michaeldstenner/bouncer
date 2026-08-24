@@ -14,20 +14,25 @@ from ..config import (_config_layers, _find_bouncer_dir, known_profile_names,
 from .. import profile as _profile
 
 # One style per effective state, in each output vocabulary. Green `live`,
-# amber `solo` — amber, not red, because `solo` is the normal state for most
-# of the fleet most of the time, not an error. Degraded `solo` (the profile
-# asked for a human the harness cannot reach) is inverted rather than
-# recoloured, so it reads as "your request is not being honoured" while
-# staying four characters wide like the others.
+# RED `solo` — Michael's call, 2026-08-24, overriding the original amber.
+# The argument for amber was that `solo` is normal for much of the fleet and
+# so is not an error. The argument that won: `solo` means no ASK will ever
+# be produced, so a pane in `solo` cannot stop and check with anyone. That
+# is the state you most need to notice at a glance and least want to mistake
+# for ordinary, and the cost of noticing a true `solo` is nil next to the
+# cost of missing one. Degraded `solo` (the profile asked for a human the
+# harness cannot reach) stays inverted rather than recoloured, so it reads
+# as "your request is not being honoured" while staying four characters
+# wide like the others.
 _STYLES = {
     "ansi": {
         "live":     ("\033[32m", "\033[0m"),
-        "solo":     ("\033[33m", "\033[0m"),
+        "solo":     ("\033[31m", "\033[0m"),
         "degraded": ("\033[30;43;1m", "\033[0m"),
     },
     "tmux": {
         "live":     ("#[fg=green]", "#[default]"),
-        "solo":     ("#[fg=yellow]", "#[default]"),
+        "solo":     ("#[fg=red]", "#[default]"),
         "degraded": ("#[bg=yellow,fg=black,bold]", "#[default]"),
     },
 }
@@ -107,7 +112,7 @@ def cmd_profile(args):
 
 def _print_show(cwd: Path, state: dict) -> None:
     name = state["profile"]
-    color = GREEN if name == "live" else YELLOW
+    color = GREEN if name == "live" else RED
     line = f"{color}{BOLD}{name}{RESET}"
     if state["degraded"]:
         line += (f"  {YELLOW}⚠{RESET} {state['nominal']} was requested, but "

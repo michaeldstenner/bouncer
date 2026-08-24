@@ -3251,7 +3251,7 @@ class TestProfileCommand(_ProfileTestCase):
     def test_tmux_format_is_a_bare_styled_word(self):
         self._run("solo")
         out, _, _ = self._run(as_format="tmux")
-        self.assertEqual(out, "#[fg=yellow]solo#[default]")
+        self.assertEqual(out, "#[fg=red]solo#[default]")
 
     def test_show_resolves_actions_through_the_harness(self):
         self._run("solo")
