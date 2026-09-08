@@ -1635,6 +1635,46 @@ class TestClassify(unittest.TestCase):
                 )
                 self.assertEqual(code, 0)
 
+    def test_diagnostic_piped_into_a_pager_still_skips(self):
+        # The denial hint points agents at `bouncer --agent-help`, and they
+        # pipe it into a pager nearly every time. That form has to be as
+        # reachable as the bare one, or the advertised remedy is not reachable.
+        commands = (
+            "bouncer --agent-help | head -60",
+            "bouncer --agent-help 2>&1 | head -60",
+            "bouncer log --tail | tail -20",
+            "bouncer status -v | cat",
+            "bouncer log | wc -l",
+        )
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                _, _, code = _classify(
+                    self._hook(command=cmd),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("DENY", "should not be called", None, None),
+                )
+                self.assertEqual(code, 0)
+
+    def test_diagnostic_does_not_carry_an_unrelated_command_past_the_llm(self):
+        # The pipeline relaxation is `|` only, into a named set of pure-output
+        # filters. Anything else must still reach the classifier.
+        commands = (
+            "bouncer status; head -5 ~/.ssh/id_rsa",
+            "bouncer status && rm -rf /tmp/x",
+            "bouncer log | tee /etc/x",
+            "bouncer log | sed -i s/a/b/ f",
+            "bouncer log | grep secret",
+        )
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                _, err, code = _classify(
+                    self._hook(command=cmd),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("DENY", "classifier saw it", None, None),
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("classifier saw it", err)
+
     def test_bouncer_self_management_commands_are_deterministically_denied(self):
         for command in (
             "bouncer init",
@@ -3683,6 +3723,42 @@ class TestSoloEscalationGating(unittest.TestCase):
              "session_id": "s1"},
             config_yaml=_SOLO_YAML)
         self.assertEqual((out, err, code), ("", "", 0))
+
+    def test_reading_the_profile_with_a_redirection_is_still_a_diagnostic(self):
+        # The regression this guard actually had: shlex splits `2>&1` into
+        # ['2', '>&', '1'], so the trailing redirection read as a positional
+        # profile name and a pure query was refused as a set.
+        for command in (
+            "bouncer profile --cwd /tmp --as json 2>&1",
+            "bouncer profile --as json 2>/dev/null",
+            "bouncer profile --help 2>&1 | head -60",
+            "bouncer profile 2>&1 | cat",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML,
+                    call_llm_result=("DENY", "should not be called", None, None))
+                self.assertEqual((out, err, code), ("", "", 0))
+
+    def test_self_set_guard_survives_redirections(self):
+        # The other half of the same test: stripping redirection syntax must
+        # not open a way to set a profile with one appended.
+        for command in (
+            "bouncer profile live 2>&1",
+            "bouncer profile solo 2>/dev/null | head -3",
+            "bouncer -g profile live >out.txt",
+            "env FOO=1 bouncer profile solo 2>&1",
+            "bouncer > out.txt profile solo",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML)
+                self.assertEqual(code, 2)
+                self.assertIn("may not set its own bouncer profile", err)
 
 
 class TestProfileCommand(_ProfileTestCase):

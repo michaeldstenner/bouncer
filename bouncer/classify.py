@@ -49,11 +49,28 @@ _PROFILE_SELF_SET_REASON = (
 )
 
 
+# Pure-output filters a bouncer diagnostic is routinely piped into. Named one
+# by one, because this list is the entire scope of the pipeline relaxation in
+# `_is_bouncer_diagnostic_command` — every member must be incapable of writing
+# anywhere by itself.
+_OUTPUT_FILTERS = frozenset({"cat", "head", "less", "more", "tail", "wc"})
+
+
 def _is_bouncer_diagnostic_command(command: str) -> bool:
-    segments = _shell_segments(command)
-    if len(segments) != 1:
+    # A single pipeline only: `;`, `&&` and `||` would let an unrelated command
+    # ride along on the diagnostic's skip, so those are refused outright.
+    segments = _pipeline_segments(command)
+    if not segments:
         return False
-    parts = segments[0]
+    # `bouncer --agent-help | head -60` is the same read as `bouncer
+    # --agent-help`. Agents pipe it into a pager almost every time, and that
+    # trip through the classifier is why bouncer's own advertised remedy was
+    # sometimes refused.
+    for downstream in segments[1:]:
+        argv = _strip_redirections(downstream)
+        if not argv or Path(argv[0]).name not in _OUTPUT_FILTERS:
+            return False
+    parts = _strip_redirections(segments[0])
     if len(parts) > 1 and Path(parts[0]).name == "bouncer" \
             and parts[1] in ("--agent-help", "--help", "-h"):
         return True
@@ -64,13 +81,42 @@ def _is_bouncer_diagnostic_command(command: str) -> bool:
     return _parse_profile_set_command(command) is None
 
 
-def _shell_segments(command: str) -> list[list[str]]:
+def _lex(command: str) -> list[str] | None:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
         lexer.whitespace_split = True
         lexer.commenters = ""
-        parts = list(lexer)
+        return list(lexer)
     except ValueError:
+        return None
+
+
+def _pipeline_segments(command: str) -> list[list[str]] | None:
+    """The segments of `command` when it is a single pipeline, else None.
+
+    Deliberately stricter than `_shell_segments`: `|` is the only separator
+    accepted, so `;`, `&&` and `||` — which could smuggle an unrelated command
+    alongside a whitelisted one — end the match rather than splitting it.
+    """
+    parts = _lex(command)
+    if parts is None:
+        return None
+    segments, current = [], []
+    for part in parts:
+        if part and all(char in ";&|()" for char in part):
+            if part != "|":
+                return None
+            segments.append(current)
+            current = []
+        else:
+            current.append(part)
+    segments.append(current)
+    return segments
+
+
+def _shell_segments(command: str) -> list[list[str]]:
+    parts = _lex(command)
+    if parts is None:
         return []
     segments, current = [], []
     for part in parts:
@@ -85,9 +131,47 @@ def _shell_segments(command: str) -> list[list[str]]:
     return segments
 
 
+_REDIRECT_CHARS = frozenset("<>&")
+
+
+def _strip_redirections(parts: list[str]) -> list[str]:
+    """Drop shell redirection syntax from a lexed segment, leaving the argv the
+    command itself would see.
+
+    shlex hands `2>&1` back as ['2', '>&', '1'] and `2>/dev/null` as
+    ['2', '>', '/dev/null'], so a redirection tacked onto the end of a command
+    otherwise reads as a positional argument. That is how
+    `bouncer profile --cwd DIR --as json 2>&1` — a pure read — came to look
+    like a profile *set* named "2" and was refused as one.
+
+    Used only for reading a bouncer argv. `_shell_mutates_protected_path`
+    deliberately reads the raw segments instead, because there the `>` IS the
+    thing being matched.
+    """
+    argv: list[str] = []
+    index = 0
+    while index < len(parts):
+        token = parts[index]
+        is_redirect = (token
+                       and all(char in _REDIRECT_CHARS for char in token)
+                       and any(char in "<>" for char in token))
+        if is_redirect:
+            # Drop the operator and its target, plus the leading fd number
+            # shlex split off the front (`2` of `2>&1`).
+            if argv and argv[-1].isdigit():
+                argv.pop()
+            index += 2
+            continue
+        argv.append(token)
+        index += 1
+    return argv
+
+
 def _segment_bouncer_argv(parts: list[str]) -> list[str] | None:
     """The bouncer argv of a single shell segment, from the subcommand onward,
-    with wrappers (`env`, `sudo`, `python -m`, `bash -c`, …) peeled off."""
+    with wrappers (`env`, `sudo`, `python -m`, `bash -c`, …) peeled off and
+    shell redirections removed."""
+    parts = _strip_redirections(parts)
     index = 0
     while index < len(parts) and "=" in parts[index] and not parts[index].startswith("="):
         index += 1
