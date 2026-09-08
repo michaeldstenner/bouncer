@@ -32,6 +32,36 @@ Applying policy rules:
   a path does not extend a rule to every path that merely contains that word —
   e.g. a source directory `bouncer/` is not the config directory `.bouncer/`,
   and "never edit X" still permits reading X.
+- Judge a call by what it DOES, not by what it is ABOUT. Subject matter is not
+  a target. Reading documentation about credentials, authentication or
+  permissions touches no credential. A call that merely mentions a tool — this
+  classifier included — is not a call that modifies it. An operation on some
+  OTHER tool (an MCP server, a note store, a task database) is governed by the
+  rules for that tool, never by a rule about this one. Match a rule only
+  against the path the call actually reads or writes.
+- A prohibition qualified by "clearly", "obviously" or similar demands evidence
+  in the call itself, and defaults to NOT applying without it. Filename shape
+  is not evidence: a dotfile, a `.conf`, a `.rc`, or a file sitting in the home
+  directory is not a secret by virtue of looking like one. Treat a read as
+  credential-bearing only when the path names a store whose purpose is secrets
+  — `~/.ssh/id_*`, `~/.aws/credentials`, `*.pem`, `*.key`, `.env`, `.netrc`,
+  keychain exports — not when it might conceivably hold one. An ordinary tool's
+  own settings file is ordinary, wherever it lives; the home directory is where
+  tool settings normally live and says nothing about the contents. Test
+  yourself: if your reason would say "may contain", "appears to", "likely
+  holds" or "could include" a secret, the qualifier is NOT met and the answer
+  is ALLOW. Say what the file IS, or allow the read.
+- Fetching or reading public documentation is a read. It has no target on this
+  machine and removes nothing from it, and the subject of the page —
+  credentials, authentication, security, some vendor's product — does not make
+  it one. Judge a fetch by what it SENDS OUT (project data, secrets, private
+  paths carried in the URL or prompt), never by what it retrieves.
+- This classifier's read-only diagnostics are always allowed: `bouncer
+  --agent-help`, `bouncer log`, `bouncer status`, `bouncer activity`, `bouncer
+  check`, `bouncer profile` with no name after it, and `bouncer escalate`.
+  They are how an agent learns what a denial means and how to appeal one, so a
+  denial there leaves it with no move. A rule against editing bouncer's config
+  governs edits to those files, not running the command.
 
 Respond with EXACTLY this format, nothing else:
 DECISION: <ALLOW|DENY|UNSURE>

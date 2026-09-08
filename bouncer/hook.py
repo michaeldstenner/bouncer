@@ -2,14 +2,22 @@ import json
 import sys
 
 
+# Both hints name a command the agent can run right now. Pointing only at
+# `bouncer --agent-help` made the remedy one unverified round-trip away from
+# the one place it is ever read, so the appeal itself is spelled out here and
+# the help is left as the optional detail it is.
 _DENY_HINT_WITH_ASK = (
     "Source: bouncer policy denial, not a direct user denial. "
-    "Escalation support is available; run 'bouncer --agent-help' for protocol details."
+    "To appeal: run 'bouncer escalate \"<why this one call>\"', then re-issue "
+    "this exact call. Prefer another way within policy first. "
+    "'bouncer --agent-help' has the full protocol."
 )
 
 _DENY_HINT_NO_ASK = (
     "Source: bouncer policy denial, not a direct user denial. "
-    "This harness does not have ASK available; run 'bouncer --agent-help' for protocol details."
+    "This harness has no ASK channel, so there is nobody to appeal to. Find "
+    "another way within policy, or park this step and do everything that "
+    "doesn't depend on it. 'bouncer --agent-help' has the full protocol."
 )
 
 # Under a profile with no ASK channel (`solo`), the denial has to stand on its

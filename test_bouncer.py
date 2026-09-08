@@ -1388,7 +1388,7 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertTrue(out.startswith("deny\tLLM unsure: unclear"))
-        self.assertIn("does not have ASK available", out)
+        self.assertIn("has no ASK channel", out)
         self.assertIn("Source: bouncer policy denial", out)
         self.assertNotIn("To send this to the user", out)
 
@@ -1801,7 +1801,7 @@ class TestClassify(unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertTrue(out.startswith("deny\tagent escalation requested: deploy step"))
-        self.assertIn("does not have ASK available", out)
+        self.assertIn("has no ASK channel", out)
 
     def test_escalate_codex_permission_abstains_so_codex_asks(self):
         out, err, code = _classify(
@@ -3394,10 +3394,13 @@ class TestProfileAndHarness(unittest.TestCase):
         self.assertIn("You may not perform this action at this time", err)
         self.assertNotIn("Escalation support is available", err)
 
-    def test_live_deny_hint_still_advertises_escalation(self):
+    def test_live_deny_hint_names_a_runnable_appeal(self):
+        # A hint that only points at further reading is not an action. The
+        # command it names must be one bouncer itself lets through.
         _, err, _ = hook_mod.format_hook_response(
             "DENY", "nope", "json", profile_allows_ask=True)
-        self.assertIn("Escalation support is available", err)
+        self.assertIn("bouncer escalate", err)
+        self.assertIn("re-issue this exact call", err)
 
     def test_ask_becomes_deny_under_a_no_ask_profile(self):
         # Every harness delivers the refusal in its own vocabulary; none of
