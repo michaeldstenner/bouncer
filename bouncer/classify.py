@@ -81,14 +81,164 @@ def _is_bouncer_diagnostic_command(command: str) -> bool:
     return _parse_profile_set_command(command) is None
 
 
-def _lex(command: str) -> list[str] | None:
+# Tokens made only of these separate one command from the next. A newline is
+# one: `echo hi\nbouncer profile solo` runs two commands, not one `echo`.
+_SEPARATOR_CHARS = frozenset(";&|()\n")
+
+# Commands that run a heredoc's body as shell code rather than read it as data.
+# Where one of these appears, the body stays in and is read line by line.
+_HEREDOC_CODE_READERS = frozenset({
+    "bash", "dash", "eval", "fish", "ksh", "mksh", "sh", "source", "ssh",
+    "xargs", "zsh",
+})
+
+
+def _lex_tokens(command: str) -> list[str] | None:
+    # Backslash-newline is a line continuation to the shell, not a separator.
+    command = command.replace("\\\n", "").strip()
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
+        lexer = shlex.shlex(command, posix=True,
+                            punctuation_chars=";&|()<>\n")
+        lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         lexer.commenters = ""
         return list(lexer)
     except ValueError:
         return None
+
+
+def _lex(command: str) -> list[str] | None:
+    return _lex_tokens(_without_heredoc_bodies(command))
+
+
+def _feeds_code_reader(tokens: list[str]) -> bool:
+    at_start = True
+    for token in tokens:
+        name = Path(token).name
+        if name in _HEREDOC_CODE_READERS or (at_start and token == "."):
+            return True
+        at_start = bool(token) and all(char in _SEPARATOR_CHARS
+                                       for char in token)
+    return False
+
+
+def _without_heredoc_bodies(command: str) -> str:
+    """`command` with its heredoc bodies taken out, so the text of a message
+    written through `cat <<EOF` or `tp tell X <<EOF` is not read as commands.
+
+    That is how a dispatch note containing "(bouncer profile --cwd . --as
+    json, plus …)" was refused as a profile set named "plus": the `(` split
+    the body into a segment of its own.
+
+    A body fed to a shell (`bash <<EOF`, `cat <<EOF | sh`, `source
+    /dev/stdin <<EOF`) is code, so it stays in, minus its comment lines.
+    Anything this scanner cannot place with confidence — an unterminated
+    heredoc, an unclosed quote in the delimiter, an unmatched `((`, a
+    command substitution outside quotes — returns `command` unchanged:
+    reading too much as code only over-denies.
+    """
+    if "<<" not in command:
+        return command
+    stripped: list[str] = []
+    kept: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    found = False
+    quote = None
+    index, length = 0, len(command)
+
+    def emit(text: str) -> None:
+        stripped.append(text)
+        kept.append(text)
+
+    while index < length:
+        char = command[index]
+        if quote:
+            if char == "\\" and quote == '"':
+                emit(command[index:index + 2])
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+            emit(char)
+            index += 1
+            continue
+        if char == "\\":
+            emit(command[index:index + 2])
+            index += 2
+            continue
+        if char in "'\"":
+            quote = char
+            emit(char)
+            index += 1
+            continue
+        if char == "`" or (command.startswith("$(", index)
+                           and not command.startswith("$((", index)):
+            return command
+        if command.startswith("((", index):
+            # Arithmetic: `$((1<<2))` shifts, it opens no heredoc.
+            end = command.find("))", index)
+            if end == -1:
+                return command
+            emit(command[index:end + 2])
+            index = end + 2
+            continue
+        if command.startswith("<<<", index):
+            emit("<<<")
+            index += 3
+            continue
+        if command.startswith("<<", index):
+            cursor = index + 2
+            strip_tabs = command.startswith("-", cursor)
+            if strip_tabs:
+                cursor += 1
+            while cursor < length and command[cursor] in " \t":
+                cursor += 1
+            delimiter = ""
+            while cursor < length and command[cursor] not in " \t\n;&|()<>":
+                letter = command[cursor]
+                if letter in "'\"":
+                    close = command.find(letter, cursor + 1)
+                    if close == -1:
+                        return command
+                    delimiter += command[cursor + 1:close]
+                    cursor = close + 1
+                elif letter == "\\":
+                    delimiter += command[cursor + 1:cursor + 2]
+                    cursor += 2
+                else:
+                    delimiter += letter
+                    cursor += 1
+            if not delimiter:
+                return command
+            emit(command[index:cursor])
+            pending.append((delimiter, strip_tabs))
+            found = True
+            index = cursor
+            continue
+        emit(char)
+        index += 1
+        if char == "\n" and pending:
+            for delimiter, strip_tabs in pending:
+                while True:
+                    if index >= length:
+                        return command
+                    end = command.find("\n", index)
+                    end = length if end == -1 else end
+                    line = command[index:end]
+                    index = end + 1
+                    if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                        break
+                    if not line.lstrip().startswith("#"):
+                        kept.append(line + "\n")
+            pending = []
+    if pending or quote:
+        return command
+    if not found:
+        return command
+    tokens = _lex_tokens("".join(stripped))
+    if tokens is None or _feeds_code_reader(tokens):
+        return "".join(kept)
+    return "".join(stripped)
 
 
 def _pipeline_segments(command: str) -> list[list[str]] | None:
@@ -103,7 +253,7 @@ def _pipeline_segments(command: str) -> list[list[str]] | None:
         return None
     segments, current = [], []
     for part in parts:
-        if part and all(char in ";&|()" for char in part):
+        if part and all(char in _SEPARATOR_CHARS for char in part):
             if part != "|":
                 return None
             segments.append(current)
@@ -120,7 +270,7 @@ def _shell_segments(command: str) -> list[list[str]]:
         return []
     segments, current = [], []
     for part in parts:
-        if part and all(char in ";&|()" for char in part):
+        if part and all(char in _SEPARATOR_CHARS for char in part):
             if current:
                 segments.append(current)
                 current = []

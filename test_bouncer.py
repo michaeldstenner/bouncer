@@ -1688,6 +1688,9 @@ class TestClassify(unittest.TestCase):
             "bash -c 'bouncer review'",
             "python3 -I -m bouncer review",
             "bouncer status && bouncer policy",
+            "echo hi\nbouncer review",
+            "bash <<'EOF'\nbouncer policy\nEOF",
+            "cat <<EOF | bash\n(bouncer review)\nEOF",
         ):
             with self.subTest(command=command):
                 _, err, code = _classify(
@@ -1697,6 +1700,33 @@ class TestClassify(unittest.TestCase):
                 )
                 self.assertEqual(code, 2)
                 self.assertIn("directly by the user", err)
+
+    def test_self_management_named_in_a_message_is_not_denied(self):
+        for command in (
+            "cat > /tmp/note <<'EOF'\nthen (bouncer review) it\nEOF",
+            "tp tell X <<EOF\nask Michael to run: bouncer policy\n"
+            "; bouncer config -e\nEOF",
+            "tp report --status info \"please run (bouncer review)\"",
+        ):
+            with self.subTest(command=command):
+                _, err, code = _classify(
+                    self._hook(command=command),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("ALLOW", "a message", None, None),
+                )
+                self.assertNotIn("directly by the user", err)
+                self.assertEqual(code, 0)
+
+    def test_newline_ends_a_diagnostic_pipeline(self):
+        # A newline separates commands as `;` does, so it may not carry an
+        # unrelated command along on a diagnostic's skip.
+        _, err, code = _classify(
+            self._hook(command="bouncer status\nrm -rf /tmp/x"),
+            config_yaml=_BASIC_CONFIG,
+            call_llm_result=("DENY", "classifier saw it", None, None),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("classifier saw it", err)
 
     def test_native_policy_edit_denied_before_tool_skip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3760,6 +3790,68 @@ class TestSoloEscalationGating(unittest.TestCase):
                     {"tool_name": "Bash", "tool_input": {"command": command},
                      "session_id": "s1"},
                     config_yaml=_SOLO_YAML)
+                self.assertEqual(code, 2)
+                self.assertIn("may not set its own bouncer profile", err)
+
+    def test_message_text_is_not_a_profile_set(self):
+        # The 2026-09-13 07:01 denial, trimmed: a dispatch note written to a
+        # file with a heredoc. The `(` in "(bouncer profile --cwd . --as
+        # json, plus …)" split the body into a segment that read as a set
+        # named "plus". A message ABOUT the command is not the command.
+        for command in (
+            "cp a /tmp/b\ncat > /tmp/x.txt <<'EOF'\nso model and\n"
+            "bouncer profile are INHERITED, not chosen. Re-derive\n"
+            "them yourself (bouncer profile --cwd . --as json, plus mode)\n"
+            "EOF\ntp type \"X:agent\" -f /tmp/x.txt 2>&1",
+            "cat <<EOF > /tmp/x.txt\nbouncer profile solo\nEOF",
+            "cat <<\"EOF\" > /tmp/x.txt\n(bouncer profile solo)\nEOF",
+            "cat <<-EOF\n\tbouncer profile solo\n\tEOF\necho done",
+            "tp report --status info - <<'EOF'\nit's (bouncer profile live)\n"
+            "EOF",
+            "tp tell X \"run (bouncer profile solo) when you can\"",
+            "git commit -m \"$(cat <<'EOF'\nfix: say \"why\" first\n\n"
+            "(bouncer profile solo) is only text here\nEOF\n)\"",
+            "echo 'bouncer profile solo'",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML,
+                    call_llm_result=("ALLOW", "a message", None, None))
+                self.assertNotIn("may not set its own bouncer profile", err)
+                self.assertEqual(code, 0)
+
+    def test_self_set_guard_still_reads_code_it_will_run(self):
+        # The other side: a heredoc fed to a shell is code, and a newline
+        # separates commands exactly as `;` does.
+        for command in (
+            "bouncer profile solo",
+            "env FOO=1 bouncer profile solo",
+            "bash -c 'bouncer profile solo'",
+            "sudo bouncer profile live",
+            "bouncer > x profile solo",
+            "bash <<EOF\nbouncer profile solo\nEOF",
+            "sh <<'EOF'\n# it's fine\nbouncer profile solo\nEOF",
+            "sudo -u me bash -s <<EOF\nbouncer profile live\nEOF",
+            "cat <<EOF | sh\nbouncer profile solo\nEOF",
+            "source /dev/stdin <<EOF\nbouncer profile solo\nEOF",
+            ". /dev/stdin <<EOF\nbouncer profile solo\nEOF",
+            "echo hi\nbouncer profile solo",
+            "bouncer \\\nprofile solo",
+            "cat <<EOF\nhello\nEOF\nbouncer profile solo",
+            "cat <<A <<B\nx\nA\ny\nB\nbouncer profile solo",
+            "echo $((1<<2))\nbouncer profile solo\n2",
+            "cat <<EOF\nnever closed\nbouncer profile solo",
+            "echo \"<<EOF\"\nbouncer profile solo\nEOF",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML,
+                    call_llm_result=("ALLOW", "should not be used", None,
+                                     None))
                 self.assertEqual(code, 2)
                 self.assertIn("may not set its own bouncer profile", err)
 

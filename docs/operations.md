@@ -58,6 +58,15 @@ string, so wrapping it — `env FOO=1 bouncer …`, `sudo -u me bouncer …`,
 `bash -c '…'`, `python -m bouncer …` — does not get past it. Bare `bouncer
 profile` stays a read, and so does one carrying only `--cwd` / `--as`.
 
+The parser splits commands on `;`, `&&`, `||`, `|`, parentheses, and
+newlines. It reads what the shell would run, not text the command carries:
+a quoted argument (`tp tell X "run bouncer profile solo"`) and a heredoc
+body written to a file or sent as a message (`cat > note <<'EOF' … EOF`)
+are data. A heredoc handed to a shell (`bash <<EOF`, `cat <<EOF | sh`,
+`source /dev/stdin <<EOF`) is code, and its body is read line by line. When
+the parser cannot place a heredoc with confidence (unterminated, or inside
+an unquoted `$(…)`), it reads the body as code.
+
 The same parser backs a second refusal: `bouncer config`, `init`, `policy`,
 and `review` are human-only, as are writes to any `.bouncer/` or
 `~/.config/bouncer/` config or policy file. Reads of those files are allowed
