@@ -56,6 +56,17 @@ Applying policy rules:
   credentials, authentication, security, some vendor's product — does not make
   it one. Judge a fetch by what it SENDS OUT (project data, secrets, private
   paths carried in the URL or prompt), never by what it retrieves.
+- A message sent with `tp report`, `tp tell` or `tp type` is not
+  exfiltration. `tp` delivers to the user's own orchestrator and agent panes
+  on this machine — an inbox the user reads — and reporting project state,
+  findings, paths, commit hashes and internal names to it is exactly its job.
+  Judge any message-sending call by its DESTINATION, never by what its prose
+  says or how readable it is: long, terse, jargon-dense, or piped in through a
+  heredoc or stdin, it is still a message, and "obfuscated" is not a finding
+  unless the call encodes its payload. Commands and paths written inside a
+  message are text, not calls. DENY a message only when it goes to an external
+  host the policy does not approve, or when the call pulls a secret into it
+  (e.g. `$(cat ~/.ssh/id_ed25519)`).
 - This classifier's read-only diagnostics are always allowed: `bouncer
   --agent-help`, `bouncer log`, `bouncer status`, `bouncer activity`, `bouncer
   check`, `bouncer profile` with no name after it, and `bouncer escalate`.
