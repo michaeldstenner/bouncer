@@ -1,4 +1,5 @@
 import os
+import re
 import signal
 import shlex
 import sys
@@ -132,17 +133,18 @@ def _without_heredoc_bodies(command: str) -> str:
 
     A body fed to a shell (`bash <<EOF`, `cat <<EOF | sh`, `source
     /dev/stdin <<EOF`) is code, so it stays in, minus its comment lines.
-    Anything this scanner cannot place with confidence — an unterminated
-    heredoc, an unclosed quote in the delimiter, an unmatched `((`, a
-    command substitution outside quotes — returns `command` unchanged:
-    reading too much as code only over-denies.
+    Shell comments outside heredocs are dropped too. Anything this scanner
+    cannot place with confidence — an unterminated heredoc, an unclosed quote
+    in the delimiter, an unmatched `((`, a command substitution outside
+    quotes — returns `command` unchanged: reading too much as code only
+    over-denies.
     """
-    if "<<" not in command:
+    if "<<" not in command and "#" not in command:
         return command
     stripped: list[str] = []
     kept: list[str] = []
     pending: list[tuple[str, bool]] = []
-    found = False
+    changed = False
     quote = None
     index, length = 0, len(command)
 
@@ -174,6 +176,13 @@ def _without_heredoc_bodies(command: str) -> str:
         if char == "`" or (command.startswith("$(", index)
                            and not command.startswith("$((", index)):
             return command
+        if char == "#" and (index == 0 or command[index - 1] in " \t\n;&|()"):
+            # A comment runs to the end of the line. Dropped so that a `#
+            # don't` note does not leave a lone quote for the lexer.
+            end = command.find("\n", index)
+            index = length if end == -1 else end
+            changed = True
+            continue
         if command.startswith("((", index):
             # Arithmetic: `$((1<<2))` shifts, it opens no heredoc.
             end = command.find("))", index)
@@ -212,7 +221,7 @@ def _without_heredoc_bodies(command: str) -> str:
                 return command
             emit(command[index:cursor])
             pending.append((delimiter, strip_tabs))
-            found = True
+            changed = True
             index = cursor
             continue
         emit(char)
@@ -233,7 +242,7 @@ def _without_heredoc_bodies(command: str) -> str:
             pending = []
     if pending or quote:
         return command
-    if not found:
+    if not changed:
         return command
     tokens = _lex_tokens("".join(stripped))
     if tokens is None or _feeds_code_reader(tokens):
@@ -264,10 +273,22 @@ def _pipeline_segments(command: str) -> list[list[str]] | None:
     return segments
 
 
-def _shell_segments(command: str) -> list[list[str]]:
+# Deeper than this, a nested command is refused as unreadable rather than
+# followed further.
+_MAX_NESTING = 4
+
+
+def _command_segments(command: str, depth: int = 0) -> list[list[str]] | None:
+    """Every segment the shell would run for `command`, including the ones
+    inside a nested command line (`bash -c STR`, `eval ARGS`, `bash <<<
+    STR`), each followed into all of its segments, not just its first.
+
+    None when any level cannot be lexed or nests past _MAX_NESTING: the
+    caller cannot tell what would run, and says so rather than guessing.
+    """
     parts = _lex(command)
     if parts is None:
-        return []
+        return None
     segments, current = [], []
     for part in parts:
         if part and all(char in _SEPARATOR_CHARS for char in part):
@@ -278,7 +299,36 @@ def _shell_segments(command: str) -> list[list[str]]:
             current.append(part)
     if current:
         segments.append(current)
-    return segments
+    expanded = []
+    for segment in segments:
+        expanded.append(segment)
+        nested = _nested_command(segment)
+        if nested is None:
+            continue
+        if depth >= _MAX_NESTING:
+            return None
+        inner = _command_segments(nested, depth + 1)
+        if inner is None:
+            return None
+        expanded.extend(inner)
+    return expanded
+
+
+def _shell_segments(command: str) -> list[list[str]]:
+    return _command_segments(command) or []
+
+
+# "bouncer" as a word: a command, or a path ending in it — not a directory
+# on the way to something else (`bouncer/classify.py`).
+_BOUNCER_WORD = re.compile(r"(?<![\w.-])bouncer(?![\w./-])")
+
+
+def _names_bouncer_unreadably(command: str) -> bool:
+    """True when `command` names bouncer but cannot be split into segments, so
+    neither guard can say what it would run. Refused, not passed unread: a
+    lone quote must not be a way past the guards."""
+    return (_command_segments(command) is None
+            and _BOUNCER_WORD.search(command) is not None)
 
 
 _REDIRECT_CHARS = frozenset("<>&")
@@ -317,11 +367,39 @@ def _strip_redirections(parts: list[str]) -> list[str]:
     return argv
 
 
-def _segment_bouncer_argv(parts: list[str]) -> list[str] | None:
-    """The bouncer argv of a single shell segment, from the subcommand onward,
-    with wrappers (`env`, `sudo`, `python -m`, `bash -c`, …) peeled off and
-    shell redirections removed."""
-    parts = _strip_redirections(parts)
+# Shells whose `-c STR` (or `<<< STR`) is a command line of its own.
+_NESTING_SHELLS = frozenset({"bash", "dash", "ksh", "mksh", "sh", "zsh"})
+
+
+def _nested_command(parts: list[str]) -> str | None:
+    """The command line a segment hands to a shell to run, if any:
+    `bash -c STR` (and `-lc`, `-ec`, …), `eval ARGS…` (joined with spaces,
+    as eval does), and `bash <<< STR` / `. /dev/stdin <<< STR`."""
+    argv = _strip_redirections(parts)
+    index = _command_index(argv)
+    if index >= len(argv):
+        return None
+    name = Path(argv[index]).name or argv[index]
+    if name == "eval":
+        return " ".join(argv[index + 1:]) or None
+    if name in _NESTING_SHELLS:
+        for position in range(index + 1, len(argv)):
+            flag = argv[position]
+            if flag.startswith("-") and not flag.startswith("--") \
+                    and "c" in flag[1:]:
+                return argv[position + 1] if position + 1 < len(argv) else None
+    if name in _NESTING_SHELLS or name in ("source", "."):
+        if "<<<" in parts:
+            position = parts.index("<<<")
+            if position + 1 < len(parts):
+                return parts[position + 1]
+    return None
+
+
+def _command_index(parts: list[str]) -> int:
+    """Index of the executable in a redirection-free segment, past leading
+    `VAR=value` assignments and wrappers (`env`, `sudo`, `nice`, …) with
+    their options."""
     index = 0
     while index < len(parts) and "=" in parts[index] and not parts[index].startswith("="):
         index += 1
@@ -348,6 +426,19 @@ def _segment_bouncer_argv(parts: list[str]) -> list[str] | None:
             )
             if takes_value and "=" not in part and index < len(parts):
                 index += 1
+    return index
+
+
+def _segment_bouncer_argv(parts: list[str]) -> list[str] | None:
+    """The bouncer argv of a single shell segment, from the subcommand onward,
+    with wrappers (`env`, `sudo`, `python -m`, …) peeled off and shell
+    redirections removed.
+
+    A nested command line (`bash -c '…'`, `eval …`) is not read here: it is
+    one segment of `_command_segments`' output, and its own segments follow
+    it there, so each guard sees every one of them."""
+    parts = _strip_redirections(parts)
+    index = _command_index(parts)
     if index >= len(parts):
         return None
     executable = Path(parts[index]).name
@@ -361,14 +452,6 @@ def _segment_bouncer_argv(parts: list[str]) -> list[str] | None:
             return None
         index = module_index + 2
     elif executable != "bouncer":
-        if executable in ("bash", "sh", "zsh") and index < len(parts):
-            try:
-                command_index = parts.index("-c", index)
-            except ValueError:
-                return None
-            nested = _bouncer_argv(parts[command_index + 1]) \
-                if command_index + 1 < len(parts) else None
-            return nested
         return None
     if index < len(parts) and parts[index] in ("-g", "--global"):
         index += 1
@@ -400,19 +483,6 @@ def _parse_profile_set_command(command: str) -> str | None:
                 continue
             return token
     return None
-
-
-def _bouncer_argv(command: str) -> list[str] | None:
-    for segment in _shell_segments(command):
-        argv = _segment_bouncer_argv(segment)
-        if argv:
-            return argv
-    return None
-
-
-def _bouncer_subcommand(command: str) -> str | None:
-    argv = _bouncer_argv(command)
-    return argv[0] if argv else None
 
 
 def _is_bouncer_self_management_command(command: str) -> bool:
@@ -468,6 +538,11 @@ def _management_denial_reason(
     if _is_bouncer_self_management_command(tool_input.get("command", "")):
         return ("Bouncer policy and configuration management must be run directly "
                 "by the user, outside an agent tool call")
+    if _names_bouncer_unreadably(tool_input.get("command", "")):
+        return ("This command names bouncer, but bouncer cannot parse it (an "
+                "unbalanced quote, or nesting too deep), so it cannot tell "
+                "whether it changes bouncer's own settings. Fix the quoting "
+                "and re-issue.")
     if _shell_mutates_protected_path(tool_input.get("command", ""), cwd):
         return ("Bouncer policy and configuration files cannot be modified "
                 "by an agent shell command")

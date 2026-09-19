@@ -65,7 +65,19 @@ body written to a file or sent as a message (`cat > note <<'EOF' … EOF`)
 are data. A heredoc handed to a shell (`bash <<EOF`, `cat <<EOF | sh`,
 `source /dev/stdin <<EOF`) is code, and its body is read line by line. When
 the parser cannot place a heredoc with confidence (unterminated, or inside
-an unquoted `$(…)`), it reads the body as code.
+an unquoted `$(…)`), it reads the body as code. Shell comments are ignored.
+
+A nested command line is read in full: every command inside `bash -c '…'`
+(also `sh`, `zsh`, `dash`, `ksh`, and combined flags like `-lc`), `eval …`,
+and `bash <<< '…'` / `. /dev/stdin <<< '…'` is checked, not just the first,
+and nesting is followed several levels deep. A command that names bouncer
+but cannot be parsed (an unbalanced quote, or nesting too deep) is refused
+outright with a request to fix the quoting. An unparseable command that
+does not name bouncer goes to the classifier as usual.
+
+A `bash -c` or `eval` string is never treated as a bouncer diagnostic: the
+diagnostic skip bypasses the classifier, so it covers only a top-level
+pipeline it can read whole.
 
 The same parser backs a second refusal: `bouncer config`, `init`, `policy`,
 and `review` are human-only, as are writes to any `.bouncer/` or

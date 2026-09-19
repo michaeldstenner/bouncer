@@ -1691,6 +1691,11 @@ class TestClassify(unittest.TestCase):
             "echo hi\nbouncer review",
             "bash <<'EOF'\nbouncer policy\nEOF",
             "cat <<EOF | bash\n(bouncer review)\nEOF",
+            "bash -c 'bouncer status; bouncer config'",
+            "sudo bash -c 'x; bouncer policy'",
+            "eval 'bouncer config'",
+            "eval bouncer review",
+            "bash -c \"eval 'bouncer init'\"",
         ):
             with self.subTest(command=command):
                 _, err, code = _classify(
@@ -1716,6 +1721,51 @@ class TestClassify(unittest.TestCase):
                 )
                 self.assertNotIn("directly by the user", err)
                 self.assertEqual(code, 0)
+
+    def test_unreadable_command_naming_bouncer_is_refused(self):
+        # A lone quote used to leave both guards with no segments at all,
+        # so the call passed them unread.
+        for command in (
+            "echo it's; bouncer profile solo",
+            "echo it's; bouncer config",
+            "bash -c \"echo it's; bouncer profile solo\"",
+            "bash -c \"bash -c \\\"bash -c 'eval eval eval bouncer "
+            "profile solo'\\\"\"",
+        ):
+            with self.subTest(command=command):
+                _, err, code = _classify(
+                    self._hook(command=command),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("ALLOW", "should not be used", None, None),
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("cannot parse it", err)
+
+    def test_unreadable_command_without_bouncer_goes_to_classifier(self):
+        for command in ("echo it's", "cd ~/Code/bouncer/docs && echo it's"):
+            with self.subTest(command=command):
+                _, err, code = _classify(
+                    self._hook(command=command),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("DENY", "classifier saw it", None, None),
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("classifier saw it", err)
+
+    def test_nested_diagnostic_does_not_skip_the_classifier(self):
+        # The diagnostic skip bypasses the LLM, so it may only cover a
+        # command line it can read whole — not a `bash -c` string whose
+        # first command happens to be a diagnostic.
+        for command in ("bash -c 'bouncer status; rm -rf /tmp/x'",
+                        "eval 'bouncer status; rm -rf /tmp/x'"):
+            with self.subTest(command=command):
+                _, err, code = _classify(
+                    self._hook(command=command),
+                    config_yaml=_BASIC_CONFIG,
+                    call_llm_result=("DENY", "classifier saw it", None, None),
+                )
+                self.assertEqual(code, 2)
+                self.assertIn("classifier saw it", err)
 
     def test_newline_ends_a_diagnostic_pipeline(self):
         # A newline separates commands as `;` does, so it may not carry an
@@ -3792,6 +3842,65 @@ class TestSoloEscalationGating(unittest.TestCase):
                     config_yaml=_SOLO_YAML)
                 self.assertEqual(code, 2)
                 self.assertIn("may not set its own bouncer profile", err)
+
+    def test_self_set_guard_reads_every_nested_command(self):
+        # A nested string is a command line of its own: every segment of it
+        # is checked, not just the first bouncer call. `eval` joins its
+        # arguments into one; an unlexable command that names bouncer is
+        # refused rather than passed unread.
+        for command in (
+            "bash -c 'bouncer status; bouncer profile solo'",
+            "bash -c 'true && bouncer profile solo'",
+            "zsh -c 'bouncer status; bouncer profile solo'",
+            "dash -c 'bouncer profile solo'",
+            "eval 'bouncer profile solo'",
+            "eval bouncer profile solo",
+            "bash -c \"eval 'bouncer profile solo'\"",
+            "sudo bash -c 'x; bouncer profile live'",
+            "bash <<< 'bouncer profile solo'",
+            ". /dev/stdin <<< 'bouncer profile solo'",
+            "bash -lc 'bouncer profile solo'",
+            "echo x # don't\nbouncer profile solo",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML,
+                    call_llm_result=("ALLOW", "should not be used", None,
+                                     None))
+                self.assertEqual(code, 2)
+                self.assertIn("may not set its own bouncer profile", err)
+
+    def test_nested_and_unlexable_reads_stay_reads(self):
+        for command in (
+            "bouncer profile",
+            "bouncer profile --cwd . --as json 2>&1",
+            "bouncer status",
+            "bash -c 'bouncer profile --as json'",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML,
+                    call_llm_result=("ALLOW", "fine", None, None))
+                self.assertNotIn("may not set its own bouncer profile", err)
+                self.assertEqual(code, 0)
+        for command in (
+            "tp tell X \"run bouncer profile solo\"",
+            "echo \"it's fine\"",
+            "echo it's",
+        ):
+            with self.subTest(command=command):
+                out, err, code = _classify(
+                    {"tool_name": "Bash", "tool_input": {"command": command},
+                     "session_id": "s1"},
+                    config_yaml=_SOLO_YAML,
+                    call_llm_result=("ALLOW", "the classifier's call", None,
+                                     None))
+                self.assertNotIn("may not set its own bouncer profile", err)
+                self.assertEqual(code, 0)
 
     def test_message_text_is_not_a_profile_set(self):
         # The 2026-09-13 07:01 denial, trimmed: a dispatch note written to a
