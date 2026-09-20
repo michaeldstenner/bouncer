@@ -4006,6 +4006,35 @@ class TestProfileCommand(_ProfileTestCase):
         out, _, _ = self._run(as_format="tmux")
         self.assertEqual(out, "#[fg=red]solo#[default]")
 
+    def test_disabled_project_shows_no_profile_word(self):
+        # A project with `enabled: false` is one bouncer does not gate. The
+        # tmux indicator showed a green `live` next to activity's red ⊘.
+        (self.bdir / "config.yaml").write_text("enabled: false\n")
+        for as_format in ("tmux", "ansi"):
+            with self.subTest(as_format=as_format):
+                out, err, code = self._run(as_format=as_format)
+                self.assertEqual((out, err, code), ("", "", 0))
+        out, _, code = self._run()
+        self.assertEqual(code, 0)
+        self.assertIn("disabled", out)
+        self.assertNotIn("live", out)
+        out, _, code = self._run(as_format="json")
+        self.assertEqual(code, 0)
+        state = json.loads(out)
+        self.assertIsNone(state["profile"])
+        self.assertIs(state["enabled"], False)
+        self.assertEqual(state["nominal"], "live")
+
+    def test_enabled_project_still_shows_the_profile_word(self):
+        for config_yaml in ("enabled: true\n", "tools:\n  - Bash\n"):
+            with self.subTest(config_yaml=config_yaml):
+                (self.bdir / "config.yaml").write_text(config_yaml)
+                out, _, code = self._run(as_format="tmux")
+                self.assertEqual(out, "#[fg=green]live#[default]")
+                self.assertEqual(code, 0)
+                out, _, _ = self._run(as_format="json")
+                self.assertEqual(json.loads(out)["profile"], "live")
+
     def test_show_resolves_actions_through_the_harness(self):
         self._run("solo")
         profile_mod.note_harness(self.bdir, "opencode", True)

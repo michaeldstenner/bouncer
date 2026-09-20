@@ -91,6 +91,24 @@ def cmd_profile(args):
               file=sys.stderr)
         sys.exit(1)
 
+    if name is None and not _merged_config(cwd).get("enabled", True):
+        # Same instinct as the no-project branch above: a project with
+        # `enabled: false` is a directory bouncer does not gate, so the
+        # indicator must not show a profile word for it — a green `live`
+        # beside `activity`'s red ⊘ claims an escalation channel that
+        # nothing will ever use. `plain` is a human asking, so it answers
+        # in check's words; `json` keeps its keys for its readers.
+        if as_format in ("ansi", "tmux"):
+            return
+        if as_format == "json":
+            state = effective_state(cwd)
+            state["enabled"] = False
+            state["profile"] = None
+            print(_render(state, "json"), end="")
+            return
+        print(f"{DIM}Bouncer disabled (enabled: false).{RESET}")
+        return
+
     if name is None:
         state = effective_state(cwd)
         if as_format != "plain":
