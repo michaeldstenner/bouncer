@@ -1057,7 +1057,7 @@ class TestInit(unittest.TestCase):
                 installed_hook.read_text(encoding="utf-8"),
             )
 
-    def test_opencode_install_patches_existing_jsonc_config(self):
+    def test_opencode_install_removes_legacy_npm_entries(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             opencode_dir = home / ".config" / "opencode"
@@ -1067,6 +1067,7 @@ class TestInit(unittest.TestCase):
                 '{\n'
                 '  "$schema": "https://opencode.ai/config.json",\n'
                 '  // existing comments are accepted while reading\n'
+                '  "plugin": ["bouncer", ["bouncer", {"replyDelayMs": 10}], "keep"],\n'
                 '  "snapshot": false\n'
                 '}\n',
                 encoding="utf-8",
@@ -1080,7 +1081,7 @@ class TestInit(unittest.TestCase):
 
             self.assertFalse((opencode_dir / "opencode.json").exists())
             data = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["plugin"], ["bouncer"])
+            self.assertEqual(data["plugin"], ["keep"])
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
 
     def test_opencode_config_accepts_jsonc_trailing_commas(self):
@@ -1099,7 +1100,7 @@ class TestInit(unittest.TestCase):
         self.assertEqual(data["plugin"], ["bouncer"])
         self.assertEqual(data["provider"]["local"]["models"], {})
 
-    def test_opencode_install_preserves_jsonc_when_plugin_already_present(self):
+    def test_opencode_install_preserves_config_without_legacy_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             opencode_dir = home / ".config" / "opencode"
@@ -1108,7 +1109,7 @@ class TestInit(unittest.TestCase):
             original = (
                 '{\n'
                 '  // keep this comment\n'
-                '  "plugin": ["bouncer"],\n'
+                '  "plugin": ["keep"],\n'
                 '  "snapshot": false\n'
                 '}\n'
             )
@@ -1123,7 +1124,7 @@ class TestInit(unittest.TestCase):
             self.assertEqual(config_path.read_text(encoding="utf-8"), original)
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
 
-    def test_opencode_install_creates_json_config_when_none_exists(self):
+    def test_opencode_install_does_not_create_config_when_none_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             opencode_dir = home / ".config" / "opencode"
@@ -1135,8 +1136,7 @@ class TestInit(unittest.TestCase):
                 init_mod._install_opencode()
 
             config_path = opencode_dir / "opencode.json"
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["plugin"], ["bouncer"])
+            self.assertFalse(config_path.exists())
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
 
     def test_opencode_install_bails_when_json_and_jsonc_both_exist(self):
@@ -4490,11 +4490,39 @@ class TestPackagedIntegrationAssets(unittest.TestCase):
 
 
 class TestOpencodeReplyAudit(unittest.TestCase):
+    def test_module_exports_only_plugin_functions(self):
+        bun = shutil.which("bun")
+        if not bun:
+            self.skipTest("bun is required to exercise the opencode plugin")
+
+        plugin = (
+            Path(init_mod.__file__).parent.parent
+            / "integrations"
+            / "opencode"
+            / "bouncer_plugin.ts"
+        )
+        script = (
+            f"import * as plugin from '{plugin.as_uri()}';"
+            "console.log(JSON.stringify(Object.keys(plugin)));"
+        )
+        result = subprocess.run(
+            [bun, "-e", script],
+            cwd=plugin.parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(json.loads(result.stdout), ["BouncerPlugin"])
+
     def _run_plugin(
         self,
         decision: str,
         replied: bool = False,
         reply_fails: bool = False,
+        generation: str = "v1",
+        legacy_client: bool = False,
+        reply_returns_error: bool = False,
     ):
         bun = shutil.which("bun")
         if not bun:
@@ -4509,6 +4537,7 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             audit = root / "audit.jsonl"
+            payload = root / "payload.json"
             bindir = root / "bin"
             bindir.mkdir()
             stub = bindir / "bouncer"
@@ -4518,24 +4547,64 @@ class TestOpencodeReplyAudit(unittest.TestCase):
                     "permissionDecisionReason": "test decision",
                 }
             }
-            stub.write_text(
+            stub_text = (
                 "#!/bin/sh\n"
-                f"printf '%s\\n' '{json.dumps(response)}'\n",
-                encoding="utf-8",
+                "cat > \"$BOUNCER_TEST_PAYLOAD\"\n"
+                f"printf '%s\\n' '{json.dumps(response)}'\n"
             )
+            if decision == "deny":
+                stub_text = (
+                    "#!/bin/sh\n"
+                    "cat > \"$BOUNCER_TEST_PAYLOAD\"\n"
+                    "printf '%s\\n' 'test decision' >&2\n"
+                    "exit 2\n"
+                )
+            stub.write_text(stub_text, encoding="utf-8")
             stub.chmod(0o755)
 
             replied_event = ""
             if replied:
+                event = ("permission.replied" if generation == "v1"
+                         else "permission.v2.replied")
                 replied_event = (
                     "await hooks.event({ event: { type: "
-                    "'permission.replied', properties: { "
+                    f"'{event}', properties: {{ "
                     "sessionID: 'session-1', requestID: 'permission-1', "
                     "reply: 'always' } } });"
                 )
-            client_reply = "calls.push(input);"
+            client_reply = "calls.push({ route: 'legacy', input });"
+            if reply_returns_error:
+                client_reply += "return { error: { message: 'already answered' } };"
+            current_v1_reply = "calls.push({ route: 'v1', input });"
+            current_v2_reply = "calls.push({ route: 'v2', input });"
             if reply_fails:
                 client_reply += "throw new Error('already answered');"
+                current_v1_reply += "throw new Error('already answered');"
+                current_v2_reply += "throw new Error('already answered');"
+            request_type = ("permission.asked" if generation == "v1"
+                            else "permission.v2.asked")
+            request = (
+                "{ id: 'permission-1', sessionID: 'session-1', "
+                "permission: 'external_directory', patterns: ['/tmp/*'], "
+                "tool: { callID: 'call-1' } }"
+                if generation == "v1"
+                else
+                "{ id: 'permission-1', sessionID: 'session-1', "
+                "action: 'external_directory', resources: ['/tmp/*'], "
+                "source: { type: 'tool', messageID: 'message-1', "
+                "callID: 'call-1' } }"
+            )
+            current_client = "" if legacy_client else (
+                "clientV2: {"
+                "permission: { reply: async (input) => { "
+                f"{current_v1_reply} }} }},"
+                "v2: { session: { messages: async () => ({ data: { data: [{"
+                "id: 'message-1', type: 'assistant', content: [{ type: 'tool', "
+                "id: 'call-1', name: 'write', state: { input: { path: 'file.txt', "
+                "content: 'classified text' } } }] }] } }), permission: { reply: async (input) => { "
+                f"{current_v2_reply} }} }} }} }}"
+                "},"
+            )
             script = (
                 f"import {{ BouncerPlugin }} from '{plugin.as_uri()}';"
                 "const calls = [];"
@@ -4545,12 +4614,11 @@ class TestOpencodeReplyAudit(unittest.TestCase):
                 "client: { postSessionIdPermissionsPermissionId: "
                 f"async (input) => {{ {client_reply} }}, "
                 "tui: { showToast: async (input) => { toasts.push(input); } } "
-                "}"
+                "},"
+                f"{current_client}"
                 "});"
-                "await hooks.event({ event: { type: 'permission.asked', "
-                "properties: { id: 'permission-1', sessionID: 'session-1', "
-                "permission: 'external_directory', patterns: ['/tmp/*'] } "
-                "} });"
+                f"await hooks.event({{ event: {{ type: '{request_type}', "
+                f"properties: {request} }} }});"
                 f"{replied_event}"
                 "console.log(JSON.stringify({ calls, toasts }));"
             )
@@ -4558,6 +4626,7 @@ class TestOpencodeReplyAudit(unittest.TestCase):
                 **os.environ,
                 "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
                 "BOUNCER_OPENCODE_AUDIT_LOG": str(audit),
+                "BOUNCER_TEST_PAYLOAD": str(payload),
             }
             result = subprocess.run(
                 [bun, "-e", script],
@@ -4569,11 +4638,13 @@ class TestOpencodeReplyAudit(unittest.TestCase):
             )
             output = json.loads(result.stdout)
             rows = [json.loads(line) for line in audit.read_text().splitlines()]
-            return output["calls"], rows, output["toasts"]
+            request = json.loads(payload.read_text())
+            return output["calls"], rows, output["toasts"], request
 
     def test_successful_bouncer_reply_is_attributed(self):
-        calls, rows, toasts = self._run_plugin("allow")
-        self.assertEqual(calls[0]["body"]["response"], "once")
+        calls, rows, toasts, _ = self._run_plugin("allow")
+        self.assertEqual(calls[0]["route"], "v1")
+        self.assertEqual(calls[0]["input"]["reply"], "once")
         self.assertEqual(toasts[0]["body"]["title"], "Bouncer reviewing")
         self.assertIn("No action is needed", toasts[0]["body"]["message"])
         self.assertEqual(toasts[-1]["body"]["title"],
@@ -4585,7 +4656,7 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         self.assertEqual(resolved[0]["outcome"], "accepted")
 
     def test_abstained_reply_is_attributed_as_not_bouncer(self):
-        calls, rows, toasts = self._run_plugin("ask", replied=True)
+        calls, rows, toasts, _ = self._run_plugin("ask", replied=True)
         self.assertEqual(calls, [])
         self.assertEqual(toasts[-1]["body"]["title"], "Bouncer deferred")
         self.assertIn("now yours", toasts[-1]["body"]["message"])
@@ -4595,12 +4666,12 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         self.assertEqual(resolved[0]["response"], "always")
 
     def test_lost_reply_race_is_attributed_as_not_bouncer(self):
-        calls, rows, toasts = self._run_plugin(
+        calls, rows, toasts, _ = self._run_plugin(
             "allow",
             replied=True,
             reply_fails=True,
         )
-        self.assertEqual(calls[0]["body"]["response"], "once")
+        self.assertEqual(calls[0]["input"]["reply"], "once")
         self.assertEqual(toasts[-1]["body"]["title"],
                          "Bouncer reply not used")
         failed = [row for row in rows
@@ -4609,6 +4680,52 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         resolved = [row for row in rows
                     if row["event"] == "permission_replied"]
         self.assertEqual(resolved[0]["source"], "not_bouncer")
+
+    def test_denial_sends_correction_feedback(self):
+        calls, rows, _, _ = self._run_plugin("deny")
+        self.assertEqual(calls[0]["route"], "v1")
+        self.assertEqual(calls[0]["input"]["reply"], "reject")
+        self.assertEqual(calls[0]["input"]["message"], "test decision")
+        classified = [row for row in rows if row["event"] == "classified"]
+        self.assertEqual(classified[0]["decision"], "deny")
+
+    def test_v2_permission_uses_session_owned_reply(self):
+        calls, rows, _, payload = self._run_plugin("deny", generation="v2")
+        self.assertEqual(calls[0]["route"], "v2")
+        self.assertEqual(calls[0]["input"]["sessionID"], "session-1")
+        self.assertEqual(calls[0]["input"]["requestID"], "permission-1")
+        self.assertEqual(calls[0]["input"]["reply"], "reject")
+        self.assertEqual(calls[0]["input"]["message"], "test decision")
+        asked = [row for row in rows if row["event"] == "permission_asked"]
+        self.assertEqual(asked[0]["generation"], "v2")
+        self.assertEqual(payload["tool_name"], "write")
+        self.assertEqual(payload["tool_input"], {
+            "path": "file.txt",
+            "content": "classified text",
+        })
+
+    def test_legacy_client_remains_an_allow_fallback(self):
+        calls, _, _, _ = self._run_plugin("allow", legacy_client=True)
+        self.assertEqual(calls[0]["route"], "legacy")
+        self.assertEqual(calls[0]["input"]["body"]["response"], "once")
+
+    def test_v2_without_current_client_leaves_request_pending(self):
+        calls, rows, toasts, _ = self._run_plugin(
+            "allow", generation="v2", legacy_client=True)
+        self.assertEqual(calls, [])
+        failed = [row for row in rows
+                  if row["event"] == "bouncer_reply_failed"]
+        self.assertEqual(failed[0]["outcome"], "not_accepted")
+        self.assertEqual(toasts[-1]["body"]["title"],
+                         "Bouncer reply not used")
+
+    def test_legacy_client_result_error_is_not_accepted(self):
+        calls, rows, _, _ = self._run_plugin(
+            "allow", legacy_client=True, reply_returns_error=True)
+        self.assertEqual(calls[0]["route"], "legacy")
+        failed = [row for row in rows
+                  if row["event"] == "bouncer_reply_failed"]
+        self.assertEqual(failed[0]["outcome"], "not_accepted")
 
 
 if __name__ == "__main__":

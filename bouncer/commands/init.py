@@ -235,12 +235,29 @@ def _install_opencode():
         return
 
     cfg = _read_opencode_config(config_path)
-    plugins = cfg.setdefault("plugin", [])
-    if "bouncer" in plugins:
-        changed = False
-    else:
-        plugins.append("bouncer")
-        changed = True
+    plugins = cfg.get("plugin")
+    changed = False
+    if isinstance(plugins, list):
+        # Files in opencode's plugin directory are auto-discovered. Older
+        # installs also added this npm spec, which resolves to an unrelated
+        # package and can make opencode fail during startup.
+        cleaned = [
+            plugin for plugin in plugins
+            if not (
+                plugin == "bouncer"
+                or (
+                    isinstance(plugin, list)
+                    and plugin
+                    and plugin[0] == "bouncer"
+                )
+            )
+        ]
+        if cleaned != plugins:
+            changed = True
+            if cleaned:
+                cfg["plugin"] = cleaned
+            else:
+                cfg.pop("plugin", None)
     if changed:
         config_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     print(f"  {GREEN}Installed{RESET} {dst}")
