@@ -6,7 +6,8 @@ import sys
 import time
 from pathlib import Path
 
-from .config import _merged_config, project_has_bouncer, project_log_file, _find_bouncer_dir, tool_intercepted
+from .config import (_find_bouncer_dir, _merged_config, project_has_bouncer,
+                     project_log_file, tool_intercepted)
 from .log import log_decision
 from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix, parse_escalation
 from .escalation_grant import record_denial, arm_escalation, take_grant
@@ -351,10 +352,10 @@ def _strip_redirections(parts: list[str]) -> list[str]:
     argv: list[str] = []
     index = 0
     while index < len(parts):
-        token = parts[index]
-        is_redirect = (token
-                       and all(char in _REDIRECT_CHARS for char in token)
-                       and any(char in "<>" for char in token))
+        part = parts[index]
+        is_redirect = (part
+                       and all(char in _REDIRECT_CHARS for char in part)
+                       and any(char in "<>" for char in part))
         if is_redirect:
             # Drop the operator and its target, plus the leading fd number
             # shlex split off the front (`2` of `2>&1`).
@@ -362,7 +363,7 @@ def _strip_redirections(parts: list[str]) -> list[str]:
                 argv.pop()
             index += 2
             continue
-        argv.append(token)
+        argv.append(part)
         index += 1
     return argv
 
@@ -606,6 +607,228 @@ def _skip_reason(tool_name: str, tool_input: dict, config: dict) -> str | None:
     return None
 
 
+_FAST_READ_TOOLS = frozenset({"read", "glob", "grep"})
+
+_READ_ONLY_GIT_COMMANDS = frozenset({
+    "cat-file",
+    "diff",
+    "grep",
+    "log",
+    "ls-files",
+    "ls-tree",
+    "rev-list",
+    "rev-parse",
+    "show",
+    "status",
+})
+
+_DANGEROUS_GIT_OPTIONS = frozenset({
+    "--ext-diff",
+    "--filters",
+    "--help",
+    "--no-index",
+    "--open-files-in-pager",
+    "--output",
+    "--paginate",
+    "--textconv",
+})
+
+
+def _trusted_root_for(value: str, cwd: Path,
+                      roots: object) -> Path | None:
+    """Return the matching root only when both views remain inside it."""
+    if not isinstance(roots, list) or not isinstance(value, str):
+        return None
+    try:
+        raw_path = Path(value).expanduser()
+        base = Path(os.path.abspath(cwd.expanduser()))
+        lexical = Path(os.path.abspath(
+            raw_path if raw_path.is_absolute() else base / raw_path
+        ))
+        physical = lexical.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    for item in roots:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        try:
+            raw_root = Path(item).expanduser()
+            root = Path(os.path.abspath(
+                raw_root if raw_root.is_absolute() else base / raw_root
+            ))
+            physical_root = root.resolve()
+            lexical.relative_to(root)
+            physical.relative_to(physical_root)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        return root
+    return None
+
+
+def _relative_pattern(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    path = Path(value).expanduser()
+    return not path.is_absolute() and ".." not in path.parts
+
+
+def _read_tool_path(tool_name: str, tool_input: dict,
+                    cwd: Path) -> str | None:
+    kind = tool_name.casefold()
+    if kind not in _FAST_READ_TOOLS:
+        return None
+    if kind == "read":
+        aliases = [key for key in ("file_path", "filePath")
+                   if key in tool_input]
+        if len(aliases) != 1 or "path" in tool_input:
+            return None
+        value = tool_input[aliases[0]]
+        return value if isinstance(value, str) and value else None
+
+    if "file_path" in tool_input or "filePath" in tool_input:
+        return None
+    pattern = tool_input.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    if kind == "glob" and not _relative_pattern(pattern):
+        return None
+    if kind == "grep" and "include" in tool_input:
+        if not _relative_pattern(tool_input["include"]):
+            return None
+    if "path" not in tool_input:
+        return str(cwd)
+    value = tool_input["path"]
+    return value if isinstance(value, str) and value else None
+
+
+def _git_option_is_dangerous(value: str) -> bool:
+    bundled_editor = (value.startswith("-")
+                      and not value.startswith("--")
+                      and "O" in value[1:])
+    if value == "-h" or bundled_editor:
+        return True
+    return any(value == option or value.startswith(option + "=")
+               for option in _DANGEROUS_GIT_OPTIONS)
+
+
+def _read_only_git_segment(parts: list[str]) -> bool:
+    if parts and parts[0] == "GIT_OPTIONAL_LOCKS=0":
+        parts = parts[1:]
+    if not parts or parts[0] != "git":
+        return False
+
+    index = 1
+    while index < len(parts) and parts[index] in (
+        "--no-optional-locks", "--no-pager",
+    ):
+        index += 1
+    if index >= len(parts):
+        return False
+
+    subcommand = parts[index]
+    argv = parts[index + 1:]
+    if subcommand == "remote":
+        return argv in (["-v"], ["--verbose"])
+    if subcommand not in _READ_ONLY_GIT_COMMANDS:
+        return False
+    return not any(_git_option_is_dangerous(arg) for arg in argv)
+
+
+def _has_shell_expansion(command: str) -> bool:
+    """Reject syntax whose argv changes after lexical inspection."""
+    quote: str | None = None
+    word_start = True
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+            elif char in "$`":
+                return True
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            word_start = False
+            continue
+        if char in "'\"":
+            quote = char
+            word_start = False
+        elif char in "$`*?[{}":
+            return True
+        elif char == "~" and word_start:
+            return True
+        else:
+            word_start = char.isspace() or char in ";&|()<>"
+        index += 1
+    return quote is not None
+
+
+def _is_read_only_git_command(command: str) -> bool:
+    """Whether a shell line contains only narrow Git inspection commands."""
+    if not command.strip() or _has_shell_expansion(command):
+        return False
+    parts = _lex_tokens(command.replace("\\\n", "").strip())
+    if parts is None:
+        return False
+
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for part in parts:
+        if part in (";", "&&", "||", "\n"):
+            if not current:
+                return False
+            segments.append(current)
+            current = []
+        elif part and all(char in _SEPARATOR_CHARS or char in "<>"
+                          for char in part):
+            return False
+        else:
+            current.append(part)
+    if not current:
+        return False
+    segments.append(current)
+    return all(_read_only_git_segment(segment) for segment in segments)
+
+
+def _fast_path_allow_reason(tool_name: str, tool_input: dict, cwd: Path,
+                            config: dict) -> str | None:
+    fast_path = config.get("fast_path")
+    if not isinstance(fast_path, dict):
+        return None
+    roots = fast_path.get("trusted_roots", [])
+
+    read_tools = fast_path.get("read_tools", [])
+    configured_reads = (
+        {str(name).casefold() for name in read_tools}
+        if isinstance(read_tools, list) else set()
+    )
+    if tool_name.casefold() in configured_reads:
+        value = _read_tool_path(tool_name, tool_input, cwd)
+        root = _trusted_root_for(value, cwd, roots) if value else None
+        if root is not None:
+            return f"trusted-root {tool_name} fast path ({root})"
+
+    command = tool_input.get("command")
+    if (tool_name.casefold() == "bash"
+            and fast_path.get("read_only_git") is True
+            and isinstance(command, str)
+            and _trusted_root_for(str(cwd), cwd, roots) is not None
+            and _is_read_only_git_command(command)):
+        return "read-only Git fast path"
+    return None
+
+
 def _fallback_action(config: dict, key: str, harness: str,
                      permission_mode: str | None = None) -> str:
     """The configured `on_unsure` / `on_unavailable` action, resolved through
@@ -661,6 +884,11 @@ def get_classification(
         if not profile_allows_ask(config):
             return "DENY", _ESCALATION_OFF_REASON, "DENY", None, None
         return "ESCALATE", escalate_reason, "ASK", None, None
+
+    fast_allow = _fast_path_allow_reason(
+        tool_name, tool_input, cwd_path, config)
+    if fast_allow:
+        return "ALLOW", fast_allow, "ALLOW", 0, None
 
     try:
         decision, reason, prompt_chars, snap = call_llm(tool_name, tool_input, cwd_path, config)
@@ -891,6 +1119,27 @@ def run_classify(
         _emit_hook_response(
             "ASK", f"agent escalation requested: {grant_reason}",
             fmt, profile_ask)
+        return
+
+    fast_allow = _fast_path_allow_reason(
+        tool_name, tool_input, cwd_path, config)
+    if fast_allow:
+        log_decision(tool_name, tool_input, cwd, "ALLOW", fast_allow,
+                     config, proj_log)
+        notify_decision(
+            cfg=config,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            cwd=cwd,
+            session_id=session_id,
+            decision="ALLOW",
+            action="ALLOW",
+            reason=fast_allow,
+            request_id=None,
+            prompt_chars=0,
+            proj_log=proj_log,
+        )
+        _emit_hook_response("ALLOW", fast_allow, fmt, profile_ask)
         return
 
     signal.signal(signal.SIGUSR1, lambda sig, frame: ABORT_EVENT.set())

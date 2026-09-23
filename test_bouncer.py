@@ -113,7 +113,8 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
               call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json",
-              escalation_dir=None, profile_dir=None):
+              escalation_dir=None, profile_dir=None,
+              user_config_yaml=None):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
@@ -126,6 +127,9 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
         tmp_path = Path(tmp)
         user_dir = tmp_path / "user"
         user_dir.mkdir()
+        if user_config_yaml is not None:
+            (user_dir / "config.yaml").write_text(
+                user_config_yaml, encoding="utf-8")
         esc_dir = Path(escalation_dir) if escalation_dir else tmp_path / "escalation"
         prof_dir = Path(profile_dir) if profile_dir else tmp_path / "profile"
 
@@ -332,6 +336,11 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(config["on_unsure"], "ask")
         self.assertEqual(config["on_unavailable"], "ask")
         self.assertEqual(config["tools"], "all")
+        self.assertEqual(config["fast_path"], {
+            "trusted_roots": [],
+            "read_tools": [],
+            "read_only_git": False,
+        })
         self.assertNotIn("model", config["llm"])  # no default; must be set in user config
 
     def test_merged_config_project_overrides_default(self):
@@ -353,6 +362,32 @@ class TestConfigLoading(unittest.TestCase):
                 config = _merged_config(tmp_path)
         self.assertEqual(config["on_unsure"], "allow")     # project wins
         self.assertEqual(config["on_unavailable"], "deny") # user survives
+
+    def test_fast_path_is_user_only_and_does_not_cross_layer_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_cfg = tmp_path / "user_config.yaml"
+            user_cfg.write_text(
+                "fast_path:\n"
+                "  trusted_roots: [~/Code]\n"
+                "  read_only_git: true\n",
+                encoding="utf-8",
+            )
+            _make_bouncer_dir(
+                tmp_path,
+                config_yaml=(
+                    "fast_path:\n"
+                    "  trusted_roots: [/]\n"
+                    "  read_tools: [Read]\n"
+                ),
+            )
+            with patch.object(cfg, "USER_CONFIG_FILE", user_cfg):
+                config = _merged_config(tmp_path)
+        self.assertEqual(config["fast_path"], {
+            "trusted_roots": ["~/Code"],
+            "read_tools": [],
+            "read_only_git": True,
+        })
 
     def test_merged_config_local_overrides_project(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1356,6 +1391,43 @@ class TestClassify(unittest.TestCase):
             call_llm_result=("DENY", "bad", None, None),
         )
         self.assertEqual(code, 0)
+
+    def test_read_only_git_fast_path_bypasses_llm(self):
+        user_config = (
+            "fast_path:\n"
+            "  trusted_roots: [/]\n"
+            "  read_only_git: true\n"
+        )
+        out, _, code = _classify(
+            self._hook(command="git status --short && git diff --stat"),
+            config_yaml="enabled: true\ntools: [Bash]\n",
+            user_config_yaml=user_config,
+            call_llm_result=("DENY", "LLM was called", None, None),
+        )
+        self.assertEqual(code, 0)
+        response = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(response["permissionDecision"], "allow")
+        self.assertIn("read-only Git fast path",
+                      response["permissionDecisionReason"])
+
+    def test_trusted_read_fast_path_bypasses_llm(self):
+        out, _, code = _classify(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/example.txt"},
+            },
+            config_yaml="enabled: true\ntools: [Read]\n",
+            user_config_yaml=(
+                "fast_path:\n"
+                "  trusted_roots: [/]\n"
+                "  read_tools: [Read]\n"
+            ),
+            call_llm_result=("DENY", "LLM was called", None, None),
+        )
+        self.assertEqual(code, 0)
+        response = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(response["permissionDecision"], "allow")
+        self.assertIn("trusted-root Read", response["permissionDecisionReason"])
 
     def test_allow_exits_0_with_permission_grant(self):
         out, _, code = _classify(
@@ -2566,6 +2638,50 @@ class TestLint(unittest.TestCase):
         _, code = _lint(yaml)
         self.assertEqual(code, 0)
 
+    def test_valid_fast_path(self):
+        yaml = (
+            "fast_path:\n"
+            "  trusted_roots: [~/Code]\n"
+            "  read_tools: [Read, Glob, Grep]\n"
+            "  read_only_git: true\n"
+        )
+        out, code = _lint(yaml)
+        self.assertEqual(code, 0)
+        self.assertIn("read_only_git=True", out)
+
+    def test_invalid_fast_path_types(self):
+        cases = (
+            "fast_path: yes\n",
+            "fast_path:\n  trusted_roots: ~/Code\n",
+            "fast_path:\n  read_tools: Read\n",
+            "fast_path:\n  read_tools: [Write]\n",
+            "fast_path:\n  read_only_git: yes-please\n",
+        )
+        for yaml in cases:
+            with self.subTest(yaml=yaml):
+                _, code = _lint(yaml)
+                self.assertEqual(code, 1)
+
+    def test_project_fast_path_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bouncer_dir = Path(tmp) / ".bouncer"
+            bouncer_dir.mkdir()
+            path = bouncer_dir / "config.yaml"
+            path.write_text(
+                "fast_path:\n  trusted_roots: [/]\n",
+                encoding="utf-8",
+            )
+
+            class _A:
+                file = str(path)
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                with self.assertRaises(SystemExit) as ctx:
+                    cmd_lint(_A())
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("user-config only", stdout_buf.getvalue())
+
     def test_valid_review_llm_block(self):
         yaml = "review:\n  llm:\n    provider: anthropic\n    model: reviewer\n"
         out, code = _lint(yaml)
@@ -2721,6 +2837,40 @@ class TestCallLlm(unittest.TestCase):
 
 
 class TestCheckCommand(unittest.TestCase):
+    def test_check_reports_fast_path_without_calling_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(
+                tmp_path,
+                config_yaml="tools: [+@all, -@internal]\n",
+            )
+            user_config = tmp_path / "user.yaml"
+            user_config.write_text(
+                (
+                    "fast_path:\n"
+                    f"  trusted_roots: [{tmp_path}]\n"
+                    "  read_only_git: true\n"
+                ),
+                encoding="utf-8",
+            )
+
+            class _A:
+                cmd = "git status --short"
+                llm = False
+
+            stdout_buf = io.StringIO()
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", user_config),
+                patch("bouncer.commands.check.call_llm") as llm,
+                patch("pathlib.Path.cwd", return_value=tmp_path),
+                redirect_stdout(stdout_buf),
+            ):
+                cmd_check(_A())
+
+        llm.assert_not_called()
+        self.assertIn("ALLOW", stdout_buf.getvalue())
+        self.assertIn("read-only Git fast path", stdout_buf.getvalue())
+
     def test_check_llm_accepts_current_call_llm_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2892,6 +3042,185 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(result.outcome, "success")
         self.assertEqual(captured["temperature"], 0)
         self.assertIs(type(captured["temperature"]), int)
+
+
+class TestFastPath(unittest.TestCase):
+    def _config(self, root):
+        return {
+            "fast_path": {
+                "trusted_roots": [str(root)],
+                "read_tools": ["Read", "Glob", "Grep"],
+                "read_only_git": True,
+            },
+        }
+
+    def test_read_tools_allow_paths_inside_trusted_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "trusted"
+            root.mkdir()
+            config = self._config(root)
+            cases = (
+                ("Read", {"file_path": str(root / "file.txt")}),
+                ("read", {"filePath": "file.txt"}),
+                ("Glob", {"pattern": "**/*.py", "path": str(root)}),
+                ("Grep", {"pattern": "needle"}),
+            )
+            for tool, tool_input in cases:
+                with self.subTest(tool=tool, tool_input=tool_input):
+                    reason = classify_mod._fast_path_allow_reason(
+                        tool, tool_input, root, config)
+                    self.assertIn("trusted-root", reason)
+
+    def test_read_tools_reject_escape_and_unrecognized_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "trusted"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "escape").symlink_to(outside, target_is_directory=True)
+            config = self._config(root)
+            cases = (
+                ("Read", {"file_path": str(outside / "secret")}),
+                ("Read", {"file_path": str(root / ".." / "outside")}),
+                ("Read", {"file_path": str(root / "escape" / "secret")}),
+                ("Read", {"file_path": str(root / "file"),
+                          "filePath": str(outside / "secret")}),
+                ("Glob", {"pattern": "*.py", "path": str(outside),
+                          "file_path": str(root)}),
+                ("Glob", {"pattern": "../outside/*.py", "path": str(root)}),
+                ("Glob", {"pattern": f"{outside}/*.py", "path": str(root)}),
+                ("Grep", {"pattern": "needle", "path": str(root),
+                          "include": "../outside/*.py"}),
+                ("Fetch", {"path": str(root / "file")}),
+                ("Read", {}),
+            )
+            for tool, tool_input in cases:
+                with self.subTest(tool=tool, tool_input=tool_input):
+                    reason = classify_mod._fast_path_allow_reason(
+                        tool, tool_input, root, config)
+                    self.assertIsNone(reason)
+
+    def test_symlinked_trusted_root_checks_both_path_views(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            physical = base / "physical"
+            physical.mkdir()
+            root = base / "trusted-link"
+            root.symlink_to(physical, target_is_directory=True)
+            reason = classify_mod._fast_path_allow_reason(
+                "Read",
+                {"file_path": str(root / "file.txt")},
+                root,
+                self._config(root),
+            )
+            self.assertIn("trusted-root", reason)
+
+    def test_read_only_git_accepts_narrow_inspection_commands(self):
+        commands = (
+            "git status --short",
+            "git diff --cached",
+            "git log --oneline -10",
+            "git show HEAD:README.md",
+            "git rev-list --count HEAD",
+            "git rev-parse --show-toplevel",
+            "git ls-files -z",
+            "git ls-tree -r HEAD",
+            "git cat-file -p HEAD",
+            "git grep -n needle -- '*.py'",
+            "git remote -v",
+            "git --no-pager log --oneline",
+            "GIT_OPTIONAL_LOCKS=0 git status && git diff --stat",
+            "git status; git log -1",
+            "git status\ngit diff --stat",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(
+                    classify_mod._is_read_only_git_command(command))
+
+    def test_read_only_git_rejects_writes_and_shell_features(self):
+        commands = (
+            "git push origin main",
+            "git status && rm -rf /tmp/x",
+            "git status | cat",
+            "git status > /tmp/status",
+            "git -C /tmp status",
+            "FOO=bar git status",
+            "env git status",
+            "/tmp/git status",
+            "git diff --output=/tmp/patch",
+            "git diff --ext-diff",
+            "git diff --no-index a b",
+            "git grep -Ovim needle",
+            "git grep -nOvim needle",
+            "git grep -nO'sh -c touch /tmp/nope' needle",
+            "git grep --open-files-in-pager=vim needle",
+            "git cat-file --filters HEAD:file",
+            "git remote get-url origin",
+            "git show $(touch /tmp/nope)",
+            "git status `touch /tmp/nope`",
+            "git diff ${X:=--output=/tmp/patch}",
+            "git diff $'--no-index' /etc/hosts /etc/passwd",
+            "git diff *",
+            "git show {HEAD,main}",
+            "git show ~/outside",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertFalse(
+                    classify_mod._is_read_only_git_command(command))
+
+    def test_git_fast_path_requires_trusted_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "trusted"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            reason = classify_mod._fast_path_allow_reason(
+                "Bash", {"command": "git status"}, outside,
+                self._config(root),
+            )
+            self.assertIsNone(reason)
+
+    def test_run_fast_path_logs_allow_without_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_dir = root / "user"
+            user_dir.mkdir()
+            _make_bouncer_dir(
+                root,
+                config_yaml="enabled: true\ntools: [Bash]\n",
+            )
+            (user_dir / "config.yaml").write_text(
+                (
+                    "fast_path:\n"
+                    f"  trusted_roots: [{root}]\n"
+                    "  read_only_git: true\n"
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE",
+                             user_dir / "config.yaml"),
+                patch.object(cfg, "USER_POLICY_FILE",
+                             user_dir / "policy.md"),
+                patch.object(classify_mod, "call_llm") as llm,
+                patch.object(classify_mod, "log_decision") as log,
+                patch.object(classify_mod, "notify_decision"),
+                patch.object(classify_mod, "note_harness"),
+                patch.object(classify_mod, "_emit_hook_response",
+                             side_effect=SystemExit(0)),
+            ):
+                with self.assertRaises(SystemExit):
+                    classify_mod.run_classify(
+                        "Bash", {"command": "git status"}, str(root),
+                        "session-test",
+                    )
+            llm.assert_not_called()
+            decisions = [call.args[3] for call in log.call_args_list]
+            self.assertEqual(decisions, ["ALLOW"])
 
 
 class TestSkipReason(unittest.TestCase):
@@ -4210,17 +4539,20 @@ class TestOpencodeReplyAudit(unittest.TestCase):
             script = (
                 f"import {{ BouncerPlugin }} from '{plugin.as_uri()}';"
                 "const calls = [];"
+                "const toasts = [];"
                 "const hooks = await BouncerPlugin({"
                 "directory: '/tmp/project',"
                 "client: { postSessionIdPermissionsPermissionId: "
-                f"async (input) => {{ {client_reply} }} }}"
+                f"async (input) => {{ {client_reply} }}, "
+                "tui: { showToast: async (input) => { toasts.push(input); } } "
+                "}"
                 "});"
                 "await hooks.event({ event: { type: 'permission.asked', "
                 "properties: { id: 'permission-1', sessionID: 'session-1', "
                 "permission: 'external_directory', patterns: ['/tmp/*'] } "
                 "} });"
                 f"{replied_event}"
-                "console.log(JSON.stringify(calls));"
+                "console.log(JSON.stringify({ calls, toasts }));"
             )
             env = {
                 **os.environ,
@@ -4235,13 +4567,17 @@ class TestOpencodeReplyAudit(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            calls = json.loads(result.stdout)
+            output = json.loads(result.stdout)
             rows = [json.loads(line) for line in audit.read_text().splitlines()]
-            return calls, rows
+            return output["calls"], rows, output["toasts"]
 
     def test_successful_bouncer_reply_is_attributed(self):
-        calls, rows = self._run_plugin("allow")
+        calls, rows, toasts = self._run_plugin("allow")
         self.assertEqual(calls[0]["body"]["response"], "once")
+        self.assertEqual(toasts[0]["body"]["title"], "Bouncer reviewing")
+        self.assertIn("No action is needed", toasts[0]["body"]["message"])
+        self.assertEqual(toasts[-1]["body"]["title"],
+                         "Approved by Bouncer")
         resolved = [row for row in rows
                     if row["event"] == "permission_replied"]
         self.assertEqual(resolved[0]["source"], "bouncer")
@@ -4249,20 +4585,24 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         self.assertEqual(resolved[0]["outcome"], "accepted")
 
     def test_abstained_reply_is_attributed_as_not_bouncer(self):
-        calls, rows = self._run_plugin("ask", replied=True)
+        calls, rows, toasts = self._run_plugin("ask", replied=True)
         self.assertEqual(calls, [])
+        self.assertEqual(toasts[-1]["body"]["title"], "Bouncer deferred")
+        self.assertIn("now yours", toasts[-1]["body"]["message"])
         resolved = [row for row in rows
                     if row["event"] == "permission_replied"]
         self.assertEqual(resolved[0]["source"], "not_bouncer")
         self.assertEqual(resolved[0]["response"], "always")
 
     def test_lost_reply_race_is_attributed_as_not_bouncer(self):
-        calls, rows = self._run_plugin(
+        calls, rows, toasts = self._run_plugin(
             "allow",
             replied=True,
             reply_fails=True,
         )
         self.assertEqual(calls[0]["body"]["response"], "once")
+        self.assertEqual(toasts[-1]["body"]["title"],
+                         "Bouncer reply not used")
         failed = [row for row in rows
                   if row["event"] == "bouncer_reply_failed"]
         self.assertEqual(failed[0]["outcome"], "not_accepted")

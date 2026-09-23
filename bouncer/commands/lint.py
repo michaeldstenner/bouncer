@@ -8,23 +8,25 @@ from ..profile import (BUILTIN_PROFILE_NAMES, NO_ASK_HARNESSES, _truthy,
                        harness_has_unattended_floor)
 from .init import installed_harnesses
 
-VALID_CONFIG_KEYS  = frozenset({"enabled", "tools", "groups", "policy_mode", "llm", "review",
-                                 "on_unsure", "on_unavailable", "log",
-                                 "escalation",
-                                 "escalation_requires_attempt",
-                                 "escalation_attempt_ttl",
-                                 "default_profile", "profiles",
-                                 "activity_width", "activity", "notify",
-                                 # provider-keyed sections consumed by the
-                                 # vendored llmclient for key/URL resolution
-                                 "openai", "openai_compatible", "anthropic",
-                                 "ollama"})
+VALID_CONFIG_KEYS = frozenset({
+    "enabled", "tools", "groups", "policy_mode", "llm", "review",
+    "on_unsure", "on_unavailable", "log", "fast_path", "escalation",
+    "escalation_requires_attempt", "escalation_attempt_ttl",
+    "default_profile", "profiles", "activity_width", "activity", "notify",
+    # Provider-keyed sections consumed by the vendored llmclient for key/URL
+    # resolution.
+    "openai", "openai_compatible", "anthropic", "ollama",
+})
 VALID_POLICY_MODES = ("append", "replace")
 VALID_ACTIONS      = ("ask", "allow", "deny", "abstain")
 VALID_VERBOSITIES  = ("all", "deny_only", "off")
 VALID_REVIEW_PROVIDERS = (
     "ollama", "openai", "openai_compatible", "openrouter", "anthropic",
 )
+VALID_FAST_PATH_KEYS = frozenset({
+    "trusted_roots", "read_tools", "read_only_git",
+})
+VALID_FAST_READ_TOOLS = frozenset({"read", "glob", "grep"})
 
 # Keys a profile fragment may carry. A profile changes the plumbing — what
 # happens when bouncer cannot decide, and whether an agent may appeal — never
@@ -130,6 +132,51 @@ def _lint_profiles(data: dict, errors: list, warnings: list) -> None:
                 f"the effective state.")
 
 
+def _lint_fast_path(data: dict, errors: list, warnings: list) -> None:
+    fast_path = data.get("fast_path")
+    if fast_path is None:
+        return
+    if not isinstance(fast_path, dict):
+        errors.append("'fast_path' must be a map")
+        return
+
+    for key in fast_path:
+        if key not in VALID_FAST_PATH_KEYS:
+            warnings.append(f"Unknown fast_path key: '{key}'")
+
+    for key in ("trusted_roots", "read_tools"):
+        value = fast_path.get(key)
+        if value is None:
+            continue
+        if (not isinstance(value, list)
+                or any(not isinstance(item, str) or not item.strip()
+                       for item in value)):
+            errors.append(f"'fast_path.{key}' must be a list of strings")
+
+    read_tools = fast_path.get("read_tools")
+    if isinstance(read_tools, list):
+        unknown = [name for name in read_tools
+                   if isinstance(name, str)
+                   and name.casefold() not in VALID_FAST_READ_TOOLS]
+        if unknown:
+            errors.append(
+                "'fast_path.read_tools' recognizes only Read, Glob, and "
+                f"Grep, got: {unknown!r}")
+
+    read_only_git = fast_path.get("read_only_git")
+    if read_only_git is not None and not isinstance(read_only_git, bool):
+        errors.append("'fast_path.read_only_git' must be true or false")
+
+    roots = fast_path.get("trusted_roots", [])
+    reads = fast_path.get("read_tools", [])
+    git = fast_path.get("read_only_git", False)
+    root_count = len(roots) if isinstance(roots, list) else "?"
+    read_count = len(reads) if isinstance(reads, list) else "?"
+    print(f"  fast_path:     roots={root_count}"
+          f", read_tools={read_count}"
+          f", read_only_git={git}")
+
+
 def cmd_lint(args):
     if args.file:
         path = Path(args.file)
@@ -197,6 +244,10 @@ def cmd_lint(args):
             print(f"  {key:<16} {val}")
 
     _lint_profiles(data, errors, warnings)
+    _lint_fast_path(data, errors, warnings)
+    if "fast_path" in data and path.parent.name == ".bouncer":
+        errors.append("'fast_path' is user-config only; move it to "
+                      "~/.config/bouncer/config.yaml")
 
     if "escalation_requires_attempt" in data:
         era = data["escalation_requires_attempt"]

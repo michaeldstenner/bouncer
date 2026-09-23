@@ -31,6 +31,17 @@ type OpencodeClient = {
     path: { id: string; permissionID: string }
     body: { response: "once" | "always" | "reject" }
   }): Promise<unknown>
+  tui?: {
+    showToast(input: {
+      body: {
+        title?: string
+        message: string
+        variant: "info" | "success" | "warning" | "error"
+        duration?: number
+      }
+      query?: { directory?: string }
+    }): Promise<unknown>
+  }
 }
 
 type PluginInput = {
@@ -209,6 +220,21 @@ function classify(
 export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOptions) => {
   const configuredDelayMs = delayMs(options)
   const cwd = pluginInput.directory ?? process.cwd()
+  const showStatus = async (
+    title: string,
+    message: string,
+    variant: "info" | "success" | "warning" | "error",
+    duration: number,
+  ) => {
+    try {
+      await pluginInput.client.tui?.showToast({
+        body: { title, message, variant, duration },
+        query: { directory: cwd },
+      })
+    } catch {
+      // Headless clients and older opencode releases may lack TUI toasts.
+    }
+  }
   const reply = async (input: {
     sessionID: string
     requestID: string
@@ -283,6 +309,15 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         : undefined
       const tool = cached?.tool ?? request.permission
       const toolInput = permissionToolInput(request, cached)
+      const target = request.patterns?.[0]
+
+      await showStatus(
+        "Bouncer reviewing",
+        `Analyzing ${tool}${target ? `: ${target}` : ""}. `
+          + "No action is needed yet.",
+        "info",
+        60_000,
+      )
 
       writeReplyAudit({
         event: "permission_asked",
@@ -305,7 +340,15 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         reason: result.reason,
         elapsed_ms: Date.now() - started,
       })
-      if (result.decision === "ask" || result.decision === "skip") return
+      if (result.decision === "ask" || result.decision === "skip") {
+        await showStatus(
+          "Bouncer deferred",
+          "Review complete. This permission decision is now yours.",
+          "warning",
+          60_000,
+        )
+        return
+      }
 
       const remaining = configuredDelayMs - (Date.now() - started)
       if (remaining > 0) await sleep(remaining)
@@ -324,6 +367,25 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         time: Date.now(),
       })
       const accepted = await replyResult
+      if (accepted) {
+        await showStatus(
+          result.decision === "allow"
+            ? "Approved by Bouncer"
+            : "Denied by Bouncer",
+          result.decision === "allow"
+            ? "OpenCode is continuing."
+            : "The operation was blocked by policy.",
+          result.decision === "allow" ? "success" : "error",
+          2_500,
+        )
+      } else {
+        await showStatus(
+          "Bouncer reply not used",
+          "The permission request was answered before Bouncer replied.",
+          "info",
+          5_000,
+        )
+      }
       writeReplyAudit({
         event: accepted ? "permission_replied" : "bouncer_reply_failed",
         source: "bouncer",

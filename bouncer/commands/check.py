@@ -1,8 +1,10 @@
 import sys
 from pathlib import Path
 
+from ..classify import _fast_path_allow_reason
 from ..colors import RESET, BOLD, DIM, YELLOW, DECISION_COLORS, WHITE
-from ..config import _merged_config, _build_policy_context, project_has_bouncer
+from ..config import (_build_policy_context, _merged_config,
+                      project_has_bouncer, tool_intercepted)
 from ..providers import call_llm
 
 
@@ -20,9 +22,8 @@ def cmd_check(args):
         print(f"{DIM}Bouncer disabled (enabled: false).{RESET}")
         return
 
-    tools = config.get("tools", "all")
-    if tools != "all" and "bash" not in [t.lower() for t in tools]:
-        print(f"{DIM}Bash not in intercepted tools {tools} — would pass through.{RESET}")
+    if not tool_intercepted("Bash", config):
+        print(f"{DIM}Bash not intercepted — would pass through.{RESET}")
         return
 
     ctx   = _build_policy_context(cwd, config)
@@ -42,4 +43,9 @@ def cmd_check(args):
             color = DECISION_COLORS.get(decision, WHITE)
             print(f"  {color}{decision}{RESET} — {reason}")
     else:
-        print(f"  {DIM}(would call LLM; use --llm to test live){RESET}")
+        reason = _fast_path_allow_reason(
+            "Bash", {"command": command}, cwd, config)
+        if reason:
+            print(f"  {DECISION_COLORS['ALLOW']}ALLOW{RESET} — {reason}")
+        else:
+            print(f"  {DIM}(would call LLM; use --llm to test live){RESET}")

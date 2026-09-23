@@ -318,6 +318,12 @@ lost the race or otherwise failed. The audit includes opencode's permission ID
 so request, classification, and reply rows can be joined without relying on
 timestamps.
 
+While classification is running, the plugin shows a `Bouncer reviewing` TUI
+toast stating that no action is needed yet. It replaces that toast when the
+review finishes: automatic ALLOW/DENY results identify bouncer as the actor,
+while an ASK or unavailable result says that the decision is now the user's.
+Headless clients simply skip these notices.
+
 **Reply delay:** by default, bouncer replies as soon as classification
 finishes. To leave a short window for the user to answer first, configure a
 plugin delay. The delay starts when opencode emits the permission request: if

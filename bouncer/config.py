@@ -30,6 +30,11 @@ CONFIG_DEFAULTS: dict = {
         },
     },
     "notify": {},
+    "fast_path": {
+        "trusted_roots": [],
+        "read_tools": [],
+        "read_only_git": False,
+    },
     "llm": {
         "provider":           "ollama",
         "url":                "http://localhost:11434",
@@ -244,6 +249,13 @@ tools: [+@all, -@internal]
 # what `-@internal` skips:
 #groups:
 #  internal: [+TaskGet, +TaskList]   # also treat these as skippable plumbing
+
+# Optional deterministic allows before the LLM. Paths must remain lexically
+# and physically inside a trusted root; Git accepts inspection commands only.
+#fast_path:
+#  trusted_roots: [~/Code]
+#  read_tools: [Read, Glob, Grep]
+#  read_only_git: true
 
 # LLM backend
 # provider: ollama | openai | openai_compatible | anthropic
@@ -702,6 +714,13 @@ def _merged_config(cwd: Path | None = None, profile: str | None = None) -> dict:
     if profile is None:
         profile = resolve_profile(cwd, raw_layers)
     config = _fold_layers(raw_layers, profile)
+    # Trusted roots are a user decision. Never let a checked-in project or a
+    # profile compose a broader capability from pieces in different layers.
+    user_fast_path = raw_layers[0].get("fast_path", {})
+    config["fast_path"] = _deep_merge(
+        CONFIG_DEFAULTS["fast_path"],
+        user_fast_path if isinstance(user_fast_path, dict) else {},
+    )
     config["_profile"] = profile
     # The fold needs the raw per-layer tools/groups; _deep_merge replaces them,
     # so resolve the intercept set separately and stash it for classify. Each
