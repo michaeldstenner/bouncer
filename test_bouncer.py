@@ -5,6 +5,8 @@ import builtins
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -1045,6 +1047,22 @@ class TestInit(unittest.TestCase):
             data = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(data["plugin"], ["bouncer"])
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
+
+    def test_opencode_config_accepts_jsonc_trailing_commas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "opencode.jsonc"
+            path.write_text(
+                '{\n'
+                '  "plugin": ["bouncer",],\n'
+                '  "provider": {"local": {"models": {},},},\n'
+                '}\n',
+                encoding="utf-8",
+            )
+
+            data = init_mod._read_opencode_config(path)
+
+        self.assertEqual(data["plugin"], ["bouncer"])
+        self.assertEqual(data["provider"]["local"]["models"], {})
 
     def test_opencode_install_preserves_jsonc_when_plugin_already_present(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4140,6 +4158,117 @@ class TestPackagedIntegrationAssets(unittest.TestCase):
                     any(fnmatch(rel, pat) for pat in patterns),
                     f"{rel} not covered by package-data {patterns}",
                 )
+
+
+class TestOpencodeReplyAudit(unittest.TestCase):
+    def _run_plugin(
+        self,
+        decision: str,
+        replied: bool = False,
+        reply_fails: bool = False,
+    ):
+        bun = shutil.which("bun")
+        if not bun:
+            self.skipTest("bun is required to exercise the opencode plugin")
+
+        plugin = (
+            Path(init_mod.__file__).parent.parent
+            / "integrations"
+            / "opencode"
+            / "bouncer_plugin.ts"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audit = root / "audit.jsonl"
+            bindir = root / "bin"
+            bindir.mkdir()
+            stub = bindir / "bouncer"
+            response = {
+                "hookSpecificOutput": {
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": "test decision",
+                }
+            }
+            stub.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' '{json.dumps(response)}'\n",
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+
+            replied_event = ""
+            if replied:
+                replied_event = (
+                    "await hooks.event({ event: { type: "
+                    "'permission.replied', properties: { "
+                    "sessionID: 'session-1', requestID: 'permission-1', "
+                    "reply: 'always' } } });"
+                )
+            client_reply = "calls.push(input);"
+            if reply_fails:
+                client_reply += "throw new Error('already answered');"
+            script = (
+                f"import {{ BouncerPlugin }} from '{plugin.as_uri()}';"
+                "const calls = [];"
+                "const hooks = await BouncerPlugin({"
+                "directory: '/tmp/project',"
+                "client: { postSessionIdPermissionsPermissionId: "
+                f"async (input) => {{ {client_reply} }} }}"
+                "});"
+                "await hooks.event({ event: { type: 'permission.asked', "
+                "properties: { id: 'permission-1', sessionID: 'session-1', "
+                "permission: 'external_directory', patterns: ['/tmp/*'] } "
+                "} });"
+                f"{replied_event}"
+                "console.log(JSON.stringify(calls));"
+            )
+            env = {
+                **os.environ,
+                "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "BOUNCER_OPENCODE_AUDIT_LOG": str(audit),
+            }
+            result = subprocess.run(
+                [bun, "-e", script],
+                cwd=plugin.parent,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            calls = json.loads(result.stdout)
+            rows = [json.loads(line) for line in audit.read_text().splitlines()]
+            return calls, rows
+
+    def test_successful_bouncer_reply_is_attributed(self):
+        calls, rows = self._run_plugin("allow")
+        self.assertEqual(calls[0]["body"]["response"], "once")
+        resolved = [row for row in rows
+                    if row["event"] == "permission_replied"]
+        self.assertEqual(resolved[0]["source"], "bouncer")
+        self.assertEqual(resolved[0]["permission_id"], "permission-1")
+        self.assertEqual(resolved[0]["outcome"], "accepted")
+
+    def test_abstained_reply_is_attributed_as_not_bouncer(self):
+        calls, rows = self._run_plugin("ask", replied=True)
+        self.assertEqual(calls, [])
+        resolved = [row for row in rows
+                    if row["event"] == "permission_replied"]
+        self.assertEqual(resolved[0]["source"], "not_bouncer")
+        self.assertEqual(resolved[0]["response"], "always")
+
+    def test_lost_reply_race_is_attributed_as_not_bouncer(self):
+        calls, rows = self._run_plugin(
+            "allow",
+            replied=True,
+            reply_fails=True,
+        )
+        self.assertEqual(calls[0]["body"]["response"], "once")
+        failed = [row for row in rows
+                  if row["event"] == "bouncer_reply_failed"]
+        self.assertEqual(failed[0]["outcome"], "not_accepted")
+        resolved = [row for row in rows
+                    if row["event"] == "permission_replied"]
+        self.assertEqual(resolved[0]["source"], "not_bouncer")
 
 
 if __name__ == "__main__":

@@ -309,6 +309,15 @@ permission prompt. ALLOW and DENY decisions are answered through opencode's
 permission API; UNSURE, unavailable-with-ask, and `# ESCALATE:` outcomes leave
 the prompt for the user.
 
+**Reply attribution:** the plugin writes an independent audit trail to
+`~/.local/share/bouncer/opencode_replies.jsonl`. A `permission_replied` row
+with `source: "bouncer"` means opencode accepted bouncer's reply. A row with
+`source: "not_bouncer"` means the request was answered by the user, opencode,
+or another integration. `bouncer_reply_failed` records a reply attempt that
+lost the race or otherwise failed. The audit includes opencode's permission ID
+so request, classification, and reply rows can be joined without relying on
+timestamps.
+
 **Reply delay:** by default, bouncer replies as soon as classification
 finishes. To leave a short window for the user to answer first, configure a
 plugin delay. The delay starts when opencode emits the permission request: if

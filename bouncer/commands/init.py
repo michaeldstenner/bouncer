@@ -274,10 +274,14 @@ def _read_opencode_config(path: Path) -> dict:
 
 
 def _strip_json_comments(text: str) -> str:
-    # JSONC comments are allowed in opencode.jsonc; Python's json module does
-    # not support them. This conservative stripper leaves quoted strings intact
-    # and removes // line comments plus /* block comments */.
-    pattern = r'("(?:\\.|[^"\\])*")|(//[^\n\r]*|/\*.*?\*/)'
+    # JSONC comments and trailing commas are legal; Python's json module does
+    # not support either. Strings are consumed first so JSON-looking text inside
+    # them is preserved.
+    pattern = (
+        r'("(?:\\.|[^"\\])*")'
+        r'|(//[^\n\r]*|/\*.*?\*/)'
+        r'|(,)(?=\s*[}\]])'
+    )
 
     def repl(match: re.Match[str]) -> str:
         if match.group(1) is not None:

@@ -22,6 +22,9 @@
  */
 
 import { execFileSync } from "child_process"
+import { appendFileSync, mkdirSync } from "fs"
+import { homedir } from "os"
+import { dirname, join } from "path"
 
 type OpencodeClient = {
   postSessionIdPermissionsPermissionId(input: {
@@ -58,6 +61,14 @@ type PermissionRequest = {
   }
 }
 
+type PermissionReply = {
+  requestID?: string
+  permissionID?: string
+  reply?: "once" | "always" | "reject"
+  response?: "once" | "always" | "reject"
+  sessionID?: string
+}
+
 type BouncerDecision =
   | { decision: "allow"; reason: string }
   | { decision: "ask"; reason: string }
@@ -65,6 +76,36 @@ type BouncerDecision =
   | { decision: "skip"; reason: string }
 
 const toolArgs = new Map<string, ToolArgs>()
+const observedRequests = new Map<string, number>()
+const replyAttempts = new Map<
+  string,
+  { result: Promise<boolean>; time: number }
+>()
+
+function replyAuditPath() {
+  const override = process.env.BOUNCER_OPENCODE_AUDIT_LOG
+  if (override) return override
+  return join(
+    homedir(),
+    ".local",
+    "share",
+    "bouncer",
+    "opencode_replies.jsonl",
+  )
+}
+
+export function writeReplyAudit(entry: Record<string, unknown>) {
+  try {
+    const path = replyAuditPath()
+    mkdirSync(dirname(path), { recursive: true })
+    appendFileSync(path, JSON.stringify({
+      timestamp: new Date().toISOString(),
+      ...entry,
+    }) + "\n")
+  } catch {
+    // Audit failures must not interfere with permission handling.
+  }
+}
 
 function key(sessionID: string, callID: string) {
   return `${sessionID}:${callID}`
@@ -74,6 +115,12 @@ function pruneToolArgs() {
   const cutoff = Date.now() - 10 * 60 * 1000
   for (const [k, value] of toolArgs) {
     if (value.time < cutoff) toolArgs.delete(k)
+  }
+  for (const [requestID, value] of replyAttempts) {
+    if (value.time < cutoff) replyAttempts.delete(requestID)
+  }
+  for (const [requestID, time] of observedRequests) {
+    if (time < cutoff) observedRequests.delete(requestID)
   }
 }
 
@@ -162,7 +209,12 @@ function classify(
 export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOptions) => {
   const configuredDelayMs = delayMs(options)
   const cwd = pluginInput.directory ?? process.cwd()
-  const reply = async (input: { sessionID: string; requestID: string; reply: "once" | "reject"; message?: string }) => {
+  const reply = async (input: {
+    sessionID: string
+    requestID: string
+    reply: "once" | "reject"
+    message?: string
+  }) => {
     try {
       await pluginInput.client.postSessionIdPermissionsPermissionId({
         path: {
@@ -173,9 +225,9 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
           response: input.reply,
         },
       })
+      return true
     } catch {
-      // The user may answer before bouncer's delayed auto-reply. In that case
-      // opencode has already removed the pending request, which is fine.
+      return false
     }
   }
 
@@ -195,11 +247,36 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
       })
     },
 
-    event: async (input: { event: { type: string; properties?: PermissionRequest } }): Promise<void> => {
+    event: async (input: {
+      event: { type: string; properties?: PermissionRequest | PermissionReply }
+    }): Promise<void> => {
+      if (input.event.type === "permission.replied") {
+        const response = input.event.properties as PermissionReply | undefined
+        const requestID = response?.requestID ?? response?.permissionID
+        if (!requestID) return
+        if (!observedRequests.has(requestID)) return
+
+        const attempt = replyAttempts.get(requestID)
+        const bouncerAccepted = attempt ? await attempt.result : false
+        if (!bouncerAccepted) {
+          writeReplyAudit({
+            event: "permission_replied",
+            source: "not_bouncer",
+            cwd,
+            session_id: response?.sessionID,
+            permission_id: requestID,
+            response: response?.reply ?? response?.response,
+          })
+        }
+        replyAttempts.delete(requestID)
+        observedRequests.delete(requestID)
+        return
+      }
       if (input.event.type !== "permission.asked") return
 
-      const request = input.event.properties
+      const request = input.event.properties as PermissionRequest | undefined
       if (!request?.id || !request.sessionID) return
+      observedRequests.set(request.id, Date.now())
 
       const cached = request.tool?.callID
         ? toolArgs.get(key(request.sessionID, request.tool.callID))
@@ -207,27 +284,54 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
       const tool = cached?.tool ?? request.permission
       const toolInput = permissionToolInput(request, cached)
 
+      writeReplyAudit({
+        event: "permission_asked",
+        cwd,
+        session_id: request.sessionID,
+        permission_id: request.id,
+        permission: request.permission,
+        patterns: request.patterns ?? [],
+        tool,
+      })
+
       const started = Date.now()
       const result = classify(tool, toolInput, request.sessionID, cwd)
+      writeReplyAudit({
+        event: "classified",
+        cwd,
+        session_id: request.sessionID,
+        permission_id: request.id,
+        decision: result.decision,
+        reason: result.reason,
+        elapsed_ms: Date.now() - started,
+      })
       if (result.decision === "ask" || result.decision === "skip") return
 
       const remaining = configuredDelayMs - (Date.now() - started)
       if (remaining > 0) await sleep(remaining)
 
-      if (result.decision === "allow") {
-        await reply({
-          sessionID: request.sessionID,
-          requestID: request.id,
-          reply: "once",
-        })
-        return
-      }
-
-      await reply({
+      const response = result.decision === "allow" ? "once" : "reject"
+      const replyResult = reply({
         sessionID: request.sessionID,
         requestID: request.id,
-        reply: "reject",
-        message: result.reason || "operation denied by policy",
+        reply: response,
+        message: response === "reject"
+          ? result.reason || "operation denied by policy"
+          : undefined,
+      })
+      replyAttempts.set(request.id, {
+        result: replyResult,
+        time: Date.now(),
+      })
+      const accepted = await replyResult
+      writeReplyAudit({
+        event: accepted ? "permission_replied" : "bouncer_reply_failed",
+        source: "bouncer",
+        outcome: accepted ? "accepted" : "not_accepted",
+        cwd,
+        session_id: request.sessionID,
+        permission_id: request.id,
+        response,
       })
     },
   }
