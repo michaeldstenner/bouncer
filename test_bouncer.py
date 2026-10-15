@@ -113,7 +113,8 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
               call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json",
-              escalation_dir=None, profile_dir=None):
+              escalation_dir=None, profile_dir=None, user_config_yaml=None,
+              user_policy_md=None, llm_calls=None):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
@@ -121,6 +122,13 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
     escalation_dir: where the escalation-attempt cache lives. Defaults to a
     fresh dir under the per-call temp (so calls are isolated and real $HOME is
     never touched); pass a shared path to exercise attempt-then-escalate flows.
+
+    user_config_yaml / user_policy_md: the user-scope (~/.config/bouncer/)
+    files, as fixtures. With neither config_yaml nor policy_md the temp dir
+    has no .bouncer/ at all: an unarmed tree.
+
+    llm_calls: a list; each LLM call appends its (tool_name, tool_input, cwd)
+    so a test can tell "not called" from "called and allowed".
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -131,17 +139,27 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
 
         if config_yaml is not None or policy_md is not None:
             _make_bouncer_dir(tmp_path, config_yaml, policy_md)
+        if user_config_yaml is not None:
+            (user_dir / "config.yaml").write_text(user_config_yaml,
+                                                  encoding="utf-8")
+        if user_policy_md is not None:
+            (user_dir / "policy.md").write_text(user_policy_md,
+                                                encoding="utf-8")
 
         full_input = dict(hook_input, cwd=hook_input.get("cwd", str(tmp_path)))
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         exit_code  = 0
 
-        call_llm_patch = (
-            patch.object(classify_mod, "call_llm", side_effect=call_llm_exc)
-            if call_llm_exc is not None
-            else patch.object(classify_mod, "call_llm", return_value=call_llm_result)
-        )
+        def _fake_llm(tool_name, tool_input, cwd, config):
+            if llm_calls is not None:
+                llm_calls.append((tool_name, tool_input, cwd))
+            if call_llm_exc is not None:
+                raise call_llm_exc
+            return call_llm_result
+
+        call_llm_patch = patch.object(classify_mod, "call_llm",
+                                      side_effect=_fake_llm)
 
         with (
             patch.object(cfg, "USER_CONFIG_FILE", user_dir / "config.yaml"),
@@ -416,7 +434,9 @@ class TestPolicyContext(unittest.TestCase):
             tmp_path = Path(tmp)
             with patch.object(cfg, "USER_POLICY_FILE", tmp_path / "no_policy.md"):
                 result = _build_policy_context(tmp_path, {"policy_mode": "append"})
-        self.assertEqual(result, "(no policy configured)")
+        # No .bouncer/ above a temp dir: the unarmed preamble, then nothing.
+        self.assertTrue(result.startswith(cfg.UNARMED_CONTEXT))
+        self.assertTrue(result.endswith("(no policy configured)"))
 
 
 # ---------------------------------------------------------------------------
@@ -1321,8 +1341,13 @@ class TestClassify(unittest.TestCase):
     def _hook(self, tool="Bash", command="ls /tmp"):
         return {"tool_name": tool, "tool_input": {"command": command}}
 
-    def test_no_project_config_passes_through(self):
-        _, _, code = _classify(self._hook(), call_llm_result=("DENY", "bad", None, None))
+    def test_no_project_config_passes_through_in_guard_only_mode(self):
+        # Before 2026-10-15 every unarmed tree passed through. It still does
+        # under `unarmed: guard`; the default now applies the user policy as
+        # a deny-only check (test_guard.TestUnarmedTree).
+        _, _, code = _classify(self._hook(),
+                               user_config_yaml="unarmed: guard\n",
+                               call_llm_result=("DENY", "bad", None, None))
         self.assertEqual(code, 0)
 
     def test_disabled_passes_through(self):

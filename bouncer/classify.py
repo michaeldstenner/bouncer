@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import signal
@@ -12,6 +13,7 @@ from .escalation_cache import record_attempt, was_attempted, strip_escalate_pref
 from .escalation_grant import record_denial, arm_escalation, take_grant
 from .hook import _emit_hook_response, harness_can_ask, resolve_fallback
 from .notify import notify_decision
+from . import profile as _profile_mod
 from .profile import (note_harness, profile_allows_ask,
                       resolve_unattended_action)
 from .providers import call_llm
@@ -344,7 +346,7 @@ def _strip_redirections(parts: list[str]) -> list[str]:
     `bouncer profile --cwd DIR --as json 2>&1` — a pure read — came to look
     like a profile *set* named "2" and was refused as one.
 
-    Used only for reading a bouncer argv. `_shell_mutates_protected_path`
+    Used only for reading a bouncer argv. `_shell_writes_protected_path`
     deliberately reads the raw segments instead, because there the `>` IS the
     thing being matched.
     """
@@ -492,42 +494,517 @@ def _is_bouncer_self_management_command(command: str) -> bool:
     )
 
 
+# --- the protected set -------------------------------------------------------
+#
+# What no agent may write: every project's config and policy, the `.bouncer/`
+# directory itself (removing or moving it disarms the project), the user-wide
+# config dir, and the session-profile state (writing it is `bouncer profile
+# live` by another route). Deliberately NOT the decision log, which plenty of
+# read-only analysis touches.
+
+_PROTECTED_PROJECT_FILES = frozenset({
+    "config.yaml", "config.local.yaml", "policy.md", "policy.local.md",
+})
+
+# Where scripts may be run by name rather than by path.
+HELPER_SCRIPTS_DIR = Path.home() / ".helpers" / "scripts"
+
+# The protected set as it appears in text: inline code, a heredoc fed to an
+# interpreter, a script file, a patch. Relative forms count, because a script
+# run from a project root writes `.bouncer/policy.md` without a leading path.
+_PROTECTED_TEXT = re.compile(
+    r"\.bouncer/(?:config(?:\.local)?\.yaml|policy(?:\.local)?\.md)"
+    r"|\.config/bouncer(?![\w.-])"
+    r"|\.local/share/bouncer/profile(?![\w.-])"
+)
+
+
+def _protected_dirs() -> list[Path]:
+    """Directories protected whole. Read at call time so a patched
+    PROFILE_DIR (tests) is honoured."""
+    dirs = [Path.home() / ".config" / "bouncer", Path(_profile_mod.PROFILE_DIR)]
+    out = []
+    for d in dirs:
+        out.append(d.absolute())
+        try:
+            out.append(d.resolve())
+        except (OSError, RuntimeError):
+            pass
+    return out
+
+
+def _is_protected_location(path: Path) -> bool:
+    """True when `path` (absolute) is in the protected set."""
+    if path.name == ".bouncer":
+        return True
+    if path.parent.name == ".bouncer" and path.name in _PROTECTED_PROJECT_FILES:
+        return True
+    for base in _protected_dirs():
+        if path == base or base in path.parents:
+            return True
+    return False
+
+
 def _is_protected_bouncer_path(value: str, cwd: Path) -> bool:
+    """True when `value`, read as a path from `cwd`, lands in the protected
+    set — judged on the path as written and on where it really resolves, so a
+    symlink is no way around it."""
     try:
         path = Path(value).expanduser()
-        lexical = (cwd / path).absolute() if not path.is_absolute() else path.absolute()
+        lexical = Path(os.path.normpath(
+            path if path.is_absolute() else cwd / path))
         resolved = lexical.resolve()
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return False
-    protected_user_files = {
-        (Path.home() / ".config" / "bouncer" / name).resolve()
-        for name in ("config.yaml", "policy.md", "system_prompt.txt")
-    }
-    def protected(candidate: Path) -> bool:
-        if candidate in protected_user_files:
-            return True
-        return candidate.parent.name == ".bouncer" and candidate.name in {
-            "config.yaml", "config.local.yaml", "policy.md", "policy.local.md",
-        }
-    return protected(lexical) or protected(resolved)
+    return _is_protected_location(lexical) or _is_protected_location(resolved)
 
 
-def _shell_mutates_protected_path(command: str, cwd: Path) -> bool:
-    mutators = {
-        "chmod", "chown", "cp", "install", "ln", "mv", "perl", "rm", "sed",
-        "tee", "touch", "truncate",
-    }
-    for segment in _shell_segments(command):
-        if not segment:
+def _mentions_protected_text(text: str,
+                             dirs: list[str] | None = None) -> bool:
+    if _PROTECTED_TEXT.search(text):
+        return True
+    if dirs is None:
+        dirs = [str(d) for d in _protected_dirs()]
+    return any(d in text for d in dirs)
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+
+
+def _quoted_words(command: str) -> frozenset[str]:
+    """Words that appear quoted in `command`. The lexer has already removed
+    the quotes, and a quoted glob (`tp inspect ".*"`) is passed to the
+    program literally, not expanded by the shell."""
+    return frozenset(a or b for a, b in _QUOTED.findall(command))
+
+
+def _token_touches_protected(token: str, cwd: Path,
+                             literal: frozenset[str] = frozenset()) -> bool:
+    """Whether a single argv token names something in the protected set:
+    as a path, as the value of `key=value` / `--opt=value`, or as any match
+    of a glob the shell would expand (not one in `literal`, the quoted
+    words)."""
+    candidates = [token]
+    if "=" in token and not token.startswith("="):
+        candidates.append(token.split("=", 1)[1])
+    home = str(Path.home())
+    for candidate in candidates:
+        if not candidate:
             continue
-        executable = Path(segment[0]).name
-        for index, part in enumerate(segment):
-            if part in (">", ">>") and index + 1 < len(segment):
-                if _is_protected_bouncer_path(segment[index + 1], cwd):
+        candidate = (candidate.replace("${HOME}", home)
+                     .replace("$HOME", home))
+        if _is_protected_bouncer_path(candidate, cwd):
+            return True
+        if _GLOB_CHARS & set(candidate) and token not in literal:
+            pattern = os.path.expanduser(candidate)
+            if not os.path.isabs(pattern):
+                pattern = str(cwd / pattern)
+            # As the shell globs: `*` does not match a dotfile, `.b*` does.
+            for match in glob.glob(pattern)[:200]:
+                if _is_protected_bouncer_path(match, cwd):
                     return True
-            if executable in mutators and _is_protected_bouncer_path(part, cwd):
-                return True
     return False
+
+
+# --- what a segment does ------------------------------------------------------
+
+def _is_redirect_operator(token: str) -> bool:
+    return (bool(token) and all(char in _REDIRECT_CHARS for char in token)
+            and ">" in token)
+
+
+_HARMLESS_SINKS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr",
+                             "/dev/tty"})
+
+
+def _output_targets(parts: list[str]) -> list[str]:
+    """Files a segment's output redirections write. fd duplication (`2>&1`,
+    `>&2`) and the /dev sinks write nothing."""
+    targets = []
+    for index, token in enumerate(parts):
+        if not _is_redirect_operator(token) or index + 1 >= len(parts):
+            continue
+        target = parts[index + 1]
+        if token.endswith("&") and (target.isdigit() or target == "-"):
+            continue
+        if target in _HARMLESS_SINKS:
+            continue
+        targets.append(target)
+    return targets
+
+
+# Leading words that are shell syntax, not the command being run.
+_SHELL_PREFIX_WORDS = frozenset({
+    "!", "do", "elif", "else", "if", "then", "time", "until", "while", "{",
+})
+# Segments that only bind or close: `for p in a b`, `done`, `fi`.
+_SHELL_BINDING_WORDS = frozenset({"case", "for", "function", "select"})
+_SHELL_CLOSING_WORDS = frozenset({"done", "esac", "fi", "}"})
+
+# Commands that cannot write a file named on their command line. Membership
+# is the claim; anything absent is assumed able to write.
+_READERS = frozenset({
+    "[", "[[", "basename", "bat", "cat", "cd", "cmp", "column", "cut",
+    "diff", "dirname", "du", "echo", "egrep", "false", "fgrep", "file",
+    "grep", "head", "hexdump", "jq", "less", "ls", "md5", "md5sum", "more",
+    "nl", "od", "printf", "pwd", "read", "readlink", "realpath", "rg",
+    "sha1sum", "sha256sum", "shasum", "stat", "strings", "tail", "test",
+    "tr", "tree", "true", "type", "wc", "which",
+})
+_FIND_WRITERS = frozenset({
+    "-delete", "-exec", "-execdir", "-fls", "-fprint", "-fprint0",
+    "-fprintf", "-ok", "-okdir",
+})
+# git subcommands that leave working-tree files alone. `add` and `commit`
+# write only the index and the object store.
+_GIT_READERS = frozenset({
+    "add", "blame", "cat-file", "check-ignore", "commit", "describe", "diff",
+    "grep", "log", "ls-files", "rev-parse", "shortlog", "show", "status",
+})
+_BOUNCER_READERS = frozenset({
+    "activity", "check", "escalate", "lint", "log", "profile", "status",
+    "tools",
+})
+# sed's own write commands: `w FILE`, and the `w` flag of `s///`.
+_SED_WRITE = re.compile(r"(?:^|[;{}\n]\s*|\d\s*|/)[wW]\s+\S")
+
+_INTERPRETERS = frozenset({
+    "awk", "bun", "deno", "fish", "gawk", "lua", "mawk", "nawk", "node",
+    "nodejs", "osascript", "perl", "php", "pipx", "Rscript", "ruby", "swift",
+    "tclsh", "ts-node", "tsx", "uv",
+}) | _NESTING_SHELLS
+
+
+def _is_interpreter(name: str) -> bool:
+    return name in _INTERPRETERS or name.startswith("python")
+
+
+def _segment_argv(parts: list[str]) -> list[str]:
+    """The argv of a segment from its executable on: redirections, shell
+    syntax words, assignments and wrappers (`env`, `sudo`, …) removed."""
+    argv = _strip_redirections(parts)
+    while argv and argv[0] in _SHELL_PREFIX_WORDS:
+        argv = argv[1:]
+    return argv[_command_index(argv):]
+
+
+def _copy_writes_protected(argv: list[str], cwd: Path) -> bool:
+    """For cp / rsync: whether the destination is protected. A protected file
+    among the sources is only being read."""
+    args, dest = [], None
+    index = 1
+    while index < len(argv):
+        token = argv[index]
+        if token in ("-t", "--target-directory") and index + 1 < len(argv):
+            dest = argv[index + 1]
+            index += 2
+            continue
+        if token.startswith("--target-directory="):
+            dest = token.split("=", 1)[1]
+        elif not token.startswith("-"):
+            args.append(token)
+        index += 1
+    if dest is None:
+        dest = args[-1] if args else None
+    return dest is None or _token_touches_protected(dest, cwd)
+
+
+def _segment_is_read_only(parts: list[str], cwd: Path) -> bool:
+    """Whether a segment provably writes nothing on its command line. A
+    segment that hands a command line to a shell (`bash -c`, `eval`) is
+    judged by the segments it runs, which `_command_segments` lists too."""
+    if _nested_command(parts) is not None:
+        return True
+    argv = _strip_redirections(parts)
+    while argv and argv[0] in _SHELL_PREFIX_WORDS:
+        argv = argv[1:]
+    if not argv:
+        return True
+    if argv[0] in _SHELL_BINDING_WORDS:
+        return True
+    if argv[0] in _SHELL_CLOSING_WORDS and len(argv) == 1:
+        return True
+    argv = argv[_command_index(argv):]
+    if not argv:
+        return True
+    name = Path(argv[0]).name
+    rest = argv[1:]
+    if name in _READERS:
+        return True
+    if name == "sed":
+        if any(a.startswith("-i") or a.startswith("--in-place") for a in rest):
+            return False
+        return not any(_SED_WRITE.search(a) for a in rest
+                       if not a.startswith("-"))
+    if name == "find":
+        return not (_FIND_WRITERS & set(rest))
+    if name == "git":
+        index = 0
+        while index < len(rest) and rest[index].startswith("-"):
+            index += 2 if rest[index] in ("-C", "-c") else 1
+        return index < len(rest) and rest[index] in _GIT_READERS
+    if name in ("cp", "rsync"):
+        return not _copy_writes_protected(argv, cwd)
+    if name == "bouncer":
+        sub = _segment_bouncer_subcommand(parts)
+        return (sub in _BOUNCER_READERS
+                and _parse_profile_set_command(" ".join(parts)) is None)
+    return False
+
+
+def _scanned_files(parts: list[str],
+                   cwd: Path) -> tuple[list[Path], list[Path]]:
+    """Files whose CONTENT decides what a segment does, as (scripts,
+    patches): the script an interpreter runs, an executable named by path, a
+    `helper run` script, a patch being applied, and anything fed to those on
+    stdin."""
+    argv = _segment_argv(parts)
+    if not argv:
+        return [], []
+    exe = argv[0]
+    name = Path(exe).name
+    found: list[str] = []
+    if "/" in exe:
+        found.append(exe)
+    if name == "helper" and len(argv) > 2 and argv[1] == "run":
+        found.append(str(HELPER_SCRIPTS_DIR / argv[2]))
+    runs_input = False
+    is_patch = False
+    if _is_interpreter(name):
+        runs_input = True
+        rest = argv[1:]
+        if name == "uv" and rest[:1] == ["run"]:
+            rest = rest[1:]
+        index = 0
+        while index < len(rest):
+            token = rest[index]
+            if token in ("-", "-m", "-c", "-e", "-p", "--eval", "--print"):
+                break
+            if token in ("-f", "--file") and index + 1 < len(rest):
+                found.append(rest[index + 1])
+                break
+            if token.startswith("-"):
+                index += 1
+                continue
+            found.append(token)
+            break
+    elif name == "patch" or (name == "git" and len(argv) > 1
+                             and argv[1] in ("apply", "am")):
+        runs_input = True
+        is_patch = True
+        found.extend(a for a in argv[2 if name == "git" else 1:]
+                     if not a.startswith("-"))
+        if "-i" in argv:
+            position = argv.index("-i")
+            if position + 1 < len(argv):
+                found.append(argv[position + 1])
+    if runs_input and "<" in parts:
+        position = parts.index("<")
+        if position + 1 < len(parts):
+            found.append(parts[position + 1])
+    paths = []
+    for item in found:
+        path = Path(os.path.expanduser(item))
+        path = path if path.is_absolute() else cwd / path
+        try:
+            if path.is_file():
+                paths.append(path)
+        except OSError:
+            continue
+    return ([], paths) if is_patch else (paths, [])
+
+
+# Code that writes a file. Paired with a protected mention on the SAME line
+# of a script, or anywhere in inline code, it is a write to that location.
+# Plain `>` is left out: in most languages it is a comparison.
+_WRITE_HINT = re.compile(
+    r"""open\([^)]*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+][^'"]*['"]"""
+    r"""|\.open\(\s*(?:mode\s*=\s*)?['"][^'"]*[wax+][^'"]*['"]"""
+    r"|write_text|write_bytes|writeFile|appendFile|createWriteStream"
+    r"|shutil\.(?:copy|move|rmtree)|os\.(?:rename|replace|remove|unlink"
+    r"|rmdir|truncate)|\.unlink\(|\.touch\(|rmtree"
+    r"|>>?\s*['\"]?\S*bouncer|\btee\b|\bsed\s+-i"
+    r"|(?:^|[\s;&|(`'\"])(?:cp|mv|rm|ln|install|dd|truncate|touch|rsync"
+    r"|patch)\s"
+)
+
+
+def _code_writes_protected(code: str, *, by_line: bool) -> bool:
+    """Whether code text writes the protected set. Inline code (agent-written
+    for this one call) is judged whole; a script file, which may be a
+    long-standing tool that only READS bouncer config, line by line."""
+    dirs = [str(d) for d in _protected_dirs()]
+    if not _mentions_protected_text(code, dirs):
+        return False
+    if not by_line:
+        return bool(_WRITE_HINT.search(code))
+    # Only lines that can mention the protected set are worth the regexes.
+    needles = ["bouncer", *dirs]
+    return any(any(n in line for n in needles)
+               and _mentions_protected_text(line, dirs)
+               and _WRITE_HINT.search(line)
+               for line in code.splitlines())
+
+
+_SCAN_LIMIT = 1 << 20
+
+
+def _read_text(path: Path) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read(_SCAN_LIMIT)
+    except OSError:
+        return ""
+
+
+def _inline_code(parts: list[str], command: str) -> str | None:
+    """Code an interpreter segment runs from its own command line: a `-c` /
+    `-e` argument, or — when it reads its program from stdin — the whole
+    command, heredoc bodies included (they are stripped from the segments)."""
+    argv = _segment_argv(parts)
+    if not argv or not _is_interpreter(Path(argv[0]).name) \
+            or _nested_command(parts) is not None:
+        return None
+    rest = argv[1:]
+    for index, token in enumerate(rest):
+        if token in ("-c", "-e", "--eval", "-p", "--print") \
+                and index + 1 < len(rest):
+            return rest[index + 1]
+    positional = [t for t in rest if not t.startswith("-") or t == "-"]
+    if not positional or positional[0] == "-":
+        return command
+    return None
+
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _tainted_names(segments: list[list[str]], cwd: Path) -> set[str]:
+    """Shell variables bound to something in the protected set:
+    `P=…/.bouncer/policy.md` and `for f in …/.bouncer/*`."""
+    names = set()
+    for parts in segments:
+        argv = _strip_redirections(parts)
+        for token in argv[:_command_index(argv)] if argv else []:
+            name, _, value = token.partition("=")
+            if _IDENT.match(name) and _token_touches_protected(value, cwd):
+                names.add(name)
+        if len(argv) > 3 and argv[0] in ("for", "select") \
+                and _IDENT.match(argv[1]) and argv[2] == "in" \
+                and any(_token_touches_protected(t, cwd) for t in argv[3:]):
+            names.add(argv[1])
+    return names
+
+
+def _uses_name(token: str, names: set[str]) -> bool:
+    return any(f"${n}" in token or f"${{{n}" in token for n in names)
+
+
+def _next_cwd(parts: list[str], cwd: Path) -> Path:
+    """Best-effort `cd` tracking, so `cd DIR && echo x > policy.md` is
+    judged in DIR. Anything it cannot follow leaves the cwd alone."""
+    argv = _segment_argv(parts)
+    if len(argv) == 2 and argv[0] in ("cd", "pushd") \
+            and not argv[1].startswith("-") and "$" not in argv[1]:
+        target = Path(os.path.expanduser(argv[1]))
+        return Path(os.path.normpath(target if target.is_absolute()
+                                     else cwd / target))
+    return cwd
+
+
+def _shell_writes_protected_path(command: str, cwd: Path) -> bool:
+    """Whether a shell command could write the protected set.
+
+    Judged by effect, segment by segment, not by the name of the command.
+    A segment is refused when:
+
+    - it redirects output into a protected location, or into an unexpanded
+      variable while the command has reached a protected location at all;
+    - it runs code — inline, a heredoc, a script file, a patch — whose text
+      writes a protected location;
+    - an argument names a protected location (directly, via a glob, a
+      symlink, a `cd` earlier in the line, or a variable bound to one) and
+      the command is not a known reader.
+
+    A segment that only reads is never refused for what other segments do:
+    `cat policy.md; docket list` is two commands, one of them a read.
+    """
+    segments = _command_segments(command)
+    if segments is None:
+        return _mentions_protected_text(command)
+
+    tainted = _tainted_names(segments, cwd)
+    literal = _quoted_words(command)
+    here = cwd
+    reached = bool(tainted)
+    judged = []
+    for parts in segments:
+        touches = False
+        for token in parts:
+            if _is_redirect_operator(token) or token in ("<", "<<", "<<<"):
+                continue
+            if _token_touches_protected(token, here, literal) \
+                    or (tainted and _uses_name(token, tainted)):
+                touches = True
+        reached = reached or touches
+        judged.append((parts, here, touches))
+        here = _next_cwd(parts, here)
+
+    for parts, here, touches in judged:
+        for target in _output_targets(parts):
+            if _token_touches_protected(target, here):
+                return True
+            if reached and ("$" in target or "`" in target):
+                return True
+        code = _inline_code(parts, command)
+        if code is not None and _code_writes_protected(code, by_line=False):
+            return True
+        scripts, patches = _scanned_files(parts, here)
+        if any(_code_writes_protected(_read_text(f), by_line=True)
+               for f in scripts):
+            return True
+        if any(_mentions_protected_text(_read_text(f)) for f in patches):
+            return True
+        if touches and not _segment_is_read_only(parts, here):
+            return True
+    return False
+
+
+_SHELL_WRITE_REASON = (
+    "Bouncer policy and configuration files cannot be modified by an agent "
+    "shell command. Reading them is fine: use cat, sed -n, grep, diff or "
+    "your file-reading tool. A program that names them is refused because "
+    "bouncer cannot see what it writes.")
+
+# A tool whose name has one of these in it may write the paths it is given.
+_MUTATING_WORDS = (
+    "append", "copy", "create", "delete", "edit", "mkdir", "move", "put",
+    "remove", "rename", "replace", "save", "truncate", "upload", "write",
+)
+
+
+# A tool argument is a path when its key says so. Content (`old_string`,
+# `new_string`, `content`) is not: an edit to ~/.config/git/ignore that
+# mentions `.bouncer/policy.local.md` writes the ignore file, not the policy.
+_PATH_KEY_WORDS = ("dest", "dir", "file", "path", "source", "src", "target")
+
+
+def _string_values(tool_input: dict) -> list[str]:
+    """Every path-like string a tool was handed at the top level, including
+    inside a list, under any key that names a path (`file_path`,
+    `notebook_path`, `destination`, `target_dir`, …)."""
+    values = []
+    for key, value in tool_input.items():
+        if not any(word in str(key).lower() for word in _PATH_KEY_WORDS):
+            continue
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, list):
+            values.extend(v for v in value if isinstance(v, str))
+    return values
 
 
 def _management_denial_reason(
@@ -543,17 +1020,12 @@ def _management_denial_reason(
                 "unbalanced quote, or nesting too deep), so it cannot tell "
                 "whether it changes bouncer's own settings. Fix the quoting "
                 "and re-issue.")
-    if _shell_mutates_protected_path(tool_input.get("command", ""), cwd):
-        return ("Bouncer policy and configuration files cannot be modified "
-                "by an agent shell command")
-    mutating_tool = any(word in tool_name.lower() for word in ("write", "edit", "move", "delete"))
+    if _shell_writes_protected_path(tool_input.get("command", ""), cwd):
+        return _SHELL_WRITE_REASON
+    mutating_tool = any(word in tool_name.lower() for word in _MUTATING_WORDS)
     if mutating_tool:
-        for key in (
-            "file_path", "path", "source", "source_path", "destination",
-            "destination_path", "target", "target_path",
-        ):
-            value = tool_input.get(key)
-            if isinstance(value, str) and _is_protected_bouncer_path(value, cwd):
+        for value in _string_values(tool_input):
+            if _is_protected_bouncer_path(value, cwd):
                 return ("Bouncer policy and configuration files cannot be modified "
                         "by an agent tool call")
     if "patch" in tool_name.lower():
@@ -641,14 +1113,16 @@ def get_classification(
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
 
-    if not project_has_bouncer(cwd_path):
-        return "SKIP", "no project config", None, None, None
-
+    # The hard guard first, armed tree or not: "agents never edit bouncer
+    # config" holds everywhere, not only where someone ran `bouncer init`.
     management_denial = _management_denial_reason(tool_name, tool_input, cwd_path)
     if management_denial:
         return "DENY", management_denial, "DENY", 0, None
 
     config = _merged_config(cwd_path)
+    if not project_has_bouncer(cwd_path):
+        return _classify_unarmed(tool_name, tool_input, cwd_path, config)
+
     skip = _skip_reason(tool_name, tool_input, config)
     if skip:
         return "SKIP", skip, None, None, None
@@ -690,6 +1164,66 @@ def get_classification(
     return "UNSURE", final_reason, final_dec, prompt_chars, None
 
 
+_UNARMED_NOTE = ("(There is no bouncer project here, so this came from "
+                 "the user-wide policy.)")
+
+
+def _unarmed_verdict(tool_name: str, tool_input: dict, cwd: Path,
+                     config: dict):
+    """The LLM's verdict for a call in an unarmed tree, or None when there is
+    nothing to ask it. An `# ESCALATE:` marker is stripped first: with no
+    project there is no escalation, and the marker must not talk the
+    classifier out of a denial."""
+    if config.get("unarmed", "deny") != "deny":
+        return None
+    if _skip_reason(tool_name, tool_input, config):
+        return None
+    command = tool_input.get("command", "")
+    if _parse_escalate_command(command) is not None:
+        return None
+    if parse_escalation(command) is not None:
+        tool_input = dict(tool_input, command=strip_escalate_prefix(command))
+    try:
+        return call_llm(tool_name, tool_input, cwd, config)
+    except Exception:
+        return None
+
+
+def _classify_unarmed(tool_name, tool_input, cwd: Path, config: dict):
+    """get_classification for an unarmed tree: DENY or ABSTAIN, never ALLOW
+    and never ASK."""
+    verdict = _unarmed_verdict(tool_name, tool_input, cwd, config)
+    if verdict is None:
+        return "SKIP", "no project config", None, None, None
+    decision, reason, prompt_chars, snap = verdict
+    if decision == "DENY":
+        return "DENY", f"{reason} {_UNARMED_NOTE}", "DENY", prompt_chars, None
+    return decision or "UNSURE", reason, "ABSTAIN", prompt_chars, snap
+
+
+def _run_unarmed(tool_name: str, tool_input: dict, cwd: str, config: dict,
+                 fmt: str) -> None:
+    """The hook in a tree with no .bouncer/config.yaml, after the guards.
+
+    The user-wide policy may add a DENY there and nothing else. An ALLOW does
+    not auto-approve what the harness would have prompted for, and UNSURE or
+    an unreachable LLM never becomes an ASK — nobody configured this tree,
+    so nobody is known to be watching it. Everything that is not a DENY
+    emits no decision, which is exactly what this tree got before.
+
+    Only denials are logged, to the user log: there is no project log."""
+    started = time.time()
+    verdict = _unarmed_verdict(tool_name, tool_input, Path(cwd), config)
+    if verdict is None or verdict[0] != "DENY":
+        sys.exit(0)
+    _, reason, prompt_chars, _ = verdict
+    reason = f"{reason} {_UNARMED_NOTE}"
+    log_decision(tool_name, tool_input, cwd, "DENY", reason, config, None,
+                 elapsed_s=round(time.time() - started, 2),
+                 prompt_chars=prompt_chars)
+    _emit_hook_response("DENY", reason, fmt, False)
+
+
 def run_classify(
     tool_name: str,
     tool_input: dict,
@@ -705,24 +1239,26 @@ def run_classify(
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
 
-    # Fast early exit for projects with no bouncer config at all. Avoids
-    # writing a stranded PENDING entry to the user log for every tool call
-    # in unrelated projects.
-    if not project_has_bouncer(cwd_path):
-        sys.exit(0)
-
+    # Armed or not, the guards below run. Only what follows them differs: an
+    # unarmed tree (no .bouncer/config.yaml anywhere up to $HOME) has no
+    # project log, no profile state and no escalation, and gets the user-wide
+    # policy as a deny-only check — see _run_unarmed.
+    armed          = project_has_bouncer(cwd_path)
     config         = _merged_config(cwd_path)
-    proj_log       = project_log_file(cwd_path)
-    bouncer_dir    = _find_bouncer_dir(cwd_path)  # non-None given the gate above
+    proj_log       = project_log_file(cwd_path) if armed else None
+    bouncer_dir    = _find_bouncer_dir(cwd_path) if armed else None
     rid            = os.getpid()
     command        = tool_input.get("command", "")
 
     # Effective ASK capability = profile ∧ harness. Both halves are needed:
     # the profile says whether anyone is on the line, the format says whether
     # this harness has a channel to reach them at all. It feeds the DENY
-    # wording below and, via note_harness, the indicator.
-    profile_ask = profile_allows_ask(config)
-    note_harness(bouncer_dir, harness, harness_can_ask(fmt), permission_mode)
+    # wording below and, via note_harness, the indicator. An unarmed tree has
+    # nowhere to record a profile and never asks.
+    profile_ask = armed and profile_allows_ask(config)
+    if armed:
+        note_harness(bouncer_dir, harness, harness_can_ask(fmt),
+                     permission_mode)
 
     # Footgun cover, not a security boundary: an agent that notices `bouncer
     # profile` exists must not helpfully flip itself to `live`. The CLI
@@ -754,6 +1290,10 @@ def run_classify(
             proj_log=proj_log,
         )
         _emit_hook_response("DENY", management_denial, fmt, profile_ask)
+        return
+
+    if not armed:
+        _run_unarmed(tool_name, tool_input, cwd, config, fmt)
         return
 
     # `bouncer escalate [reason]` is the out-of-band escalation signal that

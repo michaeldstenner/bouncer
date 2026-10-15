@@ -119,8 +119,13 @@ def cmd_status(args):
         return
 
     if not has_proj:
-        print(f"{YELLOW}○ bouncer inactive{RESET}  no project config  "
-              f"{DIM}(run 'bouncer init'){RESET}")
+        # The hard guard runs everywhere; `unarmed` says what else does.
+        if config.get("unarmed", "deny") == "deny":
+            mode = "guard + user policy (deny-only)"
+        else:
+            mode = "guard only"
+        print(f"{YELLOW}○ no project config{RESET}  {mode}  "
+              f"{DIM}(run 'bouncer init' for a project policy){RESET}")
         print(f"  integrations: {format_installed_harnesses()}")
         return
 

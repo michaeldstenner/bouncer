@@ -380,6 +380,44 @@ where it is not; a configured `abstain` is honoured on the same condition.
 In practice that condition is Claude Code in `auto` and nothing else. See
 [Session profiles](#session-profiles-live--solo).
 
+## The hard guard, and trees with no project (`unarmed`)
+
+**Agents never edit bouncer config.** That rule is code, not policy: the
+LLM never sees it, a policy cannot loosen it, and `# ESCALATE:` cannot reach
+it. It runs on every tool call, in every directory — armed, opted out with
+`enabled: false`, or with no `.bouncer/` at all.
+
+It protects every project's `.bouncer/{config,config.local}.yaml` and
+`.bouncer/{policy,policy.local}.md`, the `.bouncer/` directory itself
+(removing it disarms the project), all of `~/.config/bouncer/`, and the
+session-profile state under `~/.local/share/bouncer/profile/`. The decision
+log is not protected.
+
+It judges a shell command by **effect**, not by its command word. A segment
+is refused when it redirects output into a protected location; when it
+runs code — `python3 -c`, a heredoc fed to an interpreter, a script file, a
+`helper run` script, a patch — that writes one; or when an argument names
+one (directly, through a glob, a symlink, an earlier `cd`, or a variable
+bound to one) and the command is not a known reader. Reading stays open:
+`cat`, `sed -n`, `grep`, `diff`, `cp` *out of* a policy, `git add`.
+
+What it cannot see: a program whose own text does not name the location it
+writes — a path built at run time, read from a file, or reached through a
+build tool. Where the LLM runs, it is the backstop for those.
+
+A tree with no `.bouncer/config.yaml` (no `bouncer init` yet) is
+**unarmed**. User-scope `unarmed:` says what it gets beyond the guard:
+
+| Value | Meaning |
+|---|---|
+| `deny` | The user-wide `policy.md` is applied too, but may only **DENY**. Any other verdict — ALLOW, UNSURE, an unreachable LLM — emits no decision, so the harness's own permission check runs exactly as it would with no bouncer. Nothing there ever ASKs: nobody configured the tree, and there is nowhere to record a profile. (default) |
+| `guard` | The guard alone. No LLM call. |
+
+An opt-out (`enabled: false` in a project) opts out of the **classifier**:
+no project policy, no user-wide policy, no LLM call. It does not opt out of
+the guard. A rule that must bind an opted-out project too has to be a
+guard, not policy text.
+
 ## Session profiles (`live` / `solo`)
 
 A profile changes the **plumbing, not the judgment**. `policy.md` remains the

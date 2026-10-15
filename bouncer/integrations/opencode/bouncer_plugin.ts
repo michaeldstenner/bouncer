@@ -12,7 +12,8 @@
  *   #   { "plugin": ["bouncer"] }
  *
  * Requires: bouncer on PATH, .bouncer/config.yaml in the project tree.
- * If no .bouncer/config.yaml is found, bouncer exits 0 (pass-through).
+ * With no .bouncer/config.yaml, bouncer still runs its hard guard and a
+ * deny-only user-policy check; anything else exits 0 (pass-through).
  *
  * Bouncer reviews opencode's native permission prompts. ALLOW and DENY are
  * answered after the configured delay; ASK leaves opencode's prompt visible.
