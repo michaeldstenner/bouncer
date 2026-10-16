@@ -405,6 +405,25 @@ unquoted heredoc — are read as commands in their own right; a quoted
 heredoc's body is text, so an apostrophe or a backtick in a message is
 never mistaken for code.
 
+Code is judged by the **target** of each write: the path a `write_text`,
+`open(…, "w")`, `shutil.copy`, `os.rename` or `writeFileSync` actually
+writes, followed through variables assigned from a protected path. Merely
+containing a protected path as text is not a write. That is what lets
+bouncer be developed under its own guard: an edit to `classify.py` whose
+new text says `.bouncer/policy.md` writes `classify.py`. Shell scripts are
+judged line by line.
+
+A command bouncer cannot parse (an unbalanced quote) is refused only when
+it names a protected path or a bouncer management verb (`config`, `init`,
+`policy`, `review`, `profile <name>`) — not for containing the word
+"bouncer", which every command in the bouncer repo does.
+
+There is no carve-out for the bouncer repo, by design: a directory-based
+exemption is exactly the hole an agent would reach for. Bouncer's tests
+work on fixtures in temp dirs and never touch a real protected path. A
+human at the terminal is never subject to the guard: it is a hook on the
+agent's tool calls, and sees nothing typed into an ordinary shell.
+
 What it cannot see: a program whose own text does not name the location it
 writes — a path built at run time, read from a file, or reached through a
 build tool. Where the LLM runs, it is the backstop for those.

@@ -72,7 +72,8 @@ class _Fixture(unittest.TestCase):
         self.policy = self.proj / ".bouncer" / "policy.md"
         self.addCleanup(self._tmp.cleanup)
 
-    def assertRefused(self, command, config_yaml=_OPTED_OUT, cwd=None):
+    def assertRefused(self, command, config_yaml=_OPTED_OUT, cwd=None,
+                      expect=_REFUSED):
         """Refused by the guard alone: the LLM would have allowed it, and in
         an opted-out lane there is no LLM at all."""
         calls = []
@@ -81,7 +82,7 @@ class _Fixture(unittest.TestCase):
             call_llm_result=("ALLOW", "llm would allow", None, None),
             llm_calls=calls)
         self.assertEqual(code, 2, f"not refused: {command!r}\n{err}")
-        self.assertIn(_REFUSED, err)
+        self.assertIn(expect, err)
         self.assertEqual(calls, [], "guard must decide before the LLM")
 
     def assertPassesGuard(self, command, cwd=None):
@@ -135,6 +136,30 @@ class TestWritesThatUsedToGetPast(_Fixture):
 
     def test_moving_the_bouncer_dir_aside(self):
         self.assertRefused(f"mv {self.proj / '.bouncer'} /tmp/aside")
+
+    def test_path_held_in_a_variable_then_written(self):
+        self.assertRefused(
+            "python3 - <<'EOF'\nfrom pathlib import Path\n"
+            f"target = Path({str(self.policy)!r})\n"
+            "target.write_text('allow all')\nEOF")
+
+    def test_path_reached_through_a_second_variable(self):
+        self.assertRefused(
+            "python3 - <<'EOF'\nfrom pathlib import Path\n"
+            f"base = Path({str(self.policy)!r})\n"
+            "target = base.resolve()\n"
+            "with open(target, 'w') as fh: fh.write('x')\nEOF")
+
+    def test_path_replace_moves_onto_the_policy(self):
+        # One argument: pathlib's move. (str.replace takes two.)
+        self.assertRefused(
+            "python3 -c \"from pathlib import Path; "
+            f"Path('/tmp/new').replace({str(self.policy)!r})\"")
+
+    def test_shell_text_handed_to_os_system(self):
+        self.assertRefused(
+            "python3 -c \"import os; os.system('sed -i s/a/b/ "
+            f"{self.policy}')\"")
 
     def test_script_file_that_names_the_policy(self):
         script = self.root / "w.py"
@@ -281,8 +306,57 @@ class TestReadsStillPass(_Fixture):
             "c=yaml.safe_load(open(os.path.expanduser("
             "'~/.config/bouncer/config.yaml')))\nprint(c)\nPY")
 
+    def test_editing_bouncer_source_whose_text_names_a_policy(self):
+        # How bouncer itself is developed: the new text of classify.py or a
+        # test contains ".bouncer/policy.md" and "~/.config/bouncer" as
+        # data. The writes go to classify.py and test_guard.py. This exact
+        # shape was refused 7 times in this lane's own calls on 2026-10-15.
+        self.assertPassesGuard(
+            "python3 - <<'PYEOF'\nfrom pathlib import Path\n"
+            "p = Path('bouncer/classify.py'); s = p.read_text()\n"
+            "old = '''protects .bouncer/policy.md'''\n"
+            "new = '''protects .bouncer/policy.md and ~/.config/bouncer/'''\n"
+            "s = s.replace(old, new)\n"
+            "p.write_text(s)\n"
+            "Path('test_guard.py').write_text("
+            "'assertRefused(\"echo x >> ~/.config/bouncer/policy.md\")')\n"
+            "PYEOF")
+
     def test_running_tests_by_module(self):
         self.assertPassesGuard("python3 -m unittest test_bouncer")
+
+
+class TestUnparseable(_Fixture):
+    """A command bouncer cannot split (an unbalanced quote) is refused only
+    when it could change bouncer's settings — not because it says the word
+    "bouncer", which every command in the bouncer repo does."""
+
+    def test_prose_about_bouncer_with_a_stray_quote_passes(self):
+        for command in (
+            "git commit -m \"bouncer: don't refuse it",
+            "echo it's the bouncer repo",
+            "cd ~/Code/bouncer && echo it's",
+            "grep -rn bouncer src/ | head; echo it's",
+        ):
+            with self.subTest(command=command):
+                self.assertPassesGuard(command)
+
+    def test_unparseable_naming_a_management_verb_is_refused(self):
+        for command in ("echo it's; bouncer config -e",
+                        "echo it's; bouncer -g policy",
+                        "echo it's; python3 -m bouncer init",
+                        "echo it's; bouncer profile live"):
+            with self.subTest(command=command):
+                self.assertRefused(command, expect="cannot parse it")
+
+    def test_unparseable_naming_a_protected_path_is_refused(self):
+        for command in (f"echo it's; echo x > {self.policy}",
+                        "echo it's; touch ~/.config/bouncer/policy.md"):
+            with self.subTest(command=command):
+                self.assertRefused(command, expect="cannot parse it")
+
+    def test_unparseable_profile_read_passes(self):
+        self.assertPassesGuard("echo it's; bouncer profile --as json")
 
 
 class TestCommandSubstitution(_Fixture):

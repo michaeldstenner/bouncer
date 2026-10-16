@@ -488,17 +488,27 @@ def _shell_segments(command: str) -> list[list[str]]:
     return _command_segments(command) or []
 
 
-# "bouncer" as a word: a command, or a path ending in it — not a directory
-# on the way to something else (`bouncer/classify.py`).
-_BOUNCER_WORD = re.compile(r"(?<![\w.-])bouncer(?![\w./-])")
+# A bouncer invocation that changes bouncer's settings without naming a
+# path: the self-management verbs, and `profile <name>` (a set, not a read).
+_BOUNCER_MANAGEMENT_TEXT = re.compile(
+    r"(?<![\w.-])bouncer\s+(?:(?:-g|--global)\s+)?"
+    r"(?:config|init|policy|review|profile\s+[^\s-])")
 
 
 def _names_bouncer_unreadably(command: str) -> bool:
-    """True when `command` names bouncer but cannot be split into segments, so
-    neither guard can say what it would run. Refused, not passed unread: a
-    lone quote must not be a way past the guards."""
-    return (_command_segments(command) is None
-            and _BOUNCER_WORD.search(command) is not None)
+    """True when `command` cannot be split into segments AND could change
+    bouncer's own settings: it names a protected path, or a bouncer
+    management verb. Refused, not passed unread: a lone quote must not be a
+    way past the guards.
+
+    Not merely the word "bouncer". Every command in the bouncer repo says
+    it, and an unbalanced quote in a commit message or a note about bouncer
+    is not an attempt on its config; that goes to the classifier, or, where
+    there is none, through."""
+    if _command_segments(command) is not None:
+        return False
+    return (_BOUNCER_MANAGEMENT_TEXT.search(command) is not None
+            or _mentions_protected_text(command))
 
 
 _REDIRECT_CHARS = frozenset("<>&")
@@ -985,36 +995,176 @@ def _scanned_files(parts: list[str],
     return ([], paths) if is_patch else (paths, [])
 
 
-# Code that writes a file. Paired with a protected mention on the SAME line
-# of a script, or anywhere in inline code, it is a write to that location.
-# Plain `>` is left out: in most languages it is a comparison.
-_WRITE_HINT = re.compile(
-    r"""open\([^)]*,\s*(?:mode\s*=\s*)?['"][^'"]*[wax+][^'"]*['"]"""
-    r"""|\.open\(\s*(?:mode\s*=\s*)?['"][^'"]*[wax+][^'"]*['"]"""
-    r"|write_text|write_bytes|writeFile|appendFile|createWriteStream"
-    r"|shutil\.(?:copy|move|rmtree)|os\.(?:rename|replace|remove|unlink"
-    r"|rmdir|truncate)|\.unlink\(|\.touch\(|rmtree"
-    r"|>>?\s*['\"]?\S*bouncer|\btee\b|\bsed\s+-i"
+# --- code that writes ---------------------------------------------------------
+#
+# Judged by the TARGET of each write, not by whether a protected path and a
+# write merely appear in the same text. Bouncer's own development is the
+# case that decides it: an edit to classify.py whose new text contains the
+# string ".bouncer/policy.md" writes classify.py, and must not be refused.
+
+# Shell: a line that names a protected location and writes on that line.
+_SHELL_WRITE_HINT = re.compile(
+    r">>?\s*['\"]?\S*bouncer|\btee\b|\bsed\s+-i"
     r"|(?:^|[\s;&|(`'\"])(?:cp|mv|rm|ln|install|dd|truncate|touch|rsync"
     r"|patch)\s"
 )
 
+# Other languages: calls that write, and which part of them is the target.
+#   receiver  the expression before `.method(`  Path(P).write_text(x)
+#   first     the first argument                open(P, "w")
+#   last      the last argument                 shutil.copy(src, P)
+#   all       every argument                    os.rename(P, Q)
+_WRITE_CALLS = (
+    (re.compile(r"\.(?:write_text|write_bytes|touch|unlink|rmdir|chmod"
+                r"|symlink_to|hardlink_to|mkdir)\("), "receiver"),
+    # Path.rename / Path.replace move the receiver to their one argument.
+    # str.replace takes two, and is far commoner: it is not a write.
+    (re.compile(r"\.(?:rename|replace)\("), "move"),
+    (re.compile(r"\.open\(\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]"),
+     "receiver"),
+    (re.compile(r"(?<![\w.])open\((?=[^)]*,\s*(?:mode\s*=\s*)?['\"]"
+                r"[^'\"]*[wax+])"), "first"),
+    (re.compile(r"\bos\.(?:remove|unlink|rmdir|truncate|chmod)\("), "first"),
+    (re.compile(r"\bos\.(?:rename|replace|symlink|link)\("), "all"),
+    (re.compile(r"\bshutil\.copy\w*\("), "last"),
+    (re.compile(r"\bshutil\.(?:move|rmtree)\("), "all"),
+    (re.compile(r"\b(?:writeFile|appendFile|createWriteStream|unlink|rm"
+                r"|truncate)(?:Sync)?\("), "first"),
+    (re.compile(r"\b(?:rename|copyFile|symlink)(?:Sync)?\("), "all"),
+)
+# A call that hands shell text to a shell, inside non-shell code.
+_SHELL_CALL = re.compile(
+    r"\b(?:system|popen|Popen|run|call|check_call|check_output|execSync"
+    r"|spawnSync|exec)\(")
+_ASSIGNMENT = re.compile(
+    r"^\s*(?:const\s+|let\s+|var\s+|my\s+)?\$?([A-Za-z_]\w*)\s*:?=(?!=)"
+    r"\s*(.+)$")
 
-def _code_writes_protected(code: str, *, by_line: bool) -> bool:
-    """Whether code text writes the protected set. Inline code (agent-written
-    for this one call) is judged whole; a script file, which may be a
-    long-standing tool that only READS bouncer config, line by line."""
+
+def _call_args(text: str, start: int) -> list[str]:
+    """The top-level arguments of a call whose `(` ends just before
+    `start`, up to its `)` or the end of the text."""
+    args, current = [], []
+    depth, quote = 0, None
+    for char in text[start:]:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in "'\"":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char == "," and depth == 0:
+            args.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    args.append("".join(current))
+    return [arg for arg in args if arg.strip()]
+
+
+def _write_targets(statement: str) -> list[str]:
+    """The expressions one statement writes to."""
+    targets = []
+    for pattern, where in _WRITE_CALLS:
+        for match in pattern.finditer(statement):
+            head = statement[:match.start()]
+            for sep in ("=", ",", "return ", "await "):
+                position = head.rfind(sep)
+                if position != -1:
+                    head = head[position + len(sep):]
+            if where == "receiver":
+                targets.append(head)
+                continue
+            args = _call_args(statement, match.end())
+            if where == "move":
+                if len(args) == 1:
+                    targets.extend((head, args[0]))
+                continue
+            if not args:
+                continue
+            if where == "first":
+                targets.append(args[0])
+            elif where == "last":
+                targets.append(args[-1])
+            else:
+                targets.extend(args)
+    return targets
+
+
+def _names_word(name: str, text: str) -> bool:
+    return re.search(rf"(?<![\w.]){re.escape(name)}(?!\w)", text) is not None
+
+
+def _code_writes_protected(code: str, *, shell: bool) -> bool:
+    """Whether code text writes the protected set.
+
+    Shell: a line that names a protected location and writes on that line.
+    Anything else: a write whose TARGET names one — directly, or through a
+    variable assigned from an expression that does, followed through
+    further assignments. Shell text handed to `system()` or `subprocess` is
+    judged as shell, on its own line."""
     dirs = [str(d) for d in _protected_dirs()]
     if not _mentions_protected_text(code, dirs):
         return False
-    if not by_line:
-        return bool(_WRITE_HINT.search(code))
-    # Only lines that can mention the protected set are worth the regexes.
     needles = ["bouncer", *dirs]
-    return any(any(n in line for n in needles)
-               and _mentions_protected_text(line, dirs)
-               and _WRITE_HINT.search(line)
-               for line in code.splitlines())
+
+    def mentions(text: str) -> bool:
+        return (any(needle in text for needle in needles)
+                and _mentions_protected_text(text, dirs))
+
+    lines = code.splitlines()
+    if shell:
+        return any(mentions(line) and _SHELL_WRITE_HINT.search(line)
+                   for line in lines)
+
+    statements = [part for line in lines for part in line.split(";")]
+    assignments = [m.groups() for m in map(_ASSIGNMENT.match, statements)
+                   if m]
+    tainted: set[str] = set()
+    for _ in range(4):
+        before = len(tainted)
+        for name, value in assignments:
+            if name not in tainted and (
+                    mentions(value)
+                    or any(_names_word(t, value) for t in tainted)):
+                tainted.add(name)
+        if len(tainted) == before:
+            break
+
+    def protected(target: str) -> bool:
+        return mentions(target) or any(_names_word(t, target)
+                                       for t in tainted)
+
+    for statement in statements:
+        if any(protected(target) for target in _write_targets(statement)):
+            return True
+        if _SHELL_CALL.search(statement) and mentions(statement) \
+                and _SHELL_WRITE_HINT.search(statement):
+            return True
+    return False
+
+
+_SHELL_SUFFIXES = frozenset({".bash", ".dash", ".ksh", ".sh", ".zsh"})
+
+
+def _script_is_shell(path: Path, text: str, runner: str | None) -> bool:
+    """Whether a scanned script is shell: by the interpreter running it, else
+    its shebang, else its suffix. A file exec'd with no shebang is run by
+    the shell."""
+    if runner is not None:
+        return runner in _NESTING_SHELLS
+    first = text.split("\n", 1)[0]
+    if first.startswith("#!"):
+        return any(Path(word).name in _NESTING_SHELLS
+                   for word in first[2:].split())
+    return path.suffix in _SHELL_SUFFIXES or not path.suffix
 
 
 _SCAN_LIMIT = 1 << 20
@@ -1127,13 +1277,20 @@ def _shell_writes_protected_path(command: str, cwd: Path) -> bool:
                 return True
             if reached and ("$" in target or "`" in target):
                 return True
+        argv = _segment_argv(parts)
+        runner = Path(argv[0]).name if argv else None
+        if runner is not None and not _is_interpreter(runner):
+            runner = None
         code = _inline_code(parts, command)
-        if code is not None and _code_writes_protected(code, by_line=False):
+        if code is not None and _code_writes_protected(
+                code, shell=runner in _NESTING_SHELLS):
             return True
         scripts, patches = _scanned_files(parts, here)
-        if any(_code_writes_protected(_read_text(f), by_line=True)
-               for f in scripts):
-            return True
+        for script in scripts:
+            text = _read_text(script)
+            if _code_writes_protected(
+                    text, shell=_script_is_shell(script, text, runner)):
+                return True
         if any(_mentions_protected_text(_read_text(f)) for f in patches):
             return True
         if touches and not _segment_is_read_only(parts, here):
@@ -1184,10 +1341,10 @@ def _management_denial_reason(
         return ("Bouncer policy and configuration management must be run directly "
                 "by the user, outside an agent tool call")
     if _names_bouncer_unreadably(tool_input.get("command", "")):
-        return ("This command names bouncer, but bouncer cannot parse it (an "
-                "unbalanced quote, or nesting too deep), so it cannot tell "
-                "whether it changes bouncer's own settings. Fix the quoting "
-                "and re-issue.")
+        return ("This command names bouncer's own config or settings, but "
+                "bouncer cannot parse it (an unbalanced quote, or nesting too "
+                "deep), so it cannot tell whether it changes them. Fix the "
+                "quoting and re-issue.")
     if _shell_writes_protected_path(tool_input.get("command", ""), cwd):
         return _SHELL_WRITE_REASON
     mutating_tool = any(word in tool_name.lower() for word in _MUTATING_WORDS)
