@@ -11,6 +11,7 @@ from .commands.check    import cmd_check
 from .commands.tools    import cmd_tools
 from .commands.classify import cmd_classify
 from .commands.session_start import cmd_session_start
+from .commands.proposals import cmd_propose, cmd_apply, cmd_revert
 from .commands.review   import cmd_review
 from .commands.abort    import cmd_abort
 from .commands.escalate import cmd_escalate
@@ -252,7 +253,20 @@ def main():
                           help="ignore the review cursor and analyze the retained log")
 
     sub.add_parser("session-start",
-                   help="SessionStart hook: announce when bouncer is off here")
+                   help="SessionStart hook: announce when bouncer is "
+                        "bypassed here")
+
+    p_propose = sub.add_parser(
+        "propose", help="store a policy diff for another project; print "
+                        "its code (applied only by the orchestrator)")
+    p_propose.add_argument("project", help="project dir or name")
+    p_propose.add_argument("diff", help="unified diff file, or - for stdin")
+    p_apply = sub.add_parser(
+        "apply", help="orchestrator only: apply one approved proposal")
+    p_apply.add_argument("code", help="the code `bouncer propose` printed")
+    p_revert = sub.add_parser(
+        "revert", help="orchestrator only: undo one applied proposal")
+    p_revert.add_argument("code", help="the code of the applied proposal")
 
     sub.add_parser("abort",
                    help="abort pending LLM classification in this project → ALLOW")
@@ -303,6 +317,9 @@ def main():
         "classify": cmd_classify,
         "review":   cmd_review,
         "session-start": cmd_session_start,
+        "propose":  cmd_propose,
+        "apply":    cmd_apply,
+        "revert":   cmd_revert,
         "abort":    cmd_abort,
         "escalate": cmd_escalate,
         "profile":  cmd_profile,

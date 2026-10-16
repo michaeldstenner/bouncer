@@ -481,6 +481,63 @@ session. At any time `bouncer status` prints `bouncer BYPASSED`, and
 an unknown value and, being a non-empty string, counted as **true**: the
 classifier ran. Upgrade bouncer before setting it.
 
+## Approved policy edits (`propose` / `apply` / `revert`)
+
+A working agent never edits a policy — its own or anyone's. The
+**orchestrator** may change *another* project's `policy.md`, but only a
+change the user approved in the moment, and only that exact change.
+
+```
+bouncer propose <project> <diff|->   # store it; print an 8-char code + diff
+# the orchestrator shows the user the diff and the code; the user says yes
+bouncer apply <code>                 # write exactly that change
+bouncer revert <code>                # put back what was there before
+```
+
+Enable it by naming the orchestrator in the **user** config (a project
+config cannot name itself):
+
+```yaml
+orchestrators: [~/Code/hobbes]
+```
+
+**Who may apply.** The process doing the write must descend from a Claude
+Code session (a process named `claude`) whose launch directory is an
+orchestrator, with no second `claude` above it. A session's launch
+directory is the `claude` process's own cwd, which the agent inside cannot
+change — `cd` moves only its shell. So neither the cwd nor the hook payload
+(which an agent can forge by piping JSON into the hook script) is trusted;
+the process tree is. Refused: a worker's session, a session nested inside
+another (`claude -p` started by an agent in the orchestrator's directory),
+and any process with no session above it — a person at a terminal, who
+edits the policy directly instead, or a process detached from its session.
+The check is made in the code that writes, so the CLI, a Python import and
+a forged payload all meet it; the hook also refuses `bouncer apply|revert`
+from a non-orchestrator before it runs.
+
+**The limit.** A session launched fresh in the orchestrator's directory
+*outside* any agent's process tree (through tmux, say) is
+indistinguishable from the orchestrator. Approval travels through the
+orchestrator by design, as with the airlock at home; a confirmation channel
+the orchestrator cannot author (a Polly button) is the planned upgrade, and
+`_approval_ok` in `bouncer/proposals.py` is where it plugs in.
+
+**What may be written.** Only `<project>/.bouncer/policy.md` of an
+initialized project that is not an orchestrator, as a regular file. Never
+`policy.local.md` (the user's private layer), any `config*.yaml`,
+`~/.config/bouncer/`, profile state, or the proposal store. `bouncer
+review` stays user-only.
+
+**Integrity.** The code is a fingerprint of the target, the text it starts
+from, the text it ends at, and the diff the user was shown. `apply`
+refuses: a code whose stored proposal no longer matches it (altered after
+proposing), a code already used (one code, one approval, one apply), and a
+policy that changed since it was proposed. `revert` works once per code,
+and only while the policy still holds what `apply` wrote. Every apply and
+revert is appended to `~/.local/share/bouncer/proposals/log.jsonl` (time,
+code, target, hashes, and the orchestrator that did it). The store is in
+the guard's protected set: no agent may write it.
+
 ## Session profiles (`live` / `solo`)
 
 A profile changes the **plumbing, not the judgment**. `policy.md` remains the

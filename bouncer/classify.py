@@ -694,14 +694,20 @@ HELPER_SCRIPTS_DIR = Path.home() / ".helpers" / "scripts"
 _PROTECTED_TEXT = re.compile(
     r"\.bouncer/(?:config(?:\.local)?\.yaml|policy(?:\.local)?\.md)"
     r"|\.config/bouncer(?![\w.-])"
-    r"|\.local/share/bouncer/profile(?![\w.-])"
+    r"|\.local/share/bouncer/(?:profile|proposals)(?![\w.-])"
 )
 
 
 def _protected_dirs() -> list[Path]:
     """Directories protected whole. Read at call time so a patched
-    PROFILE_DIR (tests) is honoured."""
-    dirs = [Path.home() / ".config" / "bouncer", Path(_profile_mod.PROFILE_DIR)]
+    PROFILE_DIR or PROPOSALS_DIR (tests) is honoured. The proposal store
+    is here so no agent can alter a stored diff or its apply log."""
+    from . import proposals as _proposals
+    state = Path.home() / ".local" / "share" / "bouncer"
+    dirs = [Path.home() / ".config" / "bouncer", Path(_profile_mod.PROFILE_DIR),
+            Path(_proposals.PROPOSALS_DIR),
+            # The standard places too, whatever the modules point at.
+            state / "profile", state / "proposals"]
     out = []
     for d in dirs:
         out.append(d.absolute())
@@ -1333,6 +1339,26 @@ def _string_values(tool_input: dict) -> list[str]:
     return values
 
 
+_ORCHESTRATOR_COMMANDS = frozenset({"apply", "revert"})
+
+
+def _orchestrator_command_refusal(command: str) -> str | None:
+    """Refuse `bouncer apply|revert` from any session that is not the
+    orchestrator, before it runs. Defence in depth: bouncer.proposals makes
+    the same check where it writes, which is what holds against an import
+    or a forged payload. The process walk only happens when such a command
+    is actually there."""
+    if not any(_segment_bouncer_subcommand(segment) in _ORCHESTRATOR_COMMANDS
+               for segment in _shell_segments(command)):
+        return None
+    from . import proposals as _proposals
+    try:
+        _proposals.check_caller()
+    except _proposals.Refused as exc:
+        return str(exc)
+    return None
+
+
 def _management_denial_reason(
     tool_name: str,
     tool_input: dict,
@@ -1341,6 +1367,10 @@ def _management_denial_reason(
     if _is_bouncer_self_management_command(tool_input.get("command", "")):
         return ("Bouncer policy and configuration management must be run directly "
                 "by the user, outside an agent tool call")
+    orchestrator_refusal = _orchestrator_command_refusal(
+        tool_input.get("command", ""))
+    if orchestrator_refusal:
+        return orchestrator_refusal
     if _names_bouncer_unreadably(tool_input.get("command", "")):
         return ("This command names bouncer's own config or settings, but "
                 "bouncer cannot parse it (an unbalanced quote, or nesting too "
