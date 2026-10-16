@@ -442,41 +442,44 @@ no project policy, no user-wide policy, no LLM call. It does not opt out of
 the guard. A rule that must bind an opted-out or uninitialized tree has to
 be a guard, not policy text.
 
-## `enabled`: `true`, `false`, `off`
+## `enabled`: `true`, `false`, `bypass`
 
 | Value | Classifier | Hard guard | Log | Meaning |
 |---|---|---|---|---|
 | `true` | yes | yes | yes | Normal. (default) |
 | `false` | no | **yes** | guard denials | Opted out of the classifier only. |
-| `off` | no | **no** | **no** | No hook at all, as if bouncer were not installed. |
+| `bypass` | no | **no** | **no** | No hook at all, as if bouncer were not installed. |
 
-`off` is the real off switch. The hook exits before doing anything: no
+`bypass` is the real off switch. The hook exits before doing anything: no
 guard, no policy, no LLM call, no log line (the per-prompt break marker
 included), no state, no output.
 
-**Spell it `off`.** YAML reads a bare `off` as false, so bouncer reads the
-word from the `enabled:` line itself, before YAML does: `off`, `"off"`,
-`OFF`, with or without a trailing comment. Only the word `off` — `no` still
-means `false`.
+**Plain YAML, no exceptions.** `bypass` is a string, read like any other
+value (`bypass`, `"bypass"`, `BYPASS`). `off`, `no` and `false` are all
+YAML false and mean `enabled: false`: classifier off, guard **on**.
 
-**Where, and precedence.** In `~/.config/bouncer/config.yaml`, off is off
-**everywhere**, whatever any project says. In a project's
-`.bouncer/config.yaml` or `config.local.yaml`, off covers that tree only
+**Where, and precedence.** In `~/.config/bouncer/config.yaml`, bypass
+applies **everywhere**, whatever any project says. In a project's
+`.bouncer/config.yaml` or `config.local.yaml`, bypass covers that tree only
 (the nearest `.bouncer/`), and nothing outside it.
 
 **Who.** Only a person: agents can write no bouncer config. But while a
-tree is off, nothing guards it — an agent working there could write any
-file, bouncer's config included, here or in another project, or the
-global switch. That is the risk `off` takes on; use it where you are
+tree is bypassed, nothing guards it — an agent working there could write
+any file, bouncer's config included, here or in another project, or the
+global switch. That is the risk `bypass` takes on; use it where you are
 watching.
 
 **Never silent.** With the SessionStart hook installed (`bouncer -g init`
-wires `bouncer session-start`), a session that starts in an off tree shows
-one line: `bouncer is OFF here (enabled: off in <file>)`, and the agent is
-told the same. Turning it off mid-session is announced at the next session.
-At any time `bouncer status` prints `bouncer OFF`, and `bouncer profile`
-reports `off` (`--as json`: `{"profile": "off", "off": true,
-"off_source": …}`; `--as tmux` / `ansi`: white on red).
+wires `bouncer session-start`), a session that starts in a bypassed tree
+shows one line: `bouncer is BYPASSED here (enabled: bypass in <file>)`, and
+the agent is told the same. Setting it mid-session is announced at the next
+session. At any time `bouncer status` prints `bouncer BYPASSED`, and
+`bouncer profile` reports `bypass` (`--as json`: `{"profile": "bypass",
+"bypass": true, "bypass_source": …}`; `--as tmux` / `ansi`: white on red).
+
+**Before this existed** (bouncer before 2026-10-15), `enabled: bypass` was
+an unknown value and, being a non-empty string, counted as **true**: the
+classifier ran. Upgrade bouncer before setting it.
 
 ## Session profiles (`live` / `solo`)
 

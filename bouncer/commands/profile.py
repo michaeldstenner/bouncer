@@ -11,7 +11,7 @@ from pathlib import Path
 from ..colors import RESET, BOLD, GREEN, RED, YELLOW, DIM
 from ..config import (_config_layers, _find_bouncer_dir, known_profile_names,
                       project_has_bouncer, resolve_profile, _merged_config,
-                      off_source)
+                      bypass_source)
 from .. import profile as _profile
 
 # One style per effective state, in each output vocabulary. Green `live`,
@@ -30,14 +30,14 @@ _STYLES = {
         "live":     ("\033[32m", "\033[0m"),
         "solo":     ("\033[31m", "\033[0m"),
         "degraded": ("\033[30;43;1m", "\033[0m"),
-        # `enabled: off`: no gate at all. The loudest style there is.
-        "off":      ("\033[37;41;1m", "\033[0m"),
+        # `enabled: bypass`: no gate at all. The loudest style there is.
+        "bypass":   ("\033[37;41;1m", "\033[0m"),
     },
     "tmux": {
         "live":     ("#[fg=green]", "#[default]"),
         "solo":     ("#[fg=red]", "#[default]"),
         "degraded": ("#[bg=yellow,fg=black,bold]", "#[default]"),
-        "off":      ("#[bg=red,fg=white,bold]", "#[default]"),
+        "bypass":   ("#[bg=red,fg=white,bold]", "#[default]"),
     },
 }
 
@@ -82,20 +82,20 @@ def cmd_profile(args):
     name = getattr(args, "name", None)
     as_format = getattr(args, "as_format", "plain")
 
-    # `enabled: off` outranks any profile: nothing runs, so say exactly that,
-    # in every vocabulary, before anything about live or solo.
-    off = off_source(cwd)
-    if off is not None and name is None:
+    # `enabled: bypass` outranks any profile: nothing runs, so say exactly
+    # that, in every vocabulary, before anything about live or solo.
+    bypassed = bypass_source(cwd)
+    if bypassed is not None and name is None:
         if as_format == "json":
             import json as _json
-            print(_json.dumps({"profile": "off", "off": True,
-                               "off_source": str(off)}))
+            print(_json.dumps({"profile": "bypass", "bypass": True,
+                               "bypass_source": str(bypassed)}))
         elif as_format in _STYLES:
-            open_, close = _STYLES[as_format]["off"]
-            print(f"{open_}off{close}", end="")
+            open_, close = _STYLES[as_format]["bypass"]
+            print(f"{open_}bypass{close}", end="")
         else:
-            print(f"{RED}{BOLD}off{RESET}  bouncer does nothing here "
-                  f"(enabled: off in {off})")
+            print(f"{RED}{BOLD}BYPASSED{RESET}  bouncer does nothing here "
+                  f"(enabled: bypass in {bypassed})")
         return
 
     project_dir = _find_bouncer_dir(cwd)

@@ -11,7 +11,7 @@ from ..colors import RESET, BOLD, DIM, YELLOW, DECISION_COLORS, WHITE
 from ..log import log_break
 from ..config import (
     USER_LOG_FILE,
-    off_source,
+    bypass_source,
     project_log_file,
     project_has_bouncer,
     _merged_config,
@@ -125,8 +125,9 @@ def cmd_log(args):
             hook_input = json.load(sys.stdin)
             cwd = hook_input.get("cwd")
             cwd_path = Path(cwd) if cwd else None
-            # Off writes no log line, the prompt-break marker included.
-            if project_has_bouncer(cwd_path) and off_source(cwd_path) is None:
+            # Bypass writes no log line, the prompt-break marker included.
+            if (project_has_bouncer(cwd_path)
+                    and bypass_source(cwd_path) is None):
                 log_break(cwd, _merged_config(cwd_path))
         except Exception:
             pass

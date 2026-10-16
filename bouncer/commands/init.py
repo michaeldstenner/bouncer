@@ -96,8 +96,8 @@ def _install_claude_code():
     ):
         submit.append({"hooks": [{"type": "command", "command": "bouncer log --break"}]})
 
-    # SessionStart: one visible line when bouncer is OFF (`enabled: off`) for
-    # the session's directory, and nothing otherwise.
+    # SessionStart: one visible line when bouncer is BYPASSED (`enabled:
+    # bypass`) for the session's directory, and nothing otherwise.
     start = hooks.setdefault("SessionStart", [])
     announce = "bouncer session-start"
     if not any(

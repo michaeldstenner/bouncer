@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""`enabled: off` — bouncer off, as if the hook were not installed.
+"""`enabled: bypass` — bouncer bypassed, as if the hook were not installed.
 
-Not `enabled: false`, which turns off the classifier and keeps the hard
-guard. Off is nothing at all: no guard, no classifier, no log line, no
-state, no output. Only a human sets it (agents can write no bouncer
-config), and it is never silent: a SessionStart line, and `off` in
-`bouncer profile` / `bouncer status`.
+Not `enabled: false` (nor `off` or `no`, which YAML reads as false), all
+of which turn off the classifier and keep the hard guard. Bypass is
+nothing at all: no guard, no classifier, no log line, no state, no
+output. Only a human sets it (agents can write no bouncer config), and it
+is never silent: a SessionStart line, and `bypass` in `bouncer profile` /
+`bouncer status`.
 
 Every config here is a fixture in a temp dir.
 """
@@ -32,7 +33,7 @@ from bouncer.commands.status import cmd_status
 _GUARD = "cannot be modified"
 
 
-class _OffFixture(unittest.TestCase):
+class _Fixture(unittest.TestCase):
     """A user dir and two projects, A and B, all in a temp dir."""
 
     def setUp(self):
@@ -104,9 +105,9 @@ class _OffFixture(unittest.TestCase):
     def assertNothingRan(self, result):
         out, err, code, calls, catalog = result
         self.assertEqual((out, err, code), ("", "", 0))
-        self.assertEqual(calls, [], "LLM called while off")
-        self.assertEqual(catalog, [], "state written while off")
-        self.assertEqual(self.logs(), [], "log written while off")
+        self.assertEqual(calls, [], "LLM called while bypassed")
+        self.assertEqual(catalog, [], "state written while bypassed")
+        self.assertEqual(self.logs(), [], "log written while bypassed")
 
     def assertGuarded(self, result):
         out, err, code, _, _ = result
@@ -114,74 +115,77 @@ class _OffFixture(unittest.TestCase):
         self.assertIn(_GUARD, err)
 
 
-class TestProjectOff(_OffFixture):
+class TestProjectBypass(_Fixture):
 
-    def test_off_is_no_hook_at_all_not_even_the_guard(self):
-        self.set_project(self.a, "enabled: off\n")
+    def test_bypass_is_no_hook_at_all_not_even_the_guard(self):
+        self.set_project(self.a, "enabled: bypass\n")
         self.assertNothingRan(self.hook(self.protected_write(self.a), self.a))
         self.assertNothingRan(self.hook("git push", self.a))
 
-    def test_spellings_of_off(self):
-        for text in ('enabled: "off"\n', "enabled: 'off'\n", "enabled: OFF\n",
-                     "enabled: off   # Michael, 2026-10-15\n",
-                     "tools: all\nenabled: Off\n"):
+    def test_spellings_of_bypass(self):
+        for text in ('enabled: "bypass"\n', "enabled: 'bypass'\n",
+                     "enabled: BYPASS\n",
+                     "enabled: bypass   # Michael, 2026-10-15\n",
+                     "tools: all\nenabled: Bypass\n"):
             with self.subTest(text=text):
                 self.set_project(self.a, text)
                 self.assertNothingRan(self.hook("git push", self.a))
 
-    def test_local_config_can_turn_a_project_off(self):
-        self.set_project(self.a, "enabled: off\n", name="config.local.yaml")
+    def test_local_config_can_bypass_a_project(self):
+        self.set_project(self.a, "enabled: bypass\n", name="config.local.yaml")
         self.assertNothingRan(self.hook("git push", self.a))
 
-    def test_false_and_no_keep_the_guard(self):
-        # YAML reads `off` as false too; only the word `off` itself is off.
-        for text in ("enabled: false\n", "enabled: no\n"):
+    def test_off_false_and_no_keep_the_guard(self):
+        # Plain YAML: `off`, `no` and `false` are all false — the classifier
+        # is off, the hard guard is on. No reading around the spec.
+        for text in ("enabled: false\n", "enabled: no\n", "enabled: off\n",
+                     "enabled: OFF\n", "enabled: Off\n"):
             with self.subTest(text=text):
                 self.set_project(self.a, text)
                 self.assertGuarded(self.hook(self.protected_write(self.a),
                                              self.a))
 
-    def test_lookalikes_are_not_off(self):
-        for text in ("# enabled: off\nenabled: true\n",
-                     "enabled: offline\n",
-                     "llm:\n  enabled: off\n"):
+    def test_lookalikes_are_not_bypass(self):
+        for text in ("# enabled: bypass\nenabled: true\n",
+                     "enabled: bypassed\n",
+                     "llm:\n  enabled: bypass\n"):
             with self.subTest(text=text):
                 self.set_project(self.a, text)
                 self.assertGuarded(self.hook(self.protected_write(self.a),
                                              self.a))
 
-    def test_project_off_is_that_tree_only(self):
-        self.set_project(self.a, "enabled: off\n")
+    def test_project_bypass_is_that_tree_only(self):
+        self.set_project(self.a, "enabled: bypass\n")
         self.assertGuarded(self.hook(self.protected_write(self.a), self.b))
 
     def test_pure_classification_agrees(self):
-        self.set_project(self.a, "enabled: off\n")
+        self.set_project(self.a, "enabled: bypass\n")
         decision, reason, action, _, _ = classify_mod.get_classification(
             "Bash", {"command": self.protected_write(self.a)}, str(self.a))
         self.assertEqual((decision, action), ("SKIP", None))
-        self.assertIn("enabled: off", reason)
+        self.assertIn("enabled: bypass", reason)
 
 
-class TestGlobalOff(_OffFixture):
+class TestGlobalBypass(_Fixture):
 
-    def test_global_off_is_off_everywhere(self):
-        self.set_user("enabled: off\n")
+    def test_global_bypass_is_bypass_everywhere(self):
+        self.set_user("enabled: bypass\n")
         for cwd in (self.a, self.b, self.root):
             with self.subTest(cwd=cwd.name):
                 self.assertNothingRan(
                     self.hook(self.protected_write(self.a), cwd))
 
-    def test_global_off_wins_over_a_project_saying_true(self):
-        self.set_user("enabled: off\n")
+    def test_global_bypass_wins_over_a_project_saying_true(self):
+        self.set_user("enabled: bypass\n")
         self.set_project(self.a, "enabled: true\n")
         self.assertNothingRan(self.hook("git push", self.a))
 
-    def test_global_false_is_not_off(self):
-        self.set_user("enabled: false\n")
+    def test_global_false_and_off_are_not_bypass(self):
+        self.set_user("enabled: off\n")
         self.assertGuarded(self.hook(self.protected_write(self.b), self.a))
 
 
-class TestNeverSilent(_OffFixture):
+class TestNeverSilent(_Fixture):
 
     def run_cmd(self, fn, args, stdin=""):
         out = io.StringIO()
@@ -189,12 +193,12 @@ class TestNeverSilent(_OffFixture):
             fn(args)
         return out.getvalue()
 
-    def test_session_start_announces_off(self):
-        self.set_project(self.a, "enabled: off\n")
+    def test_session_start_announces_bypass(self):
+        self.set_project(self.a, "enabled: bypass\n")
         out = self.run_cmd(cmd_session_start, None,
                            json.dumps({"cwd": str(self.a)}))
         message = json.loads(out)
-        self.assertIn("bouncer is OFF here", message["systemMessage"])
+        self.assertIn("bouncer is BYPASSED here", message["systemMessage"])
         self.assertIn(str(self.a / ".bouncer" / "config.yaml"),
                       message["systemMessage"])
         self.assertEqual(message["hookSpecificOutput"]["hookEventName"],
@@ -206,7 +210,7 @@ class TestNeverSilent(_OffFixture):
         self.assertEqual(out, "")
 
     def test_session_start_names_the_global_file(self):
-        self.set_user("enabled: off\n")
+        self.set_user("enabled: bypass\n")
         out = self.run_cmd(cmd_session_start, None,
                            json.dumps({"cwd": str(self.root)}))
         self.assertIn(str(self.user / "config.yaml"),
@@ -219,23 +223,24 @@ class TestNeverSilent(_OffFixture):
             as_format = fmt
         return self.run_cmd(cmd_profile, _Args())
 
-    def test_profile_says_off_in_every_format(self):
-        self.set_project(self.a, "enabled: off\n")
+    def test_profile_says_bypass_in_every_format(self):
+        self.set_project(self.a, "enabled: bypass\n")
         state = json.loads(self.profile("json"))
-        self.assertEqual((state["profile"], state["off"]), ("off", True))
-        self.assertIn("config.yaml", state["off_source"])
-        self.assertIn("off", self.profile("tmux"))
-        self.assertIn("off", self.profile("ansi"))
-        self.assertIn("enabled: off", self.profile("plain"))
+        self.assertEqual((state["profile"], state["bypass"]),
+                         ("bypass", True))
+        self.assertIn("config.yaml", state["bypass_source"])
+        self.assertIn("bypass", self.profile("tmux"))
+        self.assertIn("bypass", self.profile("ansi"))
+        self.assertIn("enabled: bypass", self.profile("plain"))
 
-    def test_status_says_off(self):
-        self.set_project(self.a, "enabled: off\n")
+    def test_status_says_bypassed(self):
+        self.set_project(self.a, "enabled: bypass\n")
         with patch("pathlib.Path.cwd", return_value=self.a):
             out = self.run_cmd(cmd_status, type("A", (), {"verbose": False}))
-        self.assertIn("bouncer OFF", out)
+        self.assertIn("bouncer BYPASSED", out)
 
-    def test_prompt_break_marker_not_written_when_off(self):
-        self.set_project(self.a, "enabled: off\n")
+    def test_prompt_break_marker_not_written_when_bypassed(self):
+        self.set_project(self.a, "enabled: bypass\n")
 
         class _Args:
             mark_break = True

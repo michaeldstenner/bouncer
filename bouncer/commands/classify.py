@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from ..classify import run_classify
-from ..config import off_source
+from ..config import bypass_source
 from ..tool_catalog import record_tool_observation
 
 
@@ -36,10 +36,10 @@ def cmd_classify(args):
         sys.exit(0)  # fail open
 
     cwd        = hook_input.get("cwd", "")
-    # `enabled: off`: as if the hook were not installed. Before anything
+    # `enabled: bypass`: as if the hook were not installed. Before anything
     # else, including the tool-catalog write below: no guard, no classifier,
     # no log line, no state, no output.
-    if off_source(Path(cwd) if cwd else Path.cwd()) is not None:
+    if bypass_source(Path(cwd) if cwd else Path.cwd()) is not None:
         sys.exit(0)
 
     tool_name  = hook_input.get("tool_name", "unknown")
