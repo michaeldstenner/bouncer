@@ -97,6 +97,12 @@ def _probe_llm(config: dict) -> None:
 
 def cmd_status(args):
     cwd    = Path.cwd()
+    from ..config import off_source
+    off = off_source(cwd)
+    if off is not None:
+        print(f"{RED}● bouncer OFF{RESET}  enabled: off in {off}")
+        print("  no hard guard, no policy, no log: the hook does nothing here")
+        return
     config = _merged_config(cwd)
 
     if getattr(args, "verbose", False):

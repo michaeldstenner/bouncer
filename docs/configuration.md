@@ -442,6 +442,42 @@ no project policy, no user-wide policy, no LLM call. It does not opt out of
 the guard. A rule that must bind an opted-out or uninitialized tree has to
 be a guard, not policy text.
 
+## `enabled`: `true`, `false`, `off`
+
+| Value | Classifier | Hard guard | Log | Meaning |
+|---|---|---|---|---|
+| `true` | yes | yes | yes | Normal. (default) |
+| `false` | no | **yes** | guard denials | Opted out of the classifier only. |
+| `off` | no | **no** | **no** | No hook at all, as if bouncer were not installed. |
+
+`off` is the real off switch. The hook exits before doing anything: no
+guard, no policy, no LLM call, no log line (the per-prompt break marker
+included), no state, no output.
+
+**Spell it `off`.** YAML reads a bare `off` as false, so bouncer reads the
+word from the `enabled:` line itself, before YAML does: `off`, `"off"`,
+`OFF`, with or without a trailing comment. Only the word `off` — `no` still
+means `false`.
+
+**Where, and precedence.** In `~/.config/bouncer/config.yaml`, off is off
+**everywhere**, whatever any project says. In a project's
+`.bouncer/config.yaml` or `config.local.yaml`, off covers that tree only
+(the nearest `.bouncer/`), and nothing outside it.
+
+**Who.** Only a person: agents can write no bouncer config. But while a
+tree is off, nothing guards it — an agent working there could write any
+file, bouncer's config included, here or in another project, or the
+global switch. That is the risk `off` takes on; use it where you are
+watching.
+
+**Never silent.** With the SessionStart hook installed (`bouncer -g init`
+wires `bouncer session-start`), a session that starts in an off tree shows
+one line: `bouncer is OFF here (enabled: off in <file>)`, and the agent is
+told the same. Turning it off mid-session is announced at the next session.
+At any time `bouncer status` prints `bouncer OFF`, and `bouncer profile`
+reports `off` (`--as json`: `{"profile": "off", "off": true,
+"off_source": …}`; `--as tmux` / `ansi`: white on red).
+
 ## Session profiles (`live` / `solo`)
 
 A profile changes the **plumbing, not the judgment**. `policy.md` remains the

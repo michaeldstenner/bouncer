@@ -96,6 +96,16 @@ def _install_claude_code():
     ):
         submit.append({"hooks": [{"type": "command", "command": "bouncer log --break"}]})
 
+    # SessionStart: one visible line when bouncer is OFF (`enabled: off`) for
+    # the session's directory, and nothing otherwise.
+    start = hooks.setdefault("SessionStart", [])
+    announce = "bouncer session-start"
+    if not any(
+        any(x.get("command") == announce for x in h.get("hooks", []))
+        for h in start
+    ):
+        start.append({"hooks": [{"type": "command", "command": announce}]})
+
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     print(f"  {GREEN}Installed{RESET} {hook_script}")
     print(f"  {GREEN}Patched{RESET}   {settings_path}")

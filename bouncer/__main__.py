@@ -10,6 +10,7 @@ from .commands.log      import cmd_log
 from .commands.check    import cmd_check
 from .commands.tools    import cmd_tools
 from .commands.classify import cmd_classify
+from .commands.session_start import cmd_session_start
 from .commands.review   import cmd_review
 from .commands.abort    import cmd_abort
 from .commands.escalate import cmd_escalate
@@ -250,6 +251,9 @@ def main():
     p_review.add_argument("--all-history", action="store_true",
                           help="ignore the review cursor and analyze the retained log")
 
+    sub.add_parser("session-start",
+                   help="SessionStart hook: announce when bouncer is off here")
+
     sub.add_parser("abort",
                    help="abort pending LLM classification in this project → ALLOW")
 
@@ -298,6 +302,7 @@ def main():
         "tools":    cmd_tools,
         "classify": cmd_classify,
         "review":   cmd_review,
+        "session-start": cmd_session_start,
         "abort":    cmd_abort,
         "escalate": cmd_escalate,
         "profile":  cmd_profile,

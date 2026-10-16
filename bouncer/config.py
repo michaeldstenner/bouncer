@@ -1,5 +1,6 @@
 import fnmatch
 import hashlib
+import re
 import sys
 from pathlib import Path
 from .yaml import MicroYAML, MicroYAMLError
@@ -603,6 +604,41 @@ def _find_bouncer_dir(cwd: Path | None = None) -> Path | None:
 def project_has_bouncer(cwd: Path | None = None) -> bool:
     d = _find_bouncer_dir(cwd)
     return d is not None and (d / "config.yaml").exists()
+
+
+# `enabled: off` — bouncer is OFF: the hook does nothing at all, as if it
+# were not installed. Read from the `enabled:` line itself, before YAML sees
+# it, because YAML reads a bare `off` as false — which would make it the
+# same as `enabled: false` (classifier off, hard guard ON), the opposite of
+# what was written. Only the word `off`, quoted or not, any case: `no`
+# still means false. No config on mini4 used `off` before this.
+_ENABLED_OFF = re.compile(
+    r"""^enabled[ \t]*:[ \t]*(["']?)off\1[ \t]*(?:\#.*)?$""",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def _sets_off(path: Path) -> bool:
+    try:
+        return _ENABLED_OFF.search(path.read_text(encoding="utf-8")) is not None
+    except OSError:
+        return False
+
+
+def off_source(cwd: Path | None = None) -> Path | None:
+    """The config file that turns bouncer OFF for `cwd`, or None.
+
+    Precedence: the user-scope file wins — off there is off everywhere,
+    whatever any project says. Otherwise the nearest project's config.yaml
+    or config.local.yaml, which turns off that tree and nothing else. Only
+    a human can set either: agents can write no bouncer config at all."""
+    if _sets_off(USER_CONFIG_FILE):
+        return USER_CONFIG_FILE
+    d = _find_bouncer_dir(cwd)
+    if d is not None:
+        for name in ("config.yaml", "config.local.yaml"):
+            if _sets_off(d / name):
+                return d / name
+    return None
 
 
 def project_key(project_dir: Path) -> str:

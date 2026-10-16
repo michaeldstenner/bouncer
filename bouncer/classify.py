@@ -7,7 +7,8 @@ import sys
 import time
 from pathlib import Path
 
-from .config import _merged_config, project_has_bouncer, project_log_file, _find_bouncer_dir, tool_intercepted
+from .config import (_merged_config, project_has_bouncer, project_log_file,
+                     _find_bouncer_dir, tool_intercepted, off_source)
 from .log import log_decision
 from .escalation_cache import record_attempt, was_attempted, strip_escalate_prefix, parse_escalation
 from .escalation_grant import record_denial, arm_escalation, take_grant
@@ -1438,6 +1439,11 @@ def get_classification(
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
 
+    off = off_source(cwd_path)
+    if off is not None:
+        return ("SKIP", f"bouncer is off (enabled: off in {off})",
+                None, None, None)
+
     # The hard guard first, armed tree or not: "agents never edit bouncer
     # config" holds everywhere, not only where someone ran `bouncer init`.
     management_denial = _management_denial_reason(tool_name, tool_input, cwd_path)
@@ -1527,6 +1533,11 @@ def run_classify(
     and EXITS the process.
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
+
+    # `enabled: off`: nothing runs at all, not even the guard. (cmd_classify
+    # checks first; this covers in-process callers.)
+    if off_source(cwd_path) is not None:
+        sys.exit(0)
 
     # Initialized or not, the guards below run. Only what follows them
     # differs: an uninitialized tree (no .bouncer/config.yaml anywhere up to

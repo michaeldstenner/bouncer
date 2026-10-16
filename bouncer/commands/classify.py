@@ -1,7 +1,9 @@
 import json
 import sys
+from pathlib import Path
 
 from ..classify import run_classify
+from ..config import off_source
 from ..tool_catalog import record_tool_observation
 
 
@@ -33,9 +35,15 @@ def cmd_classify(args):
         print(f"bouncer classify: failed to parse stdin: {e}", file=sys.stderr)
         sys.exit(0)  # fail open
 
+    cwd        = hook_input.get("cwd", "")
+    # `enabled: off`: as if the hook were not installed. Before anything
+    # else, including the tool-catalog write below: no guard, no classifier,
+    # no log line, no state, no output.
+    if off_source(Path(cwd) if cwd else Path.cwd()) is not None:
+        sys.exit(0)
+
     tool_name  = hook_input.get("tool_name", "unknown")
     tool_input = hook_input.get("tool_input", {})
-    cwd        = hook_input.get("cwd", "")
     session_id = hook_input.get("session_id", "unknown")
     fmt        = getattr(args, "format", "json")
     harness    = _infer_harness(hook_input, fmt)
