@@ -34,10 +34,10 @@ if [[ "$1" != "-c" ]]; then
     exec "$_REAL_BASH" "$@"
 fi
 
-# Every bash -c goes to bouncer, armed tree or not: the hard guard (agents
-# never edit bouncer config) holds everywhere, and an unarmed tree also gets
-# the user-wide policy as a deny-only check. Bouncer answers nothing for a
-# call it does not refuse, which falls through to the real bash below.
+# Every bash -c goes to bouncer, initialized tree or not: the hard guard
+# (agents never edit bouncer config) holds everywhere. Bouncer answers
+# nothing for a call it does not refuse, which falls through to the real
+# bash below.
 
 export BOUNCER_INTERNAL_ACTIVE=1
 

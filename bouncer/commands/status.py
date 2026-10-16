@@ -119,13 +119,13 @@ def cmd_status(args):
         return
 
     if not has_proj:
-        # The hard guard runs everywhere; `unarmed` says what else does.
-        if config.get("unarmed", "deny") == "deny":
-            mode = "guard + user policy (deny-only)"
+        # The hard guard runs everywhere; `uninitialized` says what else does.
+        if config.get("uninitialized", "disabled") == "blocked":
+            mode = "every tool call refused (uninitialized: blocked)"
         else:
-            mode = "guard only"
-        print(f"{YELLOW}○ no project config{RESET}  {mode}  "
-              f"{DIM}(run 'bouncer init' for a project policy){RESET}")
+            mode = "guard only, like enabled: false"
+        print(f"{YELLOW}○ not initialized{RESET}  {mode}  "
+              f"{DIM}(run 'bouncer init'){RESET}")
         print(f"  integrations: {format_installed_harnesses()}")
         return
 

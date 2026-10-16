@@ -369,10 +369,10 @@ The shim intercepts `bash -c "<command>"`, passes the command to `bouncer
 classify` (plain-text protocol), and runs the real `/bin/bash` only when
 bouncer returns `allow`. It also:
 
-- **Always asks bouncer**, armed tree or not. In a tree with no
-  `.bouncer/config.yaml` bouncer still applies the hard guard, and (unless
-  `unarmed: guard`) the user-wide policy as a deny-only check; anything it
-  does not refuse comes back empty and the shim runs it.
+- **Always asks bouncer**, initialized tree or not. In a tree with no
+  `.bouncer/config.yaml` bouncer still applies the hard guard (and refuses
+  everything under `uninitialized: blocked`); anything it does not refuse
+  comes back empty and the shim runs it.
 - **Recursion guard** via `BOUNCER_INTERNAL_ACTIVE`: once a command has been
   classified, the sub-shells it spawns are not re-intercepted.
 

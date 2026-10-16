@@ -3,8 +3,10 @@
 
 Two gaps, each tested red-then-green:
 
-1. The guard only ran where a `.bouncer/config.yaml` was found. An unarmed
-   tree got no guard, and no user-wide policy either.
+1. The guard only ran where a `.bouncer/config.yaml` was found. An
+   uninitialized tree got no guard at all. It now gets the guard, and
+   whatever user-scope `uninitialized:` says: `disabled` (default, exactly
+   like `enabled: false`) or `blocked` (every call refused).
 2. The guard matched command words (cp, sed, tee, a `>`...). Any other way
    to write a file -- an interpreter, dd, curl -o, git checkout, a script
    -- went past it, and in a lane with the LLM off nothing stood behind it.
@@ -283,13 +285,79 @@ class TestReadsStillPass(_Fixture):
         self.assertPassesGuard("python3 -m unittest test_bouncer")
 
 
+class TestCommandSubstitution(_Fixture):
+    """`$(...)` and backticks. Two failures on 2026-10-15, one of each
+    direction: any substitution made the heredoc scanner give up, so a
+    message body with an apostrophe read as an unbalanced quote and was
+    refused; and a substitution's own command was never read at all, so a
+    write hidden in one went past."""
+
+    def test_heredoc_with_apostrophe_and_substitution_elsewhere(self):
+        # The checkpoint this lane wrote at 18:56, refused as unparseable.
+        self.assertPassesGuard(
+            "F=scratch/checkpoint-$(date +%Y-%m-%d-%H%M).md; "
+            "cat > $F <<'EOF'\n# Checkpoint\n\nIt waits on Michael's "
+            "merge.\nThis is the live bouncer hook.\nEOF\necho $F")
+
+    def test_heredoc_with_apostrophe_and_backtick_elsewhere(self):
+        self.assertPassesGuard(
+            "V=`date`; cat > /tmp/note <<'EOF'\nbouncer: Michael's note\n"
+            "EOF")
+
+    def test_backticks_inside_a_quoted_heredoc_are_text(self):
+        self.assertPassesGuard(
+            "cat > /tmp/brief.md <<'EOF'\nRename `unarmed` to "
+            "`uninitialized` in bouncer. Michael's call.\nEOF")
+
+    def test_heredoc_inside_a_quoted_substitution(self):
+        # The common report shape. Found by the replay: a paren matcher that
+        # read the body's apostrophe as a quote never found the close.
+        self.assertPassesGuard(
+            "tp report --status done \"$(cat <<'EOF'\n[ADMIN] done. (e) is "
+            "Michael's hand; bouncer allowed it.\nEOF\n)\"")
+        self.assertPassesGuard(
+            "git commit -q -m \"$(cat <<'EOF'\nfix: don't refuse it\n\n"
+            "(bouncer profile solo) is only text\nEOF\n)\"")
+
+    def test_write_after_a_report_substitution(self):
+        self.assertRefused(
+            "tp report \"$(cat <<'EOF'\nit's done\nEOF\n)\"; "
+            f"rm -rf {self.proj / '.bouncer'}")
+
+    def test_substitution_that_writes_a_policy(self):
+        self.assertRefused(f"X=$(sed -i '' s/a/b/ {self.policy})")
+
+    def test_backtick_that_removes_the_bouncer_dir(self):
+        self.assertRefused(f"echo `rm -rf {self.proj / '.bouncer'}`")
+
+    def test_nested_substitution(self):
+        self.assertRefused(
+            f"echo $(echo $(cp /tmp/new {self.policy}))")
+
+    def test_unquoted_heredoc_expands_its_substitutions(self):
+        self.assertRefused(
+            f"cat > /tmp/x <<EOF\nnote: $(rm -rf {self.proj / '.bouncer'})"
+            "\nEOF")
+
+    def test_quoted_heredoc_does_not(self):
+        self.assertPassesGuard(
+            f"cat > /tmp/x <<'EOF'\nnote: $(rm -rf {self.proj / '.bouncer'})"
+            "\nEOF")
+
+    def test_substitution_that_only_reads(self):
+        self.assertPassesGuard(f'echo "$(cat {self.policy})" | wc -l')
+
+
 # ---------------------------------------------------------------------------
-# Gap 1 -- the guard and the user policy reach unarmed trees
+# Gap 1 -- the guard reaches uninitialized trees
 # ---------------------------------------------------------------------------
 
-class TestUnarmedTree(_Fixture):
+_BLOCKED = "uninitialized: blocked\n"
+
+
+class TestUninitializedTree(_Fixture):
     """`_classify` with no config_yaml runs in a temp dir with no .bouncer/
-    anywhere above it: an unarmed tree, like 3DP, lore or penny today."""
+    anywhere above it: an uninitialized tree, like 3DP, lore or penny."""
 
     def test_guard_runs_with_no_bouncer_project(self):
         calls = []
@@ -311,77 +379,71 @@ class TestUnarmedTree(_Fixture):
         self.assertEqual(code, 2)
         self.assertIn("may not set its own bouncer profile", err)
 
-    def test_user_policy_denial_binds_an_unarmed_tree(self):
-        # The printer ban: a user-wide NEVER must bind 3DP.
+    def test_default_is_disabled_no_llm_no_policy(self):
+        # Exactly `enabled: false`: a policy that would deny is never read,
+        # and the call goes to the harness untouched.
         calls = []
-        _, err, code = _classify(
+        out, err, code = _classify(
             _bash("lp -d office part.pdf"),
             user_policy_md="Agent may NEVER print.",
-            call_llm_result=("DENY", "policy forbids printing", None, None),
+            call_llm_result=("DENY", "would deny", None, None),
             llm_calls=calls)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(code, 2)
-        self.assertIn("policy forbids printing", err)
+        self.assertEqual((out, err, code, calls), ("", "", 0, []))
 
-    def test_unarmed_allow_defers_to_the_harness(self):
-        # Deny-only: a clear ALLOW must not auto-approve something Claude
-        # Code would have prompted for. No decision is emitted at all.
+    def test_disabled_spelled_out_is_the_same(self):
         calls = []
         out, err, code = _classify(
-            _bash("git push"),
-            call_llm_result=("ALLOW", "fine", None, None), llm_calls=calls)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual((out, code), ("", 0))
-        self.assertNotIn("permissionDecision", out)
+            _bash("lp -d office part.pdf"),
+            user_config_yaml="uninitialized: disabled\n",
+            call_llm_result=("DENY", "would deny", None, None),
+            llm_calls=calls)
+        self.assertEqual((out, err, code, calls), ("", "", 0, []))
 
-    def test_unarmed_unsure_never_asks(self):
-        # Nobody configured this tree and there is nowhere to record a
-        # profile, so nothing here may raise a prompt on an unwatched pane.
-        for result in (("UNSURE", "dunno", None, None),
-                       ("TIMEOUT", "slow", None, None)):
-            with self.subTest(result=result[0]):
-                out, err, code = _classify(_bash("make"),
-                                           call_llm_result=result)
-                self.assertEqual((out, code), ("", 0))
+    def test_disabled_matches_an_opted_out_project(self):
+        # The contract is "behaves exactly like enabled: false". Same calls,
+        # same answers, whether or not a .bouncer/ with enabled: false is
+        # there.
+        for command in ("git push", "lp part.pdf",
+                        f"sed -n 1,5p {self.policy}",
+                        f"echo x >> {self.policy}"):
+            with self.subTest(command=command):
+                bare = _classify(_bash(command))
+                opted_out = _classify(_bash(command), config_yaml=_OPTED_OUT)
+                self.assertEqual(bare[2], opted_out[2])
 
-    def test_unarmed_escalation_marker_does_not_launder_a_denial(self):
+    def test_blocked_refuses_every_call_and_says_what_to_run(self):
         calls = []
+        for command in ("ls", "git status", "cat README.md"):
+            with self.subTest(command=command):
+                _, err, code = _classify(
+                    _bash(command), user_config_yaml=_BLOCKED,
+                    call_llm_result=("ALLOW", "fine", None, None),
+                    llm_calls=calls)
+                self.assertEqual(code, 2)
+                self.assertIn("not initialized", err)
+                self.assertIn("bouncer init", err)
+        self.assertEqual(calls, [])
+
+    def test_blocked_refuses_non_shell_tools_too(self):
         _, err, code = _classify(
-            _bash("# ESCALATE: user asked\nlp -d office part.pdf"),
-            call_llm_result=("DENY", "policy forbids printing", None, None),
-            llm_calls=calls)
+            {"tool_name": "Write",
+             "tool_input": {"file_path": "/tmp/x", "content": "y"}},
+            user_config_yaml=_BLOCKED)
         self.assertEqual(code, 2)
-        self.assertEqual(calls[0][1]["command"], "lp -d office part.pdf")
+        self.assertIn("not initialized", err)
 
-    def test_unarmed_guard_only_mode_skips_the_llm(self):
-        calls = []
+    def test_blocked_leaves_harness_plumbing_alone(self):
+        # ToolSearch is outside `tools:` in every project; bouncer never sees
+        # it there, and does not start refusing it here.
         out, err, code = _classify(
-            _bash("lp -d office part.pdf"),
-            user_config_yaml="unarmed: guard\n",
-            call_llm_result=("DENY", "would deny", None, None),
-            llm_calls=calls)
-        self.assertEqual((out, code, calls), ("", 0, []))
+            {"tool_name": "ToolSearch", "tool_input": {"query": "x"}},
+            user_config_yaml=_BLOCKED)
+        self.assertEqual((out, code), ("", 0))
 
-    def test_user_kill_switch_still_skips_the_llm(self):
-        calls = []
-        out, err, code = _classify(
-            _bash("lp -d office part.pdf"),
-            user_config_yaml="enabled: false\n",
-            call_llm_result=("DENY", "would deny", None, None),
-            llm_calls=calls)
-        self.assertEqual((out, code, calls), ("", 0, []))
-
-    def test_unarmed_context_says_so_and_carries_only_user_policy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            user = Path(tmp) / "user"
-            user.mkdir()
-            (user / "policy.md").write_text("Agent may NEVER print.")
-            with patch.object(cfg, "USER_POLICY_FILE", user / "policy.md"), \
-                    patch.object(cfg, "USER_CONFIG_FILE",
-                                 user / "config.yaml"):
-                text = cfg._build_policy_context(Path(tmp))
-        self.assertIn("Agent may NEVER print.", text)
-        self.assertIn("no bouncer project", text)
+    def test_blocked_does_not_reach_an_initialized_project(self):
+        out, err, code = _classify(_bash("ls"), config_yaml=_OPTED_OUT,
+                                   user_config_yaml=_BLOCKED)
+        self.assertEqual((out, err, code), ("", "", 0))
 
 
 class TestOptedOutProject(_Fixture):

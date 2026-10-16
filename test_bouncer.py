@@ -125,7 +125,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
 
     user_config_yaml / user_policy_md: the user-scope (~/.config/bouncer/)
     files, as fixtures. With neither config_yaml nor policy_md the temp dir
-    has no .bouncer/ at all: an unarmed tree.
+    has no .bouncer/ at all: an uninitialized tree.
 
     llm_calls: a list; each LLM call appends its (tool_name, tool_input, cwd)
     so a test can tell "not called" from "called and allowed".
@@ -434,9 +434,7 @@ class TestPolicyContext(unittest.TestCase):
             tmp_path = Path(tmp)
             with patch.object(cfg, "USER_POLICY_FILE", tmp_path / "no_policy.md"):
                 result = _build_policy_context(tmp_path, {"policy_mode": "append"})
-        # No .bouncer/ above a temp dir: the unarmed preamble, then nothing.
-        self.assertTrue(result.startswith(cfg.UNARMED_CONTEXT))
-        self.assertTrue(result.endswith("(no policy configured)"))
+        self.assertEqual(result, "(no policy configured)")
 
 
 # ---------------------------------------------------------------------------
@@ -1341,12 +1339,10 @@ class TestClassify(unittest.TestCase):
     def _hook(self, tool="Bash", command="ls /tmp"):
         return {"tool_name": tool, "tool_input": {"command": command}}
 
-    def test_no_project_config_passes_through_in_guard_only_mode(self):
-        # Before 2026-10-15 every unarmed tree passed through. It still does
-        # under `unarmed: guard`; the default now applies the user policy as
-        # a deny-only check (test_guard.TestUnarmedTree).
+    def test_no_project_config_passes_through(self):
+        # `uninitialized: disabled`, the default. The guard still runs there
+        # (test_guard.TestUninitializedTree).
         _, _, code = _classify(self._hook(),
-                               user_config_yaml="unarmed: guard\n",
                                call_llm_result=("DENY", "bad", None, None))
         self.assertEqual(code, 0)
 

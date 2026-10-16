@@ -125,9 +125,131 @@ def _feeds_code_reader(tokens: list[str]) -> bool:
     return False
 
 
+def _match_close(text: str, start: int) -> int | None:
+    """Index of the `)` closing a `$(` whose body starts at `start`, honouring
+    nesting, quotes and backslashes; None when it never closes.
+
+    A heredoc inside the substitution (`tp report "$(cat <<'EOF' … EOF)"`) is
+    data, and an apostrophe in it opens no quote. So where the body may hold
+    one, the close is the first `)` whose body — heredocs taken out —
+    balances on its own."""
+    rest = text.find("<<", start)
+    if rest == -1:
+        return _match_close_plain(text, start)
+    for close in range(start, len(text)):
+        if text[close] != ")":
+            continue
+        split = _heredoc_core(text[start:close])
+        if split is None:
+            continue
+        body = split[0]
+        if _match_close_plain(body + ")", 0) == len(body):
+            return close
+    return None
+
+
+def _match_close_plain(text: str, start: int) -> int | None:
+    depth, quote, index = 1, None, start
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif char == "\\":
+            index += 1
+        elif quote == '"':
+            if char == '"':
+                quote = None
+            elif text.startswith("$(", index):
+                end = _match_close(text, index + 2)
+                if end is None:
+                    return None
+                index = end
+        elif char in "'\"":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def _match_backtick(text: str, start: int) -> int | None:
+    index = start
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == "`":
+            return index
+        index += 1
+    return None
+
+
+def _substitutions(text: str, quoted: bool = True) -> list[str] | None:
+    """The bodies of the command substitutions in `text` — `$(…)` and
+    backticks — outermost only, each a command line of its own. Outside
+    single quotes only, as the shell expands them; with `quoted=False` (the
+    body of an unquoted heredoc) quotes are literal text and do not hide
+    anything. None when one never closes."""
+    found, quote, index = [], None, 0
+    while index < len(text):
+        char = text[index]
+        if quoted and quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if quoted and char in "'\"" and (quote is None or quote == char):
+            if char == "'" and quote is None:
+                quote = "'"
+            elif char == '"':
+                quote = None if quote == '"' else '"'
+            index += 1
+            continue
+        if text.startswith("$((", index):
+            end = text.find("))", index)
+            if end == -1:
+                return None
+            index = end + 2
+            continue
+        if text.startswith("$(", index):
+            end = _match_close(text, index + 2)
+            if end is None:
+                return None
+            found.append(text[index + 2:end])
+            index = end + 1
+            continue
+        if char == "`":
+            end = _match_backtick(text, index + 1)
+            if end is None:
+                return None
+            found.append(text[index + 1:end])
+            index = end + 1
+            continue
+        index += 1
+    return found
+
+
 def _without_heredoc_bodies(command: str) -> str:
-    """`command` with its heredoc bodies taken out, so the text of a message
-    written through `cat <<EOF` or `tp tell X <<EOF` is not read as commands.
+    return _heredoc_split(command)[0]
+
+
+def _heredoc_core(command: str) -> tuple[str, str] | None:
+    """Split `command` into (the command with its message heredoc bodies
+    taken out, the text of every body the shell will expand).
+
+    The first is so the text of a message written through `cat <<EOF` or
+    `tp tell X <<EOF` is not read as commands. The second is because a
+    heredoc with an unquoted delimiter still runs the `$(…)` and backticks
+    in its body, so those must be read as commands even when the rest of
+    the body is only data.
 
     That is how a dispatch note containing "(bouncer profile --cwd . --as
     json, plus …)" was refused as a profile set named "plus": the `(` split
@@ -137,15 +259,19 @@ def _without_heredoc_bodies(command: str) -> str:
     /dev/stdin <<EOF`) is code, so it stays in, minus its comment lines.
     Shell comments outside heredocs are dropped too. Anything this scanner
     cannot place with confidence — an unterminated heredoc, an unclosed quote
-    in the delimiter, an unmatched `((`, a command substitution outside
-    quotes — returns `command` unchanged: reading too much as code only
-    over-denies.
+    in the delimiter, an unmatched `((` or `$(` — returns None, and
+    _heredoc_split then reads the whole command as code: reading too much
+    as code only over-denies. A balanced
+    command substitution is no longer such a case: it used to be, and a
+    `$(date)` anywhere made every apostrophe in a message body read as an
+    unbalanced quote.
     """
     if "<<" not in command and "#" not in command:
-        return command
+        return command, ""
     stripped: list[str] = []
     kept: list[str] = []
-    pending: list[tuple[str, bool]] = []
+    expanding: list[str] = []
+    pending: list[tuple[str, bool, bool]] = []
     changed = False
     quote = None
     index, length = 0, len(command)
@@ -175,9 +301,21 @@ def _without_heredoc_bodies(command: str) -> str:
             emit(char)
             index += 1
             continue
-        if char == "`" or (command.startswith("$(", index)
-                           and not command.startswith("$((", index)):
-            return command
+        if command.startswith("$(", index) \
+                and not command.startswith("$((", index):
+            end = _match_close(command, index + 2)
+            if end is None:
+                return None
+            emit(command[index:end + 1])
+            index = end + 1
+            continue
+        if char == "`":
+            end = _match_backtick(command, index + 1)
+            if end is None:
+                return None
+            emit(command[index:end + 1])
+            index = end + 1
+            continue
         if char == "#" and (index == 0 or command[index - 1] in " \t\n;&|()"):
             # A comment runs to the end of the line. Dropped so that a `#
             # don't` note does not leave a lone quote for the lexer.
@@ -189,7 +327,7 @@ def _without_heredoc_bodies(command: str) -> str:
             # Arithmetic: `$((1<<2))` shifts, it opens no heredoc.
             end = command.find("))", index)
             if end == -1:
-                return command
+                return None
             emit(command[index:end + 2])
             index = end + 2
             continue
@@ -205,12 +343,15 @@ def _without_heredoc_bodies(command: str) -> str:
             while cursor < length and command[cursor] in " \t":
                 cursor += 1
             delimiter = ""
+            expands = True
             while cursor < length and command[cursor] not in " \t\n;&|()<>":
                 letter = command[cursor]
+                if letter in "'\"\\":
+                    expands = False
                 if letter in "'\"":
                     close = command.find(letter, cursor + 1)
                     if close == -1:
-                        return command
+                        return None
                     delimiter += command[cursor + 1:close]
                     cursor = close + 1
                 elif letter == "\\":
@@ -220,36 +361,45 @@ def _without_heredoc_bodies(command: str) -> str:
                     delimiter += letter
                     cursor += 1
             if not delimiter:
-                return command
+                return None
             emit(command[index:cursor])
-            pending.append((delimiter, strip_tabs))
+            pending.append((delimiter, strip_tabs, expands))
             changed = True
             index = cursor
             continue
         emit(char)
         index += 1
         if char == "\n" and pending:
-            for delimiter, strip_tabs in pending:
+            for delimiter, strip_tabs, expands in pending:
                 while True:
                     if index >= length:
-                        return command
+                        return None
                     end = command.find("\n", index)
                     end = length if end == -1 else end
                     line = command[index:end]
                     index = end + 1
                     if (line.lstrip("\t") if strip_tabs else line) == delimiter:
                         break
+                    if expands:
+                        expanding.append(line + "\n")
                     if not line.lstrip().startswith("#"):
                         kept.append(line + "\n")
             pending = []
     if pending or quote:
-        return command
+        return None
     if not changed:
-        return command
+        return command, ""
     tokens = _lex_tokens("".join(stripped))
     if tokens is None or _feeds_code_reader(tokens):
-        return "".join(kept)
-    return "".join(stripped)
+        # Every body is code here; `kept` already carries them all.
+        return "".join(kept), ""
+    return "".join(stripped), "".join(expanding)
+
+
+def _heredoc_split(command: str) -> tuple[str, str]:
+    """_heredoc_core, reading the whole command as code when it cannot be
+    split with confidence."""
+    return _heredoc_core(command) or (command, "")
 
 
 def _pipeline_segments(command: str) -> list[list[str]] | None:
@@ -288,7 +438,8 @@ def _command_segments(command: str, depth: int = 0) -> list[list[str]] | None:
     None when any level cannot be lexed or nests past _MAX_NESTING: the
     caller cannot tell what would run, and says so rather than guessing.
     """
-    parts = _lex(command)
+    text, expanding = _heredoc_split(command)
+    parts = _lex_tokens(text)
     if parts is None:
         return None
     segments, current = [], []
@@ -301,6 +452,23 @@ def _command_segments(command: str, depth: int = 0) -> list[list[str]] | None:
             current.append(part)
     if current:
         segments.append(current)
+    # A command substitution is a command line of its own, wherever it
+    # sits: quoted, in backticks, or in the body of an unquoted heredoc.
+    bodies = _substitutions(text)
+    if bodies is None:
+        return None
+    if expanding:
+        more = _substitutions(expanding, quoted=False)
+        if more is None:
+            return None
+        bodies += more
+    for body in bodies:
+        if depth >= _MAX_NESTING:
+            return None
+        inner = _command_segments(body, depth + 1)
+        if inner is None:
+            return None
+        segments.extend(inner)
     expanded = []
     for segment in segments:
         expanded.append(segment)
@@ -1121,7 +1289,9 @@ def get_classification(
 
     config = _merged_config(cwd_path)
     if not project_has_bouncer(cwd_path):
-        return _classify_unarmed(tool_name, tool_input, cwd_path, config)
+        if _uninitialized_refuses(tool_name, config):
+            return ("DENY", _UNINITIALIZED_BLOCKED_REASON, "DENY", 0, None)
+        return "SKIP", "no project config", None, None, None
 
     skip = _skip_reason(tool_name, tool_input, config)
     if skip:
@@ -1164,64 +1334,26 @@ def get_classification(
     return "UNSURE", final_reason, final_dec, prompt_chars, None
 
 
-_UNARMED_NOTE = ("(There is no bouncer project here, so this came from "
-                 "the user-wide policy.)")
+# `uninitialized: blocked` — what an agent is told in a tree with no
+# .bouncer/config.yaml. Initializing is the user's step: `bouncer init` is
+# self-management, which the guard refuses to every agent.
+_UNINITIALIZED_BLOCKED_REASON = (
+    "Bouncer is not initialized here: there is no .bouncer/config.yaml in "
+    "this directory or any directory above it, and the user's bouncer "
+    "config sets `uninitialized: blocked`, so every tool call here is "
+    "refused. To work here, the user runs `bouncer init` in the project "
+    "root. An agent cannot run it.")
 
 
-def _unarmed_verdict(tool_name: str, tool_input: dict, cwd: Path,
-                     config: dict):
-    """The LLM's verdict for a call in an unarmed tree, or None when there is
-    nothing to ask it. An `# ESCALATE:` marker is stripped first: with no
-    project there is no escalation, and the marker must not talk the
-    classifier out of a denial."""
-    if config.get("unarmed", "deny") != "deny":
-        return None
-    if _skip_reason(tool_name, tool_input, config):
-        return None
-    command = tool_input.get("command", "")
-    if _parse_escalate_command(command) is not None:
-        return None
-    if parse_escalation(command) is not None:
-        tool_input = dict(tool_input, command=strip_escalate_prefix(command))
-    try:
-        return call_llm(tool_name, tool_input, cwd, config)
-    except Exception:
-        return None
+def _uninitialized_refuses(tool_name: str, config: dict) -> bool:
+    """Whether a call in an uninitialized tree is refused outright.
 
-
-def _classify_unarmed(tool_name, tool_input, cwd: Path, config: dict):
-    """get_classification for an unarmed tree: DENY or ABSTAIN, never ALLOW
-    and never ASK."""
-    verdict = _unarmed_verdict(tool_name, tool_input, cwd, config)
-    if verdict is None:
-        return "SKIP", "no project config", None, None, None
-    decision, reason, prompt_chars, snap = verdict
-    if decision == "DENY":
-        return "DENY", f"{reason} {_UNARMED_NOTE}", "DENY", prompt_chars, None
-    return decision or "UNSURE", reason, "ABSTAIN", prompt_chars, snap
-
-
-def _run_unarmed(tool_name: str, tool_input: dict, cwd: str, config: dict,
-                 fmt: str) -> None:
-    """The hook in a tree with no .bouncer/config.yaml, after the guards.
-
-    The user-wide policy may add a DENY there and nothing else. An ALLOW does
-    not auto-approve what the harness would have prompted for, and UNSURE or
-    an unreachable LLM never becomes an ASK — nobody configured this tree,
-    so nobody is known to be watching it. Everything that is not a DENY
-    emits no decision, which is exactly what this tree got before.
-
-    Only denials are logged, to the user log: there is no project log."""
-    started = time.time()
-    verdict = _unarmed_verdict(tool_name, tool_input, Path(cwd), config)
-    if verdict is None or verdict[0] != "DENY":
-        sys.exit(0)
-    _, reason, prompt_chars, _ = verdict
-    reason = f"{reason} {_UNARMED_NOTE}"
-    log_decision(tool_name, tool_input, cwd, "DENY", reason, config, None,
-                 elapsed_s=round(time.time() - started, 2),
-                 prompt_chars=prompt_chars)
-    _emit_hook_response("DENY", reason, fmt, False)
+    `disabled` (the default) treats the tree exactly like a project with
+    `enabled: false`: the guard alone. `blocked` refuses every call bouncer
+    would intercept — not harness plumbing excluded from `tools:` (e.g.
+    ToolSearch), which bouncer never sees in any project either."""
+    return (config.get("uninitialized", "disabled") == "blocked"
+            and tool_intercepted(tool_name, config))
 
 
 def run_classify(
@@ -1239,10 +1371,10 @@ def run_classify(
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
 
-    # Armed or not, the guards below run. Only what follows them differs: an
-    # unarmed tree (no .bouncer/config.yaml anywhere up to $HOME) has no
-    # project log, no profile state and no escalation, and gets the user-wide
-    # policy as a deny-only check — see _run_unarmed.
+    # Initialized or not, the guards below run. Only what follows them
+    # differs: an uninitialized tree (no .bouncer/config.yaml anywhere up to
+    # $HOME) has no project log, no profile state and no escalation, and gets
+    # what `uninitialized:` says — see _uninitialized_refuses.
     armed          = project_has_bouncer(cwd_path)
     config         = _merged_config(cwd_path)
     proj_log       = project_log_file(cwd_path) if armed else None
@@ -1253,8 +1385,8 @@ def run_classify(
     # Effective ASK capability = profile ∧ harness. Both halves are needed:
     # the profile says whether anyone is on the line, the format says whether
     # this harness has a channel to reach them at all. It feeds the DENY
-    # wording below and, via note_harness, the indicator. An unarmed tree has
-    # nowhere to record a profile and never asks.
+    # wording below and, via note_harness, the indicator. An uninitialized
+    # tree has nowhere to record a profile and never asks.
     profile_ask = armed and profile_allows_ask(config)
     if armed:
         note_harness(bouncer_dir, harness, harness_can_ask(fmt),
@@ -1293,8 +1425,13 @@ def run_classify(
         return
 
     if not armed:
-        _run_unarmed(tool_name, tool_input, cwd, config, fmt)
-        return
+        if _uninitialized_refuses(tool_name, config):
+            log_decision(tool_name, tool_input, cwd, "DENY",
+                         _UNINITIALIZED_BLOCKED_REASON, config, None)
+            _emit_hook_response("DENY", _UNINITIALIZED_BLOCKED_REASON, fmt,
+                                False)
+            return
+        sys.exit(0)
 
     # `bouncer escalate [reason]` is the out-of-band escalation signal that
     # works for any tool: it arms a one-shot grant for this project's most

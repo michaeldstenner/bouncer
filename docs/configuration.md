@@ -380,7 +380,7 @@ where it is not; a configured `abstain` is honoured on the same condition.
 In practice that condition is Claude Code in `auto` and nothing else. See
 [Session profiles](#session-profiles-live--solo).
 
-## The hard guard, and trees with no project (`unarmed`)
+## The hard guard, and uninitialized trees (`uninitialized`)
 
 **Agents never edit bouncer config.** That rule is code, not policy: the
 LLM never sees it, a policy cannot loosen it, and `# ESCALATE:` cannot reach
@@ -400,23 +400,28 @@ runs code — `python3 -c`, a heredoc fed to an interpreter, a script file, a
 one (directly, through a glob, a symlink, an earlier `cd`, or a variable
 bound to one) and the command is not a known reader. Reading stays open:
 `cat`, `sed -n`, `grep`, `diff`, `cp` *out of* a policy, `git add`.
+Command substitutions — `$(…)`, backticks, and those in the body of an
+unquoted heredoc — are read as commands in their own right; a quoted
+heredoc's body is text, so an apostrophe or a backtick in a message is
+never mistaken for code.
 
 What it cannot see: a program whose own text does not name the location it
 writes — a path built at run time, read from a file, or reached through a
 build tool. Where the LLM runs, it is the backstop for those.
 
 A tree with no `.bouncer/config.yaml` (no `bouncer init` yet) is
-**unarmed**. User-scope `unarmed:` says what it gets beyond the guard:
+**uninitialized**. User-scope `uninitialized:` says what it gets beyond the
+guard:
 
 | Value | Meaning |
 |---|---|
-| `deny` | The user-wide `policy.md` is applied too, but may only **DENY**. Any other verdict — ALLOW, UNSURE, an unreachable LLM — emits no decision, so the harness's own permission check runs exactly as it would with no bouncer. Nothing there ever ASKs: nobody configured the tree, and there is nowhere to record a profile. (default) |
-| `guard` | The guard alone. No LLM call. |
+| `disabled` | Treated exactly like a project with `enabled: false`: the guard alone. No policy, no LLM call; everything else goes to the harness's own permission check. (default) |
+| `blocked` | Every tool call bouncer would intercept is refused, with a message saying the user must run `bouncer init` there. Harness plumbing outside `tools:` (e.g. ToolSearch) is left alone, as in any project. |
 
 An opt-out (`enabled: false` in a project) opts out of the **classifier**:
 no project policy, no user-wide policy, no LLM call. It does not opt out of
-the guard. A rule that must bind an opted-out project too has to be a
-guard, not policy text.
+the guard. A rule that must bind an opted-out or uninitialized tree has to
+be a guard, not policy text.
 
 ## Session profiles (`live` / `solo`)
 

@@ -43,11 +43,11 @@ CONFIG_DEFAULTS: dict = {
     },
     "on_unsure":      "ask",
     "on_unavailable": "ask",
-    # A tree with no .bouncer/config.yaml. The hard guards run there
-    # regardless. `deny`: the user-wide policy is also applied, and may only
-    # add a DENY — every other verdict hands the call back to the harness's
-    # own permission check, exactly as before. `guard`: the guards alone.
-    "unarmed": "deny",
+    # A tree with no .bouncer/config.yaml. The hard guard runs there
+    # regardless. `disabled`: nothing else — the tree is treated exactly like
+    # a project with `enabled: false`. `blocked`: every call is refused until
+    # the user runs `bouncer init` there.
+    "uninitialized": "disabled",
     "escalation": True,
     "escalation_requires_attempt": True,
     "escalation_attempt_ttl":      300,
@@ -299,11 +299,10 @@ on_unavailable: ask
 
 # A tree with no .bouncer/config.yaml (no `bouncer init` yet). The hard
 # guard — agents never edit bouncer config — runs there whatever this says.
-#   deny   this user-wide policy is applied too, but may only DENY: any
-#          other verdict defers to the harness's own permission check, and
-#          nothing there ever ASKs (default)
-#   guard  the guard alone, no LLM call
-#unarmed: deny
+#   disabled  treated exactly like a project with `enabled: false`: the
+#             guard alone, no policy, no LLM call (default)
+#   blocked   every tool call is refused until `bouncer init` is run there
+#uninitialized: disabled
 
 # Session profiles. A profile changes the PLUMBING (what happens when bouncer
 # cannot decide, and whether an agent may appeal a denial to a human) — never
@@ -730,25 +729,11 @@ def _merged_config(cwd: Path | None = None, profile: str | None = None) -> dict:
     return config
 
 
-# Said to the classifier in a tree with no bouncer project. Its verdict there
-# can only deny, so it is asked only the question it can act on.
-UNARMED_CONTEXT = (
-    "Context: there is no bouncer project here (no .bouncer/ in this "
-    "directory or any directory above it), so the user-wide policy below is "
-    "the only policy. A DENY from you is enforced; any other verdict hands "
-    "the call to the harness's own permission check. DENY only what this "
-    "policy prohibits."
-)
-
-
 def _build_policy_context(cwd: Path | None = None, config: dict | None = None) -> str:
     if config is None:
         config = _merged_config(cwd)
     user_policy = load_policy(USER_POLICY_FILE)
     d = _find_bouncer_dir(cwd)
-    if d is None:
-        return (UNARMED_CONTEXT + "\n\n"
-                + (user_policy or "(no policy configured)"))
     proj_policy = load_policy(d / "policy.md") if d else ""
     proj_local = load_policy(d / "policy.local.md") if d else ""
     policy_mode = config.get("policy_mode", "append")
