@@ -1,7 +1,7 @@
 import argparse
 import sys
 
-from .commands.init     import cmd_init, cmd_global_init
+from .commands.init     import cmd_init, cmd_global_init, cmd_seed
 from .commands.lint     import cmd_lint
 from .commands.config   import cmd_config, cmd_policy
 from .commands.status   import cmd_status
@@ -133,6 +133,13 @@ their own permission scope. The user must make policy changes themselves, for
 example by running `bouncer policy` and pasting the suggested text. `bouncer
 review` is also human-only; do not invoke it through an agent tool call.
 
+── Arming a new project ─────────────────────────────────────────────────────
+`bouncer init` is human-only. To arm a NEW project that has no bouncer yet,
+run `bouncer seed <dir>`: it writes the stock starter files and nothing else,
+and takes no options. It is refused for your own project, a tree that already
+has .bouncer/, and a tree inside one. Policy text for the new project then
+goes through `bouncer propose`.
+
 ── User-level policy ────────────────────────────────────────────────────────
 ~/.config/bouncer/policy.md applies across all projects. Project-level policy
 is in .bouncer/policy.md and is appended by default (policy_mode: append).
@@ -177,6 +184,11 @@ def main():
         help="wire AI harness hooks: auto | all | claude_code | codex | opencode | shim  "
              "(comma-separated for multiple; -g only: prompts if omitted)",
     )
+
+    p_seed = sub.add_parser(
+        "seed", help="arm a new, unarmed project DIR with the stock templates "
+                     "(the one init an agent may run)")
+    p_seed.add_argument("dir", help="the project directory to arm")
 
     p_lint = sub.add_parser("lint", help="validate config.yaml")
     p_lint.add_argument("file", nargs="?", help="file to lint (default: project config.yaml)")
@@ -306,6 +318,7 @@ def main():
 
     dispatch = {
         "init":     cmd_init,
+        "seed":     cmd_seed,
         "lint":     cmd_lint,
         "config":   cmd_config,
         "policy":   cmd_policy,

@@ -493,7 +493,7 @@ def _shell_segments(command: str) -> list[list[str]]:
 # path: the self-management verbs, and `profile <name>` (a set, not a read).
 _BOUNCER_MANAGEMENT_TEXT = re.compile(
     r"(?<![\w.-])bouncer\s+(?:(?:-g|--global)\s+)?"
-    r"(?:config|init|policy|review|profile\s+[^\s-])")
+    r"(?:config|init|policy|review|seed|profile\s+[^\s-])")
 
 
 def _names_bouncer_unreadably(command: str) -> bool:
@@ -1359,6 +1359,39 @@ def _orchestrator_command_refusal(command: str) -> str | None:
     return None
 
 
+# A `bouncer seed` argument the guard cannot read as one literal path: the
+# shell would expand it into something else, or into several.
+_SEED_UNREADABLE_CHARS = frozenset("$`*?[{")
+
+
+def _seed_refusal(command: str, cwd: Path) -> str | None:
+    """Refuse a `bouncer seed` that is not the narrow exemption, before it
+    runs: exactly one literal directory, not armed, under nothing armed,
+    not the caller's own project. bouncer.seed makes the same checks where
+    it writes; this one judges the caller by the hook's cwd, which a `cd`
+    in the command does not move."""
+    segments = _command_segments(command)
+    if segments is None:
+        return None
+    from . import seed as _seed
+    here = cwd
+    for parts in segments:
+        argv = _segment_bouncer_argv(parts)
+        if argv and argv[0] == "seed":
+            args = argv[1:]
+            if len(args) != 1 or args[0].startswith("-") \
+                    or _SEED_UNREADABLE_CHARS & set(args[0]):
+                return ("Refused: bouncer seed takes exactly one literal "
+                        "directory and nothing else. It writes only the "
+                        "stock templates; policy text goes through bouncer "
+                        "propose.")
+            reason = _seed.refusal(Path(args[0]), here, caller_cwd=cwd)
+            if reason:
+                return reason
+        here = _next_cwd(parts, here)
+    return None
+
+
 def _management_denial_reason(
     tool_name: str,
     tool_input: dict,
@@ -1367,6 +1400,9 @@ def _management_denial_reason(
     if _is_bouncer_self_management_command(tool_input.get("command", "")):
         return ("Bouncer policy and configuration management must be run directly "
                 "by the user, outside an agent tool call")
+    seed_refusal = _seed_refusal(tool_input.get("command", ""), cwd)
+    if seed_refusal:
+        return seed_refusal
     orchestrator_refusal = _orchestrator_command_refusal(
         tool_input.get("command", ""))
     if orchestrator_refusal:

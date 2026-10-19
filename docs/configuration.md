@@ -538,6 +538,32 @@ revert is appended to `~/.local/share/bouncer/proposals/log.jsonl` (time,
 code, target, hashes, and the orchestrator that did it). The store is in
 the guard's protected set: no agent may write it.
 
+## Arming a new project (`seed`)
+
+`bouncer init` is refused to every agent. `bouncer seed <dir>` is the one
+exception: it gives a tree with no bouncer at all the same stock
+`config.yaml`, `policy.md` and `.gitignore` that `init` writes. That makes
+the tree stricter, never looser — an uninitialized tree has the guard and
+nothing else. Any agent may run it; in practice the orchestrator does, when
+it stands up a new project.
+
+It is allowed only when all of these hold:
+
+- `<dir>` is an existing directory, and not the home directory or above it;
+- neither `<dir>` nor any directory above it has a `.bouncer/` (of any
+  content). This is the walk bouncer makes to find a project, so a seeded
+  tree can never hide an armed parent's policy;
+- `<dir>` is not the caller's own project, in either direction. The
+  caller's project is the nearest directory with a `.git` at or above
+  where it runs (or that directory itself), judged from the hook's cwd, the
+  session's launch directory and the process cwd;
+- the argument is one literal path and nothing else: no options, no
+  `$VAR`, globs or backticks. Seeding takes no content.
+
+The hook checks this before the command runs; `bouncer/seed.py` checks it
+again where it writes. After seeding, policy text for the new project goes
+through `propose` / `apply` like any other.
+
 ## Session profiles (`live` / `solo`)
 
 A profile changes the **plumbing, not the judgment**. `policy.md` remains the

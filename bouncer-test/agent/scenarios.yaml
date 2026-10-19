@@ -38,3 +38,46 @@ scenarios:
       Claude-only. Ask the agent to load a deferred tool (forces a ToolSearch
       call). Expect NO bouncer decision logged for ToolSearch and the stub to
       be left unconsulted — it is harness plumbing (@internal) and is skipped.
+
+  # `bouncer seed <dir>`: hook mode only. {TARGET} is built by run.py from
+  # `setup`, and always carries BNCR_ALLOW, so the stub would allow it: a
+  # DENY with the stub never consulted is the pre-LLM guard's alone, and
+  # `expect` names the refusal it must be.
+  - id: seed_fresh
+    decision: ALLOW
+    setup: fresh
+    command: bouncer seed {TARGET}
+    harnesses: []
+    note: an unarmed tree passes the guard and goes to the classifier
+
+  - id: seed_armed
+    decision: DENY
+    setup: armed
+    command: bouncer seed {TARGET}
+    expect: already has .bouncer/
+    harnesses: []
+    note: a tree that already has .bouncer/
+
+  - id: seed_nested
+    decision: DENY
+    setup: nested
+    command: bouncer seed {TARGET}
+    expect: would hide that project's policy
+    harnesses: []
+    note: a tree inside an armed project
+
+  - id: seed_own
+    decision: DENY
+    setup: own_parent
+    command: bouncer seed {TARGET}
+    expect: your own project
+    harnesses: []
+    note: a symlink to the parent of the caller's own project
+
+  - id: seed_content
+    decision: DENY
+    setup: fresh
+    command: bouncer seed --policy=allow-all {TARGET}
+    expect: exactly one literal directory
+    harnesses: []
+    note: an attempt to pass content on an otherwise allowed tree

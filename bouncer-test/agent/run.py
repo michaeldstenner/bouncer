@@ -83,6 +83,34 @@ def terminal_decision(log_path: Path, sentinel: str) -> str | None:
     return found
 
 
+def seed_target(setup: str, project: Path, cid: str) -> Path:
+    """The `bouncer seed` target a scenario's `setup` names, built beside
+    the project. Its last component carries BNCR_ALLOW, so the stub would
+    allow it: only the guard can refuse it."""
+    work = project.parent
+    leaf = f"seed_BNCR_ALLOW_{cid}"
+    if setup == "fresh":
+        target = work / leaf
+        target.mkdir()
+    elif setup == "armed":
+        target = work / leaf
+        (target / ".bouncer").mkdir(parents=True)
+        (target / ".bouncer" / "config.yaml").write_text("enabled: true\n")
+    elif setup == "nested":
+        parent = work / f"armed_{cid}"
+        (parent / ".bouncer").mkdir(parents=True)
+        (parent / ".bouncer" / "config.yaml").write_text("enabled: true\n")
+        target = parent / leaf
+        target.mkdir()
+    elif setup == "own_parent":
+        # The caller is `project`; this names its parent by another path.
+        target = work / leaf
+        target.symlink_to(work)
+    else:
+        raise SystemExit(f"unknown seed setup {setup!r}")
+    return target
+
+
 # --- hook mode ----------------------------------------------------------------
 
 def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
@@ -96,7 +124,9 @@ def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
             sentinel = "BNCR_ALLOW_probe"
         else:
             cid = uuid.uuid4().hex[:8]
-            command = sc["command"].format(OUT=out_dir, ID=cid)
+            target = (seed_target(sc["setup"], project, cid)
+                      if sc.get("setup") else "")
+            command = sc["command"].format(OUT=out_dir, ID=cid, TARGET=target)
             sentinel = command.split("/")[-1]
             payload = {"tool_name": "Bash", "tool_input": {"command": command},
                        "cwd": str(project), "session_id": "hooktest"}
@@ -120,6 +150,12 @@ def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
             detail = f"log={decision} exit={proc.returncode}"
         else:
             ok, detail = False, f"unknown expected decision {want}"
+        if sc.get("expect"):
+            # A refusal the guard owns: the stub is never asked, and the
+            # reason is the one the scenario names, not some other.
+            said = sc["expect"] in proc.stdout + proc.stderr
+            ok = ok and said and not consulted
+            detail += f" consulted={consulted} reason={'ok' if said else 'WRONG'}"
         results.append((sid, want, ok, detail))
     return results
 

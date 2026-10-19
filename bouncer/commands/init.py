@@ -460,6 +460,36 @@ def _install_targets(targets: list[str], *, refresh: bool = False) -> None:
 
 # ── commands ──────────────────────────────────────────────────────────────────
 
+def write_project_templates(bouncer_dir: Path, *, fresh: bool = False) -> Path:
+    """Write the stock project config, policy and .gitignore into
+    `bouncer_dir`; return the .gitignore path. The one place the starter
+    files are written, for `init` and `seed` alike. `fresh` refuses a
+    directory that already exists (seed: never write into one)."""
+    bouncer_dir.mkdir(exist_ok=not fresh)
+    (bouncer_dir / "config.yaml").write_text(CONFIG_YAML_TEMPLATE, encoding="utf-8")
+    (bouncer_dir / "policy.md").write_text(POLICY_MD_TEMPLATE, encoding="utf-8")
+    gitignore = bouncer_dir / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(
+            "log.jsonl\nllm_debug.jsonl\nconfig.local.yaml\npolicy.local.md\n",
+            encoding="utf-8",
+        )
+    return gitignore
+
+
+def cmd_seed(args):
+    from .. import seed as _seed
+    try:
+        bouncer_dir = _seed.seed(Path(args.dir))
+    except (_seed.Refused, FileExistsError) as exc:
+        print(f"{RED}{exc}{RESET}", file=sys.stderr)
+        sys.exit(1)
+    print(f"{GREEN}Seeded{RESET} {bouncer_dir}  "
+          f"{DIM}(stock config.yaml + policy.md){RESET}")
+    print(f"Policy changes from here go through: "
+          f"{BOLD}bouncer propose {bouncer_dir.parent} <diff>{RESET}")
+
+
 def cmd_init(args):
     harness = getattr(args, "harness", None)
 
@@ -471,15 +501,7 @@ def cmd_init(args):
     if config_target.exists() or policy_target.exists():
         print(f"{YELLOW}Note:{RESET} .bouncer already initialized — skipping project files.")
     else:
-        bouncer_dir.mkdir(exist_ok=True)
-        config_target.write_text(CONFIG_YAML_TEMPLATE, encoding="utf-8")
-        policy_target.write_text(POLICY_MD_TEMPLATE, encoding="utf-8")
-        gitignore = bouncer_dir / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text(
-                "log.jsonl\nllm_debug.jsonl\nconfig.local.yaml\npolicy.local.md\n",
-                encoding="utf-8",
-            )
+        gitignore = write_project_templates(bouncer_dir)
         print(f"{GREEN}Created{RESET} {config_target}")
         print(f"{GREEN}Created{RESET} {policy_target}")
         print(f"         {DIM}{gitignore}{RESET}  (protects logs + config.local.yaml + policy.local.md)")
