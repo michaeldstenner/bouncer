@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from bouncer.proposals import calling_session  # noqa: E402
 from bouncer.yaml import MicroYAML  # noqa: E402
 from stub_llm import StubLLM  # noqa: E402
 
@@ -111,12 +113,36 @@ def seed_target(setup: str, project: Path, cid: str) -> Path:
     return target
 
 
+_HOMES: list[Path] = []
+
+
+def seed_home(project: Path, cid: str, caller: str) -> dict | None:
+    """The environment for a seed scenario: a throwaway HOME whose user
+    config names the orchestrator. `orchestrator` names the agent session
+    this runner is under (the hook is its child, so the process-tree check
+    finds it); `worker` names some other directory. None when there is no
+    session to name: seeding is then refused whoever asks."""
+    launch, _nested = calling_session()
+    if caller == "orchestrator" and launch is None:
+        return None
+    named = launch if caller == "orchestrator" else project.parent / "elsewhere"
+    # Outside the work tree: a HOME inside it would put every fixture
+    # "under home", and the own-parent case would trip the home check first.
+    home = Path(tempfile.mkdtemp(prefix="bouncer-agenttest-home-"))
+    _HOMES.append(home)
+    (home / ".config" / "bouncer").mkdir(parents=True)
+    (home / ".config" / "bouncer" / "config.yaml").write_text(
+        f"orchestrators: [{named}]\n")
+    return dict(os.environ, HOME=str(home))
+
+
 # --- hook mode ----------------------------------------------------------------
 
 def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
     results = []
     for sc in scenarios:
         sid, want = sc["id"], sc["decision"]
+        env = None
         if sc["id"] == "internal_skip":
             payload = {"tool_name": "ToolSearch",
                        "tool_input": {"query": "select:BNCR_ALLOW_probe"},
@@ -126,6 +152,13 @@ def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
             cid = uuid.uuid4().hex[:8]
             target = (seed_target(sc["setup"], project, cid)
                       if sc.get("setup") else "")
+            if sc.get("setup"):
+                env = seed_home(project, cid, sc.get("caller", "orchestrator"))
+                if env is None:
+                    results.append((sid, want, None,
+                                    "needs an agent session to be the "
+                                    "orchestrator"))
+                    continue
             command = sc["command"].format(OUT=out_dir, ID=cid, TARGET=target)
             sentinel = command.split("/")[-1]
             payload = {"tool_name": "Bash", "tool_input": {"command": command},
@@ -135,6 +168,7 @@ def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
         proc = subprocess.run(
             [sys.executable, "-m", "bouncer", "classify", "--hook", "--format", "json"],
             input=json.dumps(payload), capture_output=True, text=True, cwd=ROOT,
+            env=env,
         )
         consulted = len(stub.find(sentinel)) > before
         decision = terminal_decision(log_path, sentinel)
@@ -228,6 +262,8 @@ def main() -> None:
             results = run_hook_mode(scenarios, project, out_dir, log_path, stub)
     finally:
         stub.stop()
+        for home in _HOMES:
+            subprocess.run(["rm", "-rf", str(home)])
 
     failures = 0
     for sid, want, ok, detail in results:

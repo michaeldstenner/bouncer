@@ -15,6 +15,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import bouncer.config as cfg
+import bouncer.proposals as proposals
 import bouncer.seed as seed_mod
 from bouncer.config import CONFIG_YAML_TEMPLATE, POLICY_MD_TEMPLATE
 
@@ -26,10 +28,14 @@ _REFUSED = "Refused"
 
 class _Fixture(unittest.TestCase):
     """root/
-         orch/    the caller: a git repo, armed (opted out, so no LLM)
+         orch/    the orchestrator: a git repo, armed (opted out, no LLM)
          armed/   another armed project; armed/sub/ inside it
          fresh/   an unarmed tree: the one case that is allowed
-         own/     an unarmed caller's git repo; own/sub/ is its cwd
+         own/     an unarmed caller's git repo; own/sub/ is its cwd. Also
+                  an orchestrator, so its own-tree refusals are reached
+
+    The session is faked: `launched_in` sets the launch directory that
+    proposals.check_caller sees, as test_proposals does.
     """
 
     def setUp(self):
@@ -46,19 +52,34 @@ class _Fixture(unittest.TestCase):
         _make_bouncer_dir(self.orch, config_yaml=_OPTED_OUT, policy_md="x")
         _make_bouncer_dir(self.armed, config_yaml=_OPTED_OUT,
                           policy_md="armed policy")
+        self.user_config = f"orchestrators: [{self.orch}, {self.own}]\n"
+        user = self.root / "user"
+        user.mkdir()
+        (user / "config.yaml").write_text(self.user_config)
+        p = patch.object(cfg, "USER_CONFIG_FILE", user / "config.yaml")
+        p.start()
+        self.addCleanup(p.stop)
+        self.launched_in(self.orch)
+
+    def launched_in(self, path, nested=False):
+        p = patch.object(proposals, "calling_session",
+                         return_value=(path, nested))
+        p.start()
+        self.addCleanup(p.stop)
 
     def assertRefused(self, command, cwd=None, expect=_REFUSED):
         calls = []
         _, err, code = _classify(
             _bash(command, cwd or self.orch),
             call_llm_result=("ALLOW", "llm would allow", None, None),
-            llm_calls=calls)
+            llm_calls=calls, user_config_yaml=self.user_config)
         self.assertEqual(code, 2, f"not refused: {command!r}\n{err}")
         self.assertIn(expect, err)
         self.assertEqual(calls, [], "guard must decide before the LLM")
 
     def assertPassesGuard(self, command, cwd=None):
-        out, err, code = _classify(_bash(command, cwd or self.orch))
+        out, err, code = _classify(_bash(command, cwd or self.orch),
+                                   user_config_yaml=self.user_config)
         self.assertEqual((out, err, code), ("", "", 0),
                          f"guard refused: {command!r}\n{err}")
 
@@ -144,15 +165,9 @@ class TestGuard(_Fixture):
 
 class TestSeedWrites(_Fixture):
     """bouncer.seed, the code that writes. The caller is the session's
-    launch directory, faked here; an agent's `cd` cannot move it."""
-
-    def launched_in(self, path):
-        p = patch.object(seed_mod, "_launch_dir", return_value=path)
-        p.start()
-        self.addCleanup(p.stop)
+    launch directory; an agent's `cd` cannot move it."""
 
     def test_writes_exactly_the_stock_templates(self):
-        self.launched_in(self.orch)
         bdir = seed_mod.seed(self.fresh, cwd=self.orch)
         self.assertEqual(bdir, self.fresh / ".bouncer")
         self.assertEqual(sorted(p.name for p in bdir.iterdir()),
@@ -162,13 +177,12 @@ class TestSeedWrites(_Fixture):
         self.assertEqual((bdir / "policy.md").read_text(), POLICY_MD_TEMPLATE)
 
     def test_second_seed_is_refused(self):
-        self.launched_in(self.orch)
         seed_mod.seed(self.fresh, cwd=self.orch)
         with self.assertRaises(seed_mod.Refused):
             seed_mod.seed(self.fresh, cwd=self.orch)
 
     def test_refusals_hold_where_it_writes(self):
-        self.launched_in(self.own / "sub")
+        self.launched_in(self.own)
         for target in (self.armed, self.armed / "sub", self.own,
                        self.own / "other"):
             with self.subTest(target=target):
@@ -181,22 +195,58 @@ class TestSeedWrites(_Fixture):
         self.assertFalse((self.own / ".bouncer").exists())
 
     def test_process_cwd_elsewhere_still_judges_the_launch_dir(self):
-        self.launched_in(self.own / "sub")
+        self.launched_in(self.own)
         with self.assertRaises(seed_mod.Refused):
-            seed_mod.seed(self.own, cwd=self.fresh)
+            seed_mod.seed(self.own / "other", cwd=self.fresh)
 
     def test_process_cwd_is_judged_too(self):
-        self.launched_in(self.orch)
         with self.assertRaises(seed_mod.Refused):
             seed_mod.seed(self.own, cwd=self.own / "sub")
         self.assertFalse((self.own / ".bouncer").exists())
 
-    def test_terminal_without_a_session_uses_cwd(self):
+
+class TestOrchestratorOnly(_Fixture):
+    """Seeding is the orchestrator's alone: the same caller check as
+    `bouncer apply`, in the hook and again where it writes."""
+
+    def assertNotSeeded(self, says):
+        with self.assertRaises(seed_mod.Refused) as ctx:
+            seed_mod.seed(self.fresh, cwd=self.root)
+        self.assertIn(says, str(ctx.exception))
+        self.assertFalse((self.fresh / ".bouncer").exists())
+
+    def test_hook_refuses_a_worker(self):
+        self.launched_in(self.armed)
+        self.assertRefused(f"bouncer seed {self.fresh}", cwd=self.armed,
+                           expect="wrong caller")
+
+    def test_hook_refuses_a_worker_via_python_module(self):
+        self.launched_in(self.armed)
+        self.assertRefused(f"python3 -m bouncer seed {self.fresh}",
+                           cwd=self.armed, expect="wrong caller")
+
+    def test_worker_forging_the_orchestrators_cwd(self):
+        # The hook payload's cwd is the agent's to write; the launch
+        # directory is not.
+        self.launched_in(self.armed)
+        self.assertRefused(f"bouncer seed {self.fresh}", cwd=self.orch,
+                           expect="wrong caller")
+
+    def test_writes_refuse_a_worker(self):
+        self.launched_in(self.armed)
+        self.assertNotSeeded("wrong caller")
+
+    def test_nested_session(self):
+        self.launched_in(self.orch, nested=True)
+        self.assertNotSeeded("started inside another")
+
+    def test_terminal_without_a_session(self):
         self.launched_in(None)
-        with self.assertRaises(seed_mod.Refused):
-            seed_mod.seed(self.own, cwd=self.own / "sub")
-        seed_mod.seed(self.fresh, cwd=self.own / "sub")
-        self.assertTrue((self.fresh / ".bouncer" / "config.yaml").exists())
+        self.assertNotSeeded("runs bouncer init")
+
+    def test_no_orchestrator_configured(self):
+        (self.root / "user" / "config.yaml").write_text("")
+        self.assertNotSeeded("no orchestrator is configured")
 
 
 if __name__ == "__main__":

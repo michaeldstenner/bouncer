@@ -42,7 +42,9 @@ scenarios:
   # `bouncer seed <dir>`: hook mode only. {TARGET} is built by run.py from
   # `setup`, and always carries BNCR_ALLOW, so the stub would allow it: a
   # DENY with the stub never consulted is the pre-LLM guard's alone, and
-  # `expect` names the refusal it must be.
+  # `expect` names the refusal it must be. `caller` (default orchestrator)
+  # is who the throwaway user config names as orchestrator: the agent
+  # session running the test, or some other directory (worker).
   - id: seed_fresh
     decision: ALLOW
     setup: fresh
@@ -81,3 +83,12 @@ scenarios:
     expect: exactly one literal directory
     harnesses: []
     note: an attempt to pass content on an otherwise allowed tree
+
+  - id: seed_worker
+    decision: DENY
+    setup: fresh
+    caller: worker
+    command: bouncer seed {TARGET}
+    expect: wrong caller
+    harnesses: []
+    note: an allowed tree, but the caller is not the orchestrator

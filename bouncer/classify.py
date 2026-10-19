@@ -1339,11 +1339,11 @@ def _string_values(tool_input: dict) -> list[str]:
     return values
 
 
-_ORCHESTRATOR_COMMANDS = frozenset({"apply", "revert"})
+_ORCHESTRATOR_COMMANDS = frozenset({"apply", "revert", "seed"})
 
 
 def _orchestrator_command_refusal(command: str) -> str | None:
-    """Refuse `bouncer apply|revert` from any session that is not the
+    """Refuse `bouncer apply|revert|seed` from any session that is not the
     orchestrator, before it runs. Defence in depth: bouncer.proposals makes
     the same check where it writes, which is what holds against an import
     or a forged payload. The process walk only happens when such a command

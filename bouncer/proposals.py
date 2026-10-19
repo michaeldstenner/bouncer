@@ -139,21 +139,21 @@ def check_caller() -> Path:
     launch, nested = calling_session()
     if launch is None:
         raise Refused(
-            "Refused: bouncer apply and revert run only from the "
+            "Refused: bouncer apply, revert and seed run only from the "
             "orchestrator's own agent session, and this process is not "
             "inside one. A person at the terminal edits the policy "
-            "directly instead.")
+            "directly, or runs bouncer init, instead.")
     if nested:
         raise Refused(
             "Refused: this is a Claude Code session started inside another "
             "one. Only the orchestrator's own top-level session may apply "
-            "or revert a policy change.")
+            "or revert a policy change, or seed a new project.")
     allowed = orchestrators()
     if not allowed:
         raise Refused(
             "Refused: no orchestrator is configured. The user adds "
             "`orchestrators: [<project dir>]` to ~/.config/bouncer/"
-            "config.yaml to enable bouncer apply.")
+            "config.yaml to enable bouncer apply and seed.")
     try:
         launched = launch.resolve()
     except (OSError, RuntimeError):
@@ -162,8 +162,8 @@ def check_caller() -> Path:
         raise Refused(
             f"Refused: wrong caller. This session belongs to {launched}, "
             "which is not an orchestrator. A working agent never applies a "
-            "policy change, its own or another project's. Report what you "
-            "need instead.")
+            "policy change, its own or another project's, and never seeds "
+            "a project. Report what you need instead.")
     return launched
 
 

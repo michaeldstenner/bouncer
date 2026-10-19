@@ -134,8 +134,8 @@ example by running `bouncer policy` and pasting the suggested text. `bouncer
 review` is also human-only; do not invoke it through an agent tool call.
 
 ── Arming a new project ─────────────────────────────────────────────────────
-`bouncer init` is human-only. To arm a NEW project that has no bouncer yet,
-run `bouncer seed <dir>`: it writes the stock starter files and nothing else,
+`bouncer init` is human-only. The orchestrator (only) may arm a NEW project
+that has no bouncer yet with `bouncer seed <dir>`: it writes the stock starter files and nothing else,
 and takes no options. It is refused for your own project, a tree that already
 has .bouncer/, and a tree inside one. Policy text for the new project then
 goes through `bouncer propose`.
@@ -186,8 +186,8 @@ def main():
     )
 
     p_seed = sub.add_parser(
-        "seed", help="arm a new, unarmed project DIR with the stock templates "
-                     "(the one init an agent may run)")
+        "seed", help="orchestrator only: arm a new, unarmed project DIR "
+                     "with the stock templates")
     p_seed.add_argument("dir", help="the project directory to arm")
 
     p_lint = sub.add_parser("lint", help="validate config.yaml")

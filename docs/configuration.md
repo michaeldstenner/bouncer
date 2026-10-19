@@ -544,11 +544,14 @@ the guard's protected set: no agent may write it.
 exception: it gives a tree with no bouncer at all the same stock
 `config.yaml`, `policy.md` and `.gitignore` that `init` writes. That makes
 the tree stricter, never looser — an uninitialized tree has the guard and
-nothing else. Any agent may run it; in practice the orchestrator does, when
-it stands up a new project.
+nothing else. Only the orchestrator may run it, when it stands up a new
+project.
 
 It is allowed only when all of these hold:
 
+- the caller is the orchestrator: the same process-tree check as `bouncer
+  apply` (see "Who may apply" above). A worker, a nested session and a
+  person at a terminal are refused; the person runs `bouncer init`;
 - `<dir>` is an existing directory, and not the home directory or above it;
 - neither `<dir>` nor any directory above it has a `.bouncer/` (of any
   content). This is the walk bouncer makes to find a project, so a seeded
