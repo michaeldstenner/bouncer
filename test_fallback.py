@@ -78,7 +78,7 @@ class TestFallbackConfig(unittest.TestCase):
         with patch("bouncer.llmclient.FallbackLLMClient", FakeFallbackClient):
             decision, reason, _, _snap = providers_mod.call_llm(
                 "Bash", {"command": "pwd"}, Path("/tmp/project"), config,
-            )
+            )[:4]
 
         self.assertEqual((decision, reason), ("ALLOW", "ok"))
         self.assertEqual([c.model for c in captured["configs"]], [

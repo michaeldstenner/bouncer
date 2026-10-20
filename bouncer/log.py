@@ -216,7 +216,10 @@ def log_decision(
     elapsed_s: float | None = None,
     prompt_chars: int | None = None,
     queue_snapshot: list[dict] | None = None,
+    extra: dict | None = None,
 ) -> None:
+    # `extra`: structured fields written as they are in full mode — the
+    # classifier's explanation, a rewritten command, a cwd fallback.
     # PENDING is an in-flight placeholder (cfg is None there) and always
     # written; real decisions consult verbosity for their detail level.
     mode = "full"
@@ -242,6 +245,9 @@ def log_decision(
             entry["prompt_chars"] = prompt_chars
         if queue_snapshot is not None:
             entry["queue_snapshot"] = queue_snapshot
+        for key, value in (extra or {}).items():
+            if value not in (None, "", {}, []):
+                entry[key] = value
     wrote_user_log, wrote_proj_log = _append_row(entry, proj_log)
     if cfg and decision != "PENDING":
         max_entries = cfg.get("log", {}).get("max_entries")

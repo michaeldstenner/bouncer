@@ -158,6 +158,55 @@ priority fields such as `file_path` and `command`. `event_id` is the stable
 review-cursor identity. `request_id` links a `PENDING` entry (LLM call in flight)
 with its resolution; `bouncer log` uses this to display per-decision latency.
 
+Every classifier verdict, ALLOW included, also records why, so that
+explaining a flip-flop takes a grep rather than a recon:
+
+```json
+{
+  "decision": "DENY",
+  "reason": "Running printwatch by its project path reads as touching that project's code.",
+  "policy_quote": "\"*Modify* other projects' code (anything outside ~/Documents/Code/3DP), including printwatch's.\"",
+  "request_fact": "~/Documents/Code/printwatch/bin/printwatch preflight",
+  "tokens": {"prompt": 2210, "response": 74}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `reason` | One sentence linking the fact to the policy line |
+| `policy_quote` | The policy line(s) relied on, quoted; `general rules` when none applies |
+| `request_fact` | The part of the request that triggered them |
+| `tokens` | Prompt and response tokens, when the provider reports them |
+| `classified_command` | The command as the classifier saw it, when it differs from `input_summary` (see below) |
+| `cwd_fallback` | The session's launch directory, when its project was used because `cwd` had none |
+
+`policy_quote` and `request_fact` are absent when the reply has no such lines
+(a custom `system_prompt.txt`, or a reply cut short by a small `max_tokens`).
+The verdict stands without them.
+
+**Tools by full path.** An executable written as a full path (`/…` or `~/…`)
+that is the same file as a binary on `PATH` is shown to the classifier by
+its bare name: `~/Documents/Code/penny/bin/penny audit X` is judged as `penny
+audit X`. A path into another project's folder otherwise reads as "that
+project's code" when the call only runs the tool. Only the classifier's copy
+changes; the guard, escalation and `input_summary` keep the command as
+written, and `classified_command` records what was judged. Arguments are never
+rewritten.
+
+**A shell outside any project.** The project is found from the hook's `cwd`,
+which is the agent's shell cwd. When no `.bouncer/config.yaml` is found
+there, bouncer uses the project of the Claude Code session's launch
+directory (which an agent's `cd` cannot move) instead of skipping. So a
+shell parked in the session scratchpad under `/private/tmp` is still judged
+by its project's policy. The hard guard still reads paths from the real
+`cwd`. Other harnesses have no launch directory to fall back to.
+
+**Skips are logged.** A call that is not classified is written as a `SKIP`
+row with the reason: no project at the cwd or the launch directory (to the
+user log only), the project's `enabled: false`, or a tool not in `tools:`.
+`enabled: bypass` is the exception, and writes nothing, by design. The
+activity strip leaves `SKIP` rows out.
+
 ## Policy review
 
 Configure a separate model under `review.llm` in

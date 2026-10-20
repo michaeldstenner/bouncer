@@ -33,7 +33,7 @@ def cmd_check(args):
     if getattr(args, "llm", False):
         decision, reason, _prompt_chars, _queue_snapshot = call_llm(
             "Bash", {"command": command}, cwd, config
-        )
+        )[:4]
         if decision is None or decision in ("TIMEOUT", "LLM_ERROR"):
             action = config.get("on_unavailable", "ask")
             label  = decision or "UNAVAILABLE"

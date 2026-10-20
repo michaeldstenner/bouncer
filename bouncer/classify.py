@@ -3,6 +3,7 @@ import os
 import re
 import signal
 import shlex
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -876,6 +877,52 @@ def _segment_argv(parts: list[str]) -> list[str]:
     return argv[_command_index(argv):]
 
 
+def _path_name(executable: str) -> str | None:
+    """The bare name `executable` is reachable by on PATH, when it is a
+    full path (`/…` or `~/…`) to the very file that name resolves to;
+    otherwise None."""
+    if not executable.startswith(("/", "~/")):
+        return None
+    name = os.path.basename(executable)
+    found = shutil.which(name) if name else None
+    if found is None:
+        return None
+    try:
+        same = os.path.samefile(os.path.expanduser(executable), found)
+    except OSError:
+        return None
+    return name if same else None
+
+
+def normalize_tool_paths(command: str) -> str:
+    """`command` as the classifier should see it: every executable given
+    by a full path that is the same file as a binary on PATH rewritten to
+    its bare name. `~/Documents/Code/penny/bin/penny audit X` becomes
+    `penny audit X`.
+
+    A full path into another project's folder reads to the classifier as
+    "that project's code", even when the call only runs the tool; the bare
+    name says what it is. Only the text the classifier is shown changes —
+    the guard, escalation and the log all see the command as written.
+    Arguments are never rewritten, only an executable in command position.
+    """
+    segments = _command_segments(command)
+    if not segments:
+        return command
+    names = {}
+    for parts in segments:
+        argv = _segment_argv(parts)
+        if argv and argv[0] not in names:
+            name = _path_name(argv[0])
+            if name is not None:
+                names[argv[0]] = name
+    for full, name in names.items():
+        command = re.sub(
+            r"(^|[;&|(`\n]|\$\()(\s*)" + re.escape(full) + r"(?=\s|$|[;&|)])",
+            lambda m: m.group(1) + m.group(2) + name, command)
+    return command
+
+
 def _copy_writes_protected(argv: list[str], cwd: Path) -> bool:
     """For cp / rsync: whether the destination is protected. A protected file
     among the sources is only being read."""
@@ -1503,28 +1550,99 @@ def get_classification(
     action_to_take: ALLOW | DENY | ASK | None (if skipped/disabled)
     prompt_chars: combined system+user prompt length, or None if LLM not called
     """
-    cwd_path = Path(cwd) if cwd else Path.cwd()
+    d = classify_call(tool_name, tool_input, cwd, harness, permission_mode)
+    return (d["decision"], d["reason"], d["action"], d["prompt_chars"],
+            d["queue_snapshot"])
 
-    bypassed = bypass_source(cwd_path)
+
+def _session_launch_dir() -> Path | None:
+    """The launch directory of the Claude Code session this hook runs
+    under, or None (another harness, or no session). An agent's `cd`
+    moves its shell, not this."""
+    from . import proposals as _proposals
+    try:
+        launch, _nested = _proposals.calling_session()
+    except Exception:
+        return None
+    return launch
+
+
+def effective_cwd(cwd: Path) -> tuple[Path, Path | None]:
+    """Where to look for the project, and the launch directory used when
+    that is not `cwd` itself.
+
+    The project is found from the hook's cwd, which is the agent's SHELL
+    cwd. A session whose shell has moved somewhere unarmed — its scratchpad
+    under /private/tmp, say — would otherwise run unjudged. So when `cwd`
+    has no bouncer project above it, the session's launch directory is
+    used instead, if that one has. The guard still reads paths from `cwd`.
+    """
+    if project_has_bouncer(cwd):
+        return cwd, None
+    launch = _session_launch_dir()
+    if launch is not None and project_has_bouncer(launch):
+        return launch, launch
+    return cwd, None
+
+
+def _llm_input(tool_input: dict) -> tuple[dict, str | None]:
+    """The tool input the classifier is shown, and the command as shown
+    when it differs from the one that runs."""
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command:
+        return tool_input, None
+    shown = normalize_tool_paths(command)
+    if shown == command:
+        return tool_input, None
+    return dict(tool_input, command=shown), shown
+
+
+def classify_call(
+    tool_name: str,
+    tool_input: dict,
+    cwd: str,
+    harness: str = "unknown",
+    permission_mode: str | None = None,
+) -> dict:
+    """get_classification with everything it learned along the way:
+    decision, reason, action, prompt_chars, queue_snapshot, plus
+    `explain` (policy_quote, request_fact, tokens — whatever the reply
+    carried), `classified_command` (the command as the classifier saw it,
+    when it was rewritten) and `cwd_fallback` (the launch directory whose
+    project was used, when the cwd had none)."""
+    cwd_path = Path(cwd) if cwd else Path.cwd()
+    project_cwd, fallback = effective_cwd(cwd_path)
+    out = {"decision": "SKIP", "reason": "", "action": None,
+           "prompt_chars": None, "queue_snapshot": None, "explain": {},
+           "classified_command": None,
+           "cwd_fallback": str(fallback) if fallback else None}
+
+    def done(decision, reason, action=None, prompt_chars=None, snap=None):
+        out.update(decision=decision, reason=reason, action=action,
+                   prompt_chars=prompt_chars, queue_snapshot=snap)
+        return out
+
+    bypassed = bypass_source(project_cwd)
     if bypassed is not None:
-        return ("SKIP", f"bouncer is bypassed (enabled: bypass in {bypassed})",
-                None, None, None)
+        return done("SKIP",
+                    f"bouncer is bypassed (enabled: bypass in {bypassed})")
 
     # The hard guard first, armed tree or not: "agents never edit bouncer
     # config" holds everywhere, not only where someone ran `bouncer init`.
+    # It reads paths from the real cwd, not the fallback.
     management_denial = _management_denial_reason(tool_name, tool_input, cwd_path)
     if management_denial:
-        return "DENY", management_denial, "DENY", 0, None
+        return done("DENY", management_denial, "DENY", 0)
 
-    config = _merged_config(cwd_path)
-    if not project_has_bouncer(cwd_path):
+    config = _merged_config(project_cwd)
+    if not project_has_bouncer(project_cwd):
         if _uninitialized_refuses(tool_name, config):
-            return ("DENY", _UNINITIALIZED_BLOCKED_REASON, "DENY", 0, None)
-        return "SKIP", "no project config", None, None, None
+            return done("DENY", _UNINITIALIZED_BLOCKED_REASON, "DENY", 0)
+        return done("SKIP", _NO_PROJECT_REASON)
 
     skip = _skip_reason(tool_name, tool_input, config)
     if skip:
-        return "SKIP", skip, None, None, None
+        return done("SKIP", skip)
 
     command = tool_input.get("command", "")
 
@@ -1532,11 +1650,15 @@ def get_classification(
     if escalation is not None:
         escalate_reason, _underlying = escalation
         if not profile_allows_ask(config):
-            return "DENY", _ESCALATION_OFF_REASON, "DENY", None, None
-        return "ESCALATE", escalate_reason, "ASK", None, None
+            return done("DENY", _ESCALATION_OFF_REASON, "DENY")
+        return done("ESCALATE", escalate_reason, "ASK")
 
+    llm_input, out["classified_command"] = _llm_input(tool_input)
     try:
-        decision, reason, prompt_chars, snap = call_llm(tool_name, tool_input, cwd_path, config)
+        result = call_llm(tool_name, llm_input, project_cwd, config)
+        decision, reason, prompt_chars, snap = result[:4]
+        if len(result) > 4 and isinstance(result[4], dict):
+            out["explain"] = result[4]
     except Exception as exc:
         decision, reason, prompt_chars, snap = None, str(exc), None, None
 
@@ -1548,10 +1670,10 @@ def get_classification(
             fallback_action,
             f"LLM unavailable: {reason}"
         )
-        return display_dec, final_reason, final_dec, prompt_chars, snap
+        return done(display_dec, final_reason, final_dec, prompt_chars, snap)
 
     if decision in ("ALLOW", "DENY"):
-        return decision, reason, decision, prompt_chars, None
+        return done(decision, reason, decision, prompt_chars)
 
     # UNSURE
     fallback_action = _fallback_action(config, "on_unsure", harness,
@@ -1560,7 +1682,11 @@ def get_classification(
         fallback_action,
         f"LLM unsure: {reason}"
     )
-    return "UNSURE", final_reason, final_dec, prompt_chars, None
+    return done("UNSURE", final_reason, final_dec, prompt_chars)
+
+
+_NO_PROJECT_REASON = (
+    "no bouncer project at the cwd or at the session's launch directory")
 
 
 # `uninitialized: blocked` — what an agent is told in a tree with no
@@ -1599,20 +1725,25 @@ def run_classify(
     and EXITS the process.
     """
     cwd_path = Path(cwd) if cwd else Path.cwd()
+    # The project comes from the cwd, or from the session's launch
+    # directory when the cwd has none (see effective_cwd). The guard below
+    # still reads paths from cwd_path.
+    project_cwd, fallback = effective_cwd(cwd_path)
+    base_extra = {"cwd_fallback": str(fallback)} if fallback else {}
 
     # `enabled: bypass`: nothing runs at all, not even the guard. (cmd_classify
     # checks first; this covers in-process callers.)
-    if bypass_source(cwd_path) is not None:
+    if bypass_source(project_cwd) is not None:
         sys.exit(0)
 
     # Initialized or not, the guards below run. Only what follows them
     # differs: an uninitialized tree (no .bouncer/config.yaml anywhere up to
     # $HOME) has no project log, no profile state and no escalation, and gets
     # what `uninitialized:` says — see _uninitialized_refuses.
-    armed          = project_has_bouncer(cwd_path)
-    config         = _merged_config(cwd_path)
-    proj_log       = project_log_file(cwd_path) if armed else None
-    bouncer_dir    = _find_bouncer_dir(cwd_path) if armed else None
+    armed          = project_has_bouncer(project_cwd)
+    config         = _merged_config(project_cwd)
+    proj_log       = project_log_file(project_cwd) if armed else None
+    bouncer_dir    = _find_bouncer_dir(project_cwd) if armed else None
     rid            = os.getpid()
     command        = tool_input.get("command", "")
 
@@ -1642,7 +1773,7 @@ def run_classify(
     management_denial = _management_denial_reason(tool_name, tool_input, cwd_path)
     if management_denial:
         log_decision(tool_name, tool_input, cwd, "DENY", management_denial,
-                     config, proj_log)
+                     config, proj_log, extra=base_extra)
         notify_decision(
             cfg=config,
             tool_name=tool_name,
@@ -1665,6 +1796,10 @@ def run_classify(
             _emit_hook_response("DENY", _UNINITIALIZED_BLOCKED_REASON, fmt,
                                 False)
             return
+        # Unjudged: say so in the user log, so a call that ran with no
+        # classifier is never silent.
+        log_decision(tool_name, tool_input, cwd, "SKIP", _NO_PROJECT_REASON,
+                     config, None)
         sys.exit(0)
 
     # `bouncer escalate [reason]` is the out-of-band escalation signal that
@@ -1693,7 +1828,10 @@ def run_classify(
     # intercept list, bouncer's own diagnostic commands) BEFORE logging a
     # PENDING entry — otherwise a non-intercepted call strands a PENDING with
     # no resolving entry. Shares _skip_reason with get_classification.
-    if _skip_reason(tool_name, tool_input, config):
+    skip = _skip_reason(tool_name, tool_input, config)
+    if skip:
+        log_decision(tool_name, tool_input, cwd, "SKIP", skip, config,
+                     proj_log, extra=base_extra)
         sys.exit(0)
 
     # ESCALATE bypasses the LLM, so we log a single entry (no PENDING).
@@ -1810,8 +1948,11 @@ def run_classify(
                  None, proj_log, rid)
 
     t0 = time.monotonic()
-    decision, reason, action, prompt_chars, snap = get_classification(
-        tool_name, tool_input, cwd, harness, permission_mode)
+    detail = classify_call(tool_name, tool_input, cwd, harness,
+                           permission_mode)
+    decision, reason, action = (detail["decision"], detail["reason"],
+                                detail["action"])
+    prompt_chars, snap = detail["prompt_chars"], detail["queue_snapshot"]
     elapsed = time.monotonic() - t0
 
     if decision == "SKIP":
@@ -1820,10 +1961,16 @@ def run_classify(
     if ABORT_EVENT.is_set():
         decision, reason, action = "ALLOW", "user aborted — allowing", "ALLOW"
 
+    # Why, as fields: the policy line relied on, the fact in the request that
+    # triggered it, the command as the classifier saw it if that was
+    # rewritten, and the launch directory if the cwd had no project.
+    extra = dict(base_extra, **detail["explain"])
+    if detail["classified_command"]:
+        extra["classified_command"] = detail["classified_command"]
     log_decision(tool_name, tool_input, cwd, decision, reason,
                  config, proj_log, rid,
                  elapsed_s=elapsed, prompt_chars=prompt_chars,
-                 queue_snapshot=snap)
+                 queue_snapshot=snap, extra=extra)
     # Record this bare attempt so a later `# ESCALATE:` of the same command is
     # recognized as a genuine retry rather than a pre-emptive escalation.
     if config.get("escalation_requires_attempt", True):

@@ -48,7 +48,7 @@ def _project_entries(cwd_path: Path, width: int) -> list[dict]:
         except Exception:
             continue
         decision = str(row.get("decision", "")).upper()
-        if not decision or decision == "PENDING":
+        if not decision or decision in ("PENDING", "SKIP"):
             continue
         entries.append({"d": decision, "t": row.get("tool", "?")})
         if len(entries) >= width:

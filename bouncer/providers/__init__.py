@@ -76,7 +76,9 @@ Applying policy rules:
 
 Respond with EXACTLY this format, nothing else:
 DECISION: <ALLOW|DENY|UNSURE>
-REASON: <one sentence>"""
+REASON: <one short sentence linking the fact below to the policy below>
+POLICY: <the policy line(s) you relied on, quoted word for word and only as much as matters; separate several with " | "; write "general rules" if no policy line applies>
+FACT: <the few words of the tool call that triggered them, quoted>"""
 
 
 def _load_system_prompt() -> str:
@@ -121,6 +123,22 @@ def _build_prompt(
                       else f"Tool: {tool_name}\n{_render_tool_input(tool_input)}")
     system_text = "\n\n---\n\n".join([system_prompt, "Policy context:\n" + policy_context])
     return system_text, tool_desc
+
+
+def _parse_explanation(response_text: str) -> dict:
+    """The POLICY / FACT lines of a verdict, as log fields. Optional: a
+    custom system prompt, or a reply cut off by a small max_tokens, may
+    leave them out, and the verdict stands without them."""
+    found = {}
+    for line in (response_text or "").splitlines():
+        upper = line.upper()
+        for label, key in (("POLICY:", "policy_quote"),
+                           ("FACT:", "request_fact")):
+            if upper.startswith(label) and key not in found:
+                value = line.split(":", 1)[1].strip()
+                if value:
+                    found[key] = value
+    return found
 
 
 def _parse_llm_text(response_text: str) -> tuple[str, str]:
@@ -194,16 +212,22 @@ def _outcome_to_error(
     return f"LLM error: {outcome}"
 
 
+# The four-line reply (DECISION, REASON, POLICY, FACT) runs ~100-170
+# tokens; 80 used to cut it off after the verdict. A cap, not a cost: the
+# model stops when the format is done.
+_REPLY_TOKENS = 256
+
+
 def _classifier_extra(provider: str, llm_cfg: dict) -> dict:
     # Ollama uses num_predict and does not need a large completion budget for
-    # the strict two-line classifier response. OpenAI-compatible reasoning
+    # the strict four-line classifier response. OpenAI-compatible reasoning
     # models may spend hidden tokens before emitting final text, so keep their
     # default max_tokens high enough to avoid empty completions.
-    extra: dict = {"num_predict": 80}
+    extra: dict = {"num_predict": _REPLY_TOKENS}
     if provider in ("openai", "openai_compatible"):
         extra["max_tokens"] = 1024
     else:
-        extra["max_tokens"] = 80
+        extra["max_tokens"] = _REPLY_TOKENS
     extra.update(llm_cfg.get("extra_params", {}) or {})
     if llm_cfg.get("num_ctx"):
         extra["num_ctx"] = llm_cfg["num_ctx"]
@@ -292,7 +316,10 @@ def call_llm(
     *,
     policy_context: str | None = None,
 ) -> tuple[str | None, str, int | None, list[dict] | None]:
-    """Classify a tool call. Returns (decision, reason, prompt_chars, queue_snapshot).
+    """Classify a tool call. Returns (decision, reason, prompt_chars,
+    queue_snapshot), plus a fifth element on a verdict: the explanation
+    fields (policy_quote, request_fact, tokens) parsed from the reply.
+    Callers take `[:4]` when they want only the verdict.
 
     decision is ALLOW / DENY / UNSURE, or None if the backend was unreachable.
     prompt_chars is the combined length of system+user prompt text, or None on
@@ -358,4 +385,11 @@ def call_llm(
         )
 
     decision, reason = _parse_llm_text(result.text or "")
-    return decision, reason, result.prompt_chars, None
+    explain = _parse_explanation(result.text or "")
+    tokens = {k: v for k, v in (
+        ("prompt", getattr(result, "prompt_tokens", None)),
+        ("response", getattr(result, "response_tokens", None)))
+        if v is not None}
+    if tokens:
+        explain["tokens"] = tokens
+    return decision, reason, result.prompt_chars, None, explain

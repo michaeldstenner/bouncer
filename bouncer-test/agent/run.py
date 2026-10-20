@@ -174,7 +174,9 @@ def run_hook_mode(scenarios, project, out_dir, log_path, stub) -> list[tuple]:
         decision = terminal_decision(log_path, sentinel)
 
         if want == "SKIP":
-            ok = (not consulted) and decision is None and proc.returncode == 0 and not proc.stdout.strip()
+            # Skipped, never judged: logged as SKIP (every skip is), and
+            # the stub was never consulted.
+            ok = (not consulted) and decision == "SKIP" and proc.returncode == 0 and not proc.stdout.strip()
             detail = f"consulted={consulted} log={decision} exit={proc.returncode}"
         elif want == "ALLOW":
             ok = decision == "ALLOW" and proc.returncode == 0 and "allow" in proc.stdout

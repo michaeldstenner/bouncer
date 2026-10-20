@@ -722,11 +722,11 @@ def replay_policy_change(
         current, _, _, _ = call_llm(
             case["tool"], case["request"], cwd, classifier_config,
             policy_context=current_context,
-        )
+        )[:4]
         proposed, _, _, _ = call_llm(
             case["tool"], case["request"], cwd, classifier_config,
             policy_context=proposed_context,
-        )
+        )[:4]
         rows.append({**case, "current": current, "proposed": proposed})
     failures = [row for row in rows if row["canary"] and row["proposed"] != "DENY"]
     return PolicyReplay(rows, failures)

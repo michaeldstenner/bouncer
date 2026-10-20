@@ -114,7 +114,7 @@ def _make_bouncer_dir(tmp_path, config_yaml=None, policy_md=None):
 def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
               call_llm_exc=None, config_yaml=None, policy_md=None, fmt="json",
               escalation_dir=None, profile_dir=None, user_config_yaml=None,
-              user_policy_md=None, llm_calls=None):
+              user_policy_md=None, llm_calls=None, launch_dir=None):
     """
     Run cmd_classify with patched stdin/paths/LLM.
     Returns (stdout_str, stderr_str, exit_code).
@@ -129,6 +129,10 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
 
     llm_calls: a list; each LLM call appends its (tool_name, tool_input, cwd)
     so a test can tell "not called" from "called and allowed".
+
+    launch_dir: the Claude Code session's launch directory, as the
+    cwd fallback sees it. None (default) means no session, so the real
+    process tree -- this test run's own session -- is never consulted.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -168,6 +172,8 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
             patch.object(escalation_mod, "ESCALATION_DIR", esc_dir),
             patch.object(grant_mod, "GRANT_DIR", esc_dir),
             patch.object(profile_mod, "PROFILE_DIR", prof_dir),
+            patch.object(classify_mod, "_session_launch_dir",
+                         return_value=launch_dir),
             call_llm_patch,
             patch("sys.stdin", io.StringIO(json.dumps(full_input))),
             redirect_stdout(stdout_buf),
@@ -2696,11 +2702,12 @@ class TestCallLlm(unittest.TestCase):
         with patch("bouncer.llmclient.LLMClient", FakeClient):
             decision, reason, _, _snap = providers_mod.call_llm(
                 "Bash", {"command": "pwd"}, Path("/tmp/project"), config,
-            )
+            )[:4]
 
         self.assertEqual((decision, reason), ("ALLOW", "ok"))
         self.assertEqual(captured["cfg"].extra_params["max_tokens"], 4096)
-        self.assertEqual(captured["cfg"].extra_params["num_predict"], 80)
+        self.assertEqual(captured["cfg"].extra_params["num_predict"],
+                         providers_mod._REPLY_TOKENS)
         self.assertEqual(captured["cfg"].extra_params["temperature"], 0.2)
         self.assertEqual(
             captured["cfg"].circuit_key,
@@ -2734,11 +2741,12 @@ class TestCallLlm(unittest.TestCase):
         with patch("bouncer.llmclient.LLMClient", FakeClient):
             decision, reason, _, _snap = providers_mod.call_llm(
                 "Bash", {"command": "pwd"}, Path("/tmp/project"), config,
-            )
+            )[:4]
 
         self.assertEqual((decision, reason), ("ALLOW", "ok"))
         self.assertEqual(captured["cfg"].extra_params["max_tokens"], 1024)
-        self.assertEqual(captured["cfg"].extra_params["num_predict"], 80)
+        self.assertEqual(captured["cfg"].extra_params["num_predict"],
+                         providers_mod._REPLY_TOKENS)
 
 
 class TestCheckCommand(unittest.TestCase):
