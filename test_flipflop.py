@@ -117,6 +117,79 @@ class TestNormalize(_Fixture):
         self.assertNotIn("classified_command", _rows(self.proj)[-1])
 
 
+class TestExecShim(_Fixture):
+    """A tool whose wrapper finds its repo from $0 cannot be symlinked onto
+    PATH; it gets a shim that execs it. Exactly that shim — and nothing
+    looser — counts as the same program."""
+
+    def setUp(self):
+        super().setUp()
+        self.real = self.root / "tools" / "printwatch" / "bin" / "printwatch"
+        self.real.parent.mkdir(parents=True)
+        self.real.write_text("#!/bin/sh\n")
+        self.real.chmod(0o755)
+
+    def shim(self, text):
+        path = self.root / "bin" / "printwatch"
+        path.write_text(text)
+        path.chmod(0o755)
+
+    def assertRewritten(self, yes):
+        command = "~/tools/printwatch/bin/printwatch preflight --plate satin"
+        shown = classify_mod.normalize_tool_paths(command)
+        self.assertEqual(shown, "printwatch preflight --plate satin"
+                         if yes else command)
+
+    def test_the_printwatch_shim(self):
+        self.shim("#!/bin/sh\n"
+                  "# Shim so printwatch is on PATH by bare name.\n"
+                  "# Its own wrapper finds its repo from $0.\n"
+                  'exec "$HOME/tools/printwatch/bin/printwatch" "$@"\n')
+        self.assertRewritten(True)
+
+    def test_braced_home_and_literal_path_and_env_shebang(self):
+        for line in ('exec "${HOME}/tools/printwatch/bin/printwatch" "$@"',
+                     f'exec "{self.real}" "$@"'):
+            for bang in ("#!/bin/sh", "#!/usr/bin/env bash", "#!/bin/zsh"):
+                with self.subTest(line=line, bang=bang):
+                    self.shim(f"{bang}\n{line}\n")
+                    self.assertRewritten(True)
+
+    def test_anything_else_is_not_a_shim(self):
+        for text in (
+                # Another command alongside the exec.
+                '#!/bin/sh\nexport X=1\nexec "$HOME/tools/printwatch/bin/'
+                'printwatch" "$@"\n',
+                # Arguments added or changed.
+                '#!/bin/sh\nexec "$HOME/tools/printwatch/bin/printwatch" '
+                '--dry-run "$@"\n',
+                '#!/bin/sh\nexec "$HOME/tools/printwatch/bin/printwatch" "$1"\n',
+                '#!/bin/sh\nexec "$HOME/tools/printwatch/bin/printwatch" $@\n',
+                # Another variable, or a path built at run time.
+                '#!/bin/sh\nexec "$PW_ROOT/bin/printwatch" "$@"\n',
+                '#!/bin/sh\nexec "$HOME/tools/$TOOL/bin/printwatch" "$@"\n',
+                '#!/bin/sh\nexec "$(dirname $0)/printwatch" "$@"\n',
+                # Not exec, no shebang, not a plain shell.
+                '#!/bin/sh\n"$HOME/tools/printwatch/bin/printwatch" "$@"\n',
+                'exec "$HOME/tools/printwatch/bin/printwatch" "$@"\n',
+                '#!/usr/bin/env python3\nexec "$HOME/tools/printwatch/bin/'
+                'printwatch" "$@"\n',
+                # A tilde does not expand inside quotes.
+                '#!/bin/sh\nexec "~/tools/printwatch/bin/printwatch" "$@"\n'):
+            with self.subTest(text=text):
+                self.shim(text)
+                self.assertRewritten(False)
+
+    def test_a_shim_for_a_different_file(self):
+        self.shim('#!/bin/sh\nexec "$HOME/other/bin/penny" "$@"\n')
+        self.assertRewritten(False)
+
+    def test_a_large_file_is_not_read_as_a_shim(self):
+        self.shim('#!/bin/sh\nexec "$HOME/tools/printwatch/bin/printwatch" '
+                  '"$@"\n' + "#" * 5000 + "\n")
+        self.assertRewritten(False)
+
+
 class TestCwdFallback(_Fixture):
 
     def test_unarmed_shell_falls_back_to_the_launch_project(self):

@@ -877,21 +877,69 @@ def _segment_argv(parts: list[str]) -> list[str]:
     return argv[_command_index(argv):]
 
 
+# A PATH shim that only hands over to another file: `exec "<path>" "$@"`,
+# where <path> is literal apart from a leading $HOME / ${HOME}. Nothing
+# else matches — no other variable, quoting, argument or command.
+_SHIM_SHEBANG = re.compile(
+    r"#!\s*(?:/usr/bin/env\s+)?(?:/bin/|/usr/bin/)?(?:sh|bash|dash|zsh)\s*$")
+_SHIM_EXEC = re.compile(
+    r'exec\s+"(?:\$HOME|\$\{HOME\})?([^"$`\\]+)"\s+"\$@"\s*')
+_SHIM_MAX_BYTES = 4096
+
+
+def _exec_shim_target(path: str) -> str | None:
+    """The file an exec-only shim at `path` runs, or None when `path` is
+    anything but one: a shebang for a plain shell, comments and blank
+    lines, and exactly one `exec "<path>" "$@"`. Such a shim runs that
+    file with the same arguments, so the two are the same program."""
+    try:
+        if os.path.getsize(path) > _SHIM_MAX_BYTES:
+            return None
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not lines or not _SHIM_SHEBANG.fullmatch(lines[0]):
+        return None
+    body = [line.strip() for line in lines[1:]
+            if line.strip() and not line.strip().startswith("#")]
+    if len(body) != 1:
+        return None
+    match = _SHIM_EXEC.fullmatch(body[0])
+    if match is None:
+        return None
+    target = match.group(1)
+    if body[0][len("exec"):].lstrip().startswith(('"$HOME', '"${HOME}')):
+        if not target.startswith("/"):
+            return None
+        target = str(Path.home()) + target
+    elif not target.startswith("/"):
+        return None
+    return target
+
+
 def _path_name(executable: str) -> str | None:
     """The bare name `executable` is reachable by on PATH, when it is a
-    full path (`/…` or `~/…`) to the very file that name resolves to;
-    otherwise None."""
+    full path (`/…` or `~/…`) to the very file that name resolves to, or
+    to the file an exec-only shim of that name runs; otherwise None."""
     if not executable.startswith(("/", "~/")):
         return None
     name = os.path.basename(executable)
     found = shutil.which(name) if name else None
     if found is None:
         return None
-    try:
-        same = os.path.samefile(os.path.expanduser(executable), found)
-    except OSError:
-        return None
-    return name if same else None
+    full = os.path.expanduser(executable)
+    candidates = [found]
+    target = _exec_shim_target(found)
+    if target is not None:
+        candidates.append(target)
+    for candidate in candidates:
+        try:
+            if os.path.samefile(full, candidate):
+                return name
+        except OSError:
+            continue
+    return None
 
 
 def normalize_tool_paths(command: str) -> str:

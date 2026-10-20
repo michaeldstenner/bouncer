@@ -193,6 +193,21 @@ changes; the guard, escalation and `input_summary` keep the command as
 written, and `classified_command` records what was judged. Arguments are never
 rewritten.
 
+The binary on `PATH` may also be an exec-only shim, for a tool whose wrapper
+finds its repo from `$0` and so cannot be symlinked:
+
+```sh
+#!/bin/sh
+# comments and blank lines are fine
+exec "$HOME/Documents/Code/printwatch/bin/printwatch" "$@"
+```
+
+It counts as the same program only when it is exactly that: a plain-shell
+shebang, then a single `exec "<path>" "$@"`, where `<path>` is literal apart
+from a leading `$HOME` or `${HOME}`, and resolves to the file that was
+typed. Anything else (another command, another variable, changed
+arguments) is not a shim, and the command is left as written.
+
 **A shell outside any project.** The project is found from the hook's `cwd`,
 which is the agent's shell cwd. When no `.bouncer/config.yaml` is found
 there, bouncer uses the project of the Claude Code session's launch
