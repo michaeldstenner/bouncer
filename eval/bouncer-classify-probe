@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Measure bouncer's Haiku classifier on a set of tool calls.
+
+Bouncer classifies with an LLM, so a single verdict is a sample, not a rule.
+This runs each case N times against the real merged policy for a cwd and
+tallies the verdicts, which is what you need before designing around a
+reported denial -- or to show that a prompt change actually moved something.
+
+Read-only by construction: it calls bouncer's pure `get_classification`, so
+nothing is logged to the decision log and no tool call is ever executed.
+
+Cases file is JSON: a list of objects
+    {"name": "...", "tool": "Bash", "input": {"command": "..."},
+     "expect": "ALLOW", "cwd": "/optional/override"}
+
+Exit 0 if every case matched its `expect` on every run, else 1.
+"""
+
+import argparse
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("cases", help="JSON file of cases")
+    ap.add_argument("--runs", type=int, default=3,
+                    help="samples per case (default 3)")
+    ap.add_argument("--cwd", default=str(Path.cwd()),
+                    help="project dir whose policy is used (default: cwd)")
+    ap.add_argument("--system-prompt", metavar="FILE",
+                    help="override the default system prompt, to A/B a change")
+    ap.add_argument("--project-policy", metavar="FILE",
+                    help="use FILE as the project's policy.md instead of the "
+                         "live one (user policy and policy.local.md are kept), "
+                         "to replay a decision under the policy it was made "
+                         "under. Nothing on disk is changed.")
+    ap.add_argument("--json", metavar="OUT",
+                    help="also write one JSON line per run: verdict, reason, "
+                         "token counts, and (where the bouncer under test has "
+                         "them) the explanation fields and rewritten command")
+    args = ap.parse_args()
+
+    from bouncer.llmclient import configure
+    from bouncer.config import USER_CONFIG_DIR
+    configure(app="bouncer", config_dir=USER_CONFIG_DIR)
+
+    from bouncer import classify as classify_mod
+    from bouncer import providers as providers_mod
+
+    if args.system_prompt:
+        text = Path(args.system_prompt).read_text(encoding="utf-8")
+        providers_mod.DEFAULT_SYSTEM_PROMPT = text
+        print(f"system prompt: {args.system_prompt} ({len(text)} chars)\n")
+    else:
+        print("system prompt: bouncer default (in-tree)\n")
+
+    if args.project_policy:
+        from bouncer import config as config_mod
+        override = Path(args.project_policy).resolve()
+        real_load = config_mod.load_policy
+
+        def load_policy(path):
+            # Only the project's policy.md is swapped; every other layer
+            # is read as bouncer reads it.
+            if Path(path).name == "policy.md" and Path(path).parent.name == ".bouncer":
+                return real_load(override)
+            return real_load(path)
+
+        config_mod.load_policy = load_policy
+        print(f"project policy: {override}\n")
+
+    # Token counts straight from each LLM result, so the old and the new
+    # reply format are measured the same way. The last result of a call is
+    # the outer one (a fallback client wraps the plain one).
+    from bouncer import llmclient as llmclient_mod
+    seen = []
+
+    def recording(cls):
+        real_call = cls.call
+
+        def call(self, *a, **kw):
+            result = real_call(self, *a, **kw)
+            seen.append(result)
+            return result
+        cls.call = call
+
+    recording(llmclient_mod.LLMClient)
+    recording(llmclient_mod.FallbackLLMClient)
+    detail_fn = getattr(classify_mod, "classify_call", None)
+
+    cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))
+    failures = 0
+    records = []
+
+    for case in cases:
+        cwd = case.get("cwd", args.cwd)
+        expect = case.get("expect")
+        tally = Counter()
+        reasons = {}
+        tokens = []
+        for _ in range(args.runs):
+            seen.clear()
+            explain, shown = {}, None
+            if detail_fn is not None:
+                d = detail_fn(case["tool"], case["input"], cwd)
+                decision, reason = d["decision"], d["reason"]
+                explain, shown = d["explain"], d["classified_command"]
+            else:
+                decision, reason, _action, _pc, _snap = classify_mod.get_classification(
+                    case["tool"], case["input"], cwd,
+                )
+            result = seen[-1] if seen else None
+            pt = getattr(result, "prompt_tokens", None)
+            rt = getattr(result, "response_tokens", None)
+            if pt is not None and rt is not None:
+                tokens.append((pt, rt))
+            tally[decision] += 1
+            reasons.setdefault(decision, reason)
+            records.append({"case": case["name"], "decision": decision,
+                            "reason": reason, "prompt_tokens": pt,
+                            "response_tokens": rt,
+                            "classified_command": shown,
+                            **{k: v for k, v in explain.items()
+                               if k != "tokens"}})
+
+        summary = "  ".join(f"{k}={v}" for k, v in tally.most_common())
+        if tokens:
+            summary += (f"   tokens in/out mean "
+                        f"{sum(t[0] for t in tokens) / len(tokens):.0f}/"
+                        f"{sum(t[1] for t in tokens) / len(tokens):.1f}")
+        off = [d for d in tally if expect and d != expect]
+        mark = "FAIL" if off else "ok  "
+        if off:
+            failures += 1
+        print(f"{mark} {case['name']}")
+        print(f"       expect={expect or '-'}  {summary}")
+        for decision, reason in reasons.items():
+            print(f"       {decision}: {reason[:150]}")
+        print()
+
+    print(f"cases: {len(cases)}   off-expectation: {failures}   runs each: {args.runs}")
+    if args.json:
+        Path(args.json).write_text(
+            "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Read-only scrub of bouncer decision logs across projects.
+
+Scans ROOT/*/.bouncer/log.jsonl, keeps decisions of the chosen kinds
+since a date, redacts token-like strings, and writes:
+
+  OUT/counts.tsv   project, total, ALLOW, DENY, ASK (window)
+  OUT/denials.tsv  project, ts, tool, decision, key, summary, reason
+  OUT/keys.tsv     project, key, allow, deny, ask (action-key mix)
+
+Never writes anywhere but OUT.  Never edits logs.
+"""
+import argparse
+import ast
+import collections
+import glob
+import json
+import os
+import re
+import shlex
+
+REDACT = [
+    (re.compile(r'(sk-[A-Za-z0-9_\-]{8,})'), '[REDACTED-KEY]'),
+    (re.compile(r'(gh[pousr]_[A-Za-z0-9]{10,})'), '[REDACTED-GH]'),
+    (re.compile(r'(xox[abpr]-[A-Za-z0-9\-]{8,})'), '[REDACTED-SLACK]'),
+    (re.compile(r'(eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-\.]+)'),
+     '[REDACTED-JWT]'),
+    (re.compile(r'(?i)(bearer\s+)[A-Za-z0-9_\-\.=]{8,}'),
+     r'\1[REDACTED]'),
+    (re.compile(r'(?i)((?:token|api[_-]?key|password|passwd|secret|'
+                r'authorization)["\']?\s*[:=]\s*["\']?)[^\s"\'&,}]{6,}'),
+     r'\1[REDACTED]'),
+    (re.compile(r'\b[A-Fa-f0-9]{40,}\b'), '[REDACTED-HEX]'),
+    (re.compile(r'\b(?=[A-Za-z0-9+_\-]*\d)(?=[A-Za-z0-9+_\-]*[A-Z])'
+                r'(?=[A-Za-z0-9+_\-]*[a-z])[A-Za-z0-9+_\-]{32,}={0,2}'),
+     '[REDACTED-B64]'),
+]
+
+
+def redact(s):
+    for rx, rep in REDACT:
+        s = rx.sub(rep, s)
+    return s
+
+
+def parse_summary(s):
+    try:
+        v = json.loads(s)
+        if isinstance(v, dict):
+            return v
+    except Exception:
+        pass
+    try:
+        v = ast.literal_eval(s)
+        if isinstance(v, dict):
+            return v
+    except Exception:
+        pass
+    m = re.search(r"['\"]command['\"]:\s*['\"](.*)", s, re.S)
+    if m:
+        return {'command': m.group(1).encode().decode('unicode_escape',
+                                                     'replace')}
+    m = re.search(r"['\"]file_path['\"]:\s*['\"]([^'\"]*)['\"]", s)
+    if m:
+        return {'file_path': m.group(1)}
+    return {}
+
+
+ENVSET = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+
+
+def cmd_key(cmd):
+    cmd = cmd.strip()
+    # first segment of a pipeline / chain
+    first = re.split(r'\s*(?:&&|\|\||;|\|)\s*', cmd, maxsplit=1)[0]
+    try:
+        toks = shlex.split(first)
+    except ValueError:
+        toks = first.split()
+    while toks and (ENVSET.match(toks[0]) or toks[0] in
+                    ('cd', 'sudo', 'env', 'time', 'timeout', 'nohup')):
+        if toks[0] == 'cd' and len(toks) > 1:
+            # cd DIR && real-command: key on the real command
+            rest = re.split(r'\s*(?:&&|;)\s*', cmd, maxsplit=1)
+            if len(rest) > 1:
+                return cmd_key(rest[1])
+        if toks[0] == 'timeout' and len(toks) > 1:
+            toks = toks[2:]
+            continue
+        toks = toks[1:]
+    if not toks:
+        return 'bash:?'
+    head = os.path.basename(toks[0])
+    sub = ''
+    if head in ('git', 'ssh', 'launchctl', 'brew', 'uv', 'npm', 'docker',
+                'gh', 'tp', 'docket', 'helper', 'chore', 'kubectl',
+                'systemctl', 'bouncer', 'tmux', 'scp', 'rsync', 'make',
+                'python3', 'python', 'pip', 'curl', 'defaults', 'open',
+                'osascript', 'security', 'squirrel', 'watchdog', 'ha'):
+        rest = [t for t in toks[1:] if not t.startswith('-')]
+        if rest:
+            sub = ' ' + rest[0][:30]
+    return 'bash:' + head + sub
+
+
+def path_key(p):
+    home = os.path.expanduser('~')
+    p = p.replace(home, '~')
+    parts = p.split('/')
+    return '/'.join(parts[:5]) if len(parts) > 5 else p
+
+
+def action_key(tool, d):
+    if tool == 'Bash' and 'command' in d:
+        return cmd_key(str(d['command']))
+    for k in ('file_path', 'notebook_path', 'path'):
+        if k in d:
+            return tool + ':' + path_key(str(d[k]))
+    return tool
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument('--root', default=os.path.expanduser(
+        '~/Documents/Code'))
+    ap.add_argument('--since', default='2026-09-12')
+    ap.add_argument('--decisions',
+                    default='DENY,ASK,ESCALATE,UNSURE,TIMEOUT,LLM_ERROR')
+    ap.add_argument('--out-dir', required=True)
+    ap.add_argument('--width', type=int, default=400)
+    a = ap.parse_args()
+    keep = set(a.decisions.split(','))
+    os.makedirs(a.out_dir, exist_ok=True)
+    counts = collections.defaultdict(collections.Counter)
+    keys = collections.defaultdict(collections.Counter)
+    rows = []
+    for log in sorted(glob.glob(os.path.join(a.root, '*', '.bouncer',
+                                             'log.jsonl'))):
+        proj = log.split(os.sep)[-3]
+        with open(log, errors='replace') as fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                ts = e.get('timestamp', '')
+                if ts[:10] < a.since:
+                    continue
+                dec = e.get('decision', '')
+                if dec in ('PENDING', 'BREAK', ''):
+                    continue
+                d = parse_summary(e.get('input_summary', ''))
+                tool = e.get('tool', '')
+                key = action_key(tool, d)
+                counts[proj][dec] += 1
+                keys[(proj, key)][dec] += 1
+                if dec in keep:
+                    summ = redact(str(e.get('input_summary', '')))
+                    summ = summ.replace('\t', ' ').replace('\n', ' ')
+                    reason = redact(str(e.get('reason', '')))
+                    reason = reason.replace('\t', ' ').replace('\n', ' ')
+                    rows.append((proj, ts[:19], tool, dec, key,
+                                 summ[:a.width], reason[:a.width],
+                                 str(e.get('cwd', ''))))
+    with open(os.path.join(a.out_dir, 'counts.tsv'), 'w') as f:
+        decs = ['ALLOW'] + sorted(keep)
+        f.write('project\ttotal\t' + '\t'.join(decs) + '\n')
+        for p, c in sorted(counts.items(),
+                           key=lambda kv: -sum(kv[1][d] for d in keep)):
+            f.write('%s\t%d\t' % (p, sum(c.values())) +
+                    '\t'.join(str(c[d]) for d in decs) + '\n')
+    with open(os.path.join(a.out_dir, 'denials.tsv'), 'w') as f:
+        f.write('project\tts\ttool\tdecision\tkey\tsummary\treason\tcwd\n')
+        for r in rows:
+            f.write('\t'.join(r) + '\n')
+    with open(os.path.join(a.out_dir, 'keys.tsv'), 'w') as f:
+        f.write('project\tkey\tallow\tnot_allowed\tdetail\n')
+        for (p, k), c in sorted(keys.items(),
+                                key=lambda kv: (kv[0][0],
+                                                -sum(kv[1][d]
+                                                     for d in keep))):
+            n = sum(c[d] for d in keep)
+            if n == 0:
+                continue
+            det = ','.join('%s=%d' % (d, c[d]) for d in sorted(keep)
+                           if c[d])
+            f.write('%s\t%s\t%d\t%d\t%s\n' % (p, k, c['ALLOW'], n, det))
+    print('rows=%d projects=%d out=%s' % (len(rows), len(counts),
+                                          a.out_dir))
+
+
+if __name__ == '__main__':
+    main()

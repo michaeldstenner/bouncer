@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Turn bouncer decision-log events into a bouncer-classify-probe cases file.
+
+Looks up each EVENT_ID (a prefix is enough) in the decision log, decodes its
+input_summary, and writes one probe case per event. The log truncates long
+inputs with "…[truncated]"; the text is cut there, and for a Bash command a
+dangling heredoc is closed with its delimiter and a dangling double quote is
+closed, so the case is a well-formed call close to the one that was judged.
+
+Read-only apart from writing OUT (or stdout).
+"""
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+MARK = "…[truncated]"
+
+
+def recover_input(summary: str) -> dict:
+    """input_summary is a JSON object that may be cut mid-string."""
+    try:
+        parsed = json.loads(summary)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key, value in list(parsed.items()):
+            if isinstance(value, str) and MARK in value:
+                parsed[key] = value.split(MARK, 1)[0]
+                parsed["_truncated"] = True
+        return parsed
+    # Cut at the marker; keep only the "command" (or first) string field.
+    head = summary.split(MARK, 1)[0]
+    match = re.match(r'\{"(\w+)": "', head)
+    if not match:
+        raise ValueError("cannot recover input_summary")
+    key = match.group(1)
+    raw = head[match.end():]
+    # Drop a trailing half escape so the string decodes.
+    while raw.endswith("\\") and not raw.endswith("\\\\"):
+        raw = raw[:-1]
+    value = json.loads('"' + raw + '"')
+    return {key: value, "_truncated": True}
+
+
+def close_command(command: str) -> str:
+    heredoc = re.search(r"<<-?\s*['\"]?(\w+)['\"]?", command)
+    if heredoc:
+        delim = heredoc.group(1)
+        tail = command[heredoc.end():]
+        if not re.search(rf"^\t*{re.escape(delim)}$", tail, re.M):
+            return command.rstrip("\n") + f"\n{delim}"
+        return command
+    unescaped = len(re.findall(r'(?<!\\)"', command))
+    if unescaped % 2:
+        command += '"'
+    return command
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("event_ids", nargs="+", help="event_id or prefix")
+    ap.add_argument("--log", default=str(Path.home() / ".local/share/bouncer/log.jsonl"))
+    ap.add_argument("--expect", default=None, help="expect value for every case")
+    ap.add_argument("-o", "--out", help="write here instead of stdout")
+    args = ap.parse_args()
+
+    wanted = {eid: None for eid in args.event_ids}
+    with open(args.log, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            eid = entry.get("event_id", "")
+            for prefix in wanted:
+                if wanted[prefix] is None and eid.startswith(prefix):
+                    wanted[prefix] = entry
+
+    cases = []
+    for prefix, entry in wanted.items():
+        if entry is None:
+            print(f"not found: {prefix}", file=sys.stderr)
+            return 1
+        tool_input = recover_input(entry.get("input_summary", "{}"))
+        truncated = tool_input.pop("_truncated", False)
+        if entry.get("tool") == "Bash" and "command" in tool_input:
+            tool_input["command"] = close_command(tool_input["command"])
+        case = {
+            "name": f"{entry.get('timestamp', '')[:19]} {Path(entry.get('cwd', '')).name}"
+                    f" {entry.get('decision')}{' (truncated)' if truncated else ''}",
+            "tool": entry.get("tool"),
+            "input": tool_input,
+            "cwd": entry.get("cwd"),
+        }
+        if args.expect:
+            case["expect"] = args.expect
+        cases.append(case)
+
+    text = json.dumps(cases, indent=2, ensure_ascii=False) + "\n"
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"wrote {len(cases)} case(s) to {args.out}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
