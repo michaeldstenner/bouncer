@@ -23,6 +23,15 @@ Always DENY regardless of envelope:
 - writing to /etc/, /usr/, /System/, or other system paths
 - curl/wget piped directly to bash/sh
 
+Where the call runs:
+- The call is shown with its working directory and its project root (the
+  directory holding the project's .bouncer/). A relative path or bare
+  filename in the call (parkify.py, tests/, stringing/x.py) resolves against
+  the working directory: under the project root it is the project's own
+  file, whatever it is named. A module, test or file whose name differs from
+  the project's name is still the project's own when it lives there. Judge
+  "outside the project" only from a path that resolves outside the root.
+
 Applying policy rules:
 - Judge a read-only/inspect command (viewing or listing, not modifying) on its
   own. A policy rule against editing, modifying, or "touching" a path does not
@@ -74,11 +83,13 @@ Applying policy rules:
   denial there leaves it with no move. A rule against editing bouncer's config
   governs edits to those files, not running the command.
 
-Respond with EXACTLY this format, nothing else:
-DECISION: <ALLOW|DENY|UNSURE>
-REASON: <one short sentence linking the fact below to the policy below>
+Respond with EXACTLY this format, nothing else, in this order. Reason first
+and decide last: DECISION is the conclusion of REASON and must agree with it.
+Keep REASON to one or two sentences; do not think out loud past that.
+FACT: <the few words of the tool call that matter, quoted>
 POLICY: <the policy line(s) you relied on, quoted word for word and only as much as matters; separate several with " | "; write "general rules" if no policy line applies>
-FACT: <the few words of the tool call that triggered them, quoted>"""
+REASON: <one or two short sentences linking the fact to the policy>
+DECISION: <ALLOW|DENY|UNSURE>"""
 
 
 def _load_system_prompt() -> str:
@@ -107,13 +118,43 @@ def _render_tool_input(tool_input: dict) -> str:
     return f"file_path: {file_path}\nInput: {rest_json}"
 
 
+def _show_path(path: Path) -> str:
+    """A path as the classifier sees it: absolute, plus its ~ form when
+    it is under the home directory, since policies are written that way."""
+    text = str(path)
+    try:
+        rel = Path(path).relative_to(Path.home())
+    except ValueError:
+        return text
+    return f"{text} (~/{rel})" if str(rel) != "." else f"{text} (~)"
+
+
+def _where(cwd: Path, shell_cwd: Path | None) -> str:
+    """The Working directory / Project root header. Without it the
+    classifier reads `parkify.py` or `tests/` as some other project's."""
+    from ..config import _find_bouncer_dir
+    work = Path(shell_cwd) if shell_cwd is not None else Path(cwd)
+    lines = [f"Working directory: {_show_path(work)}"]
+    try:
+        found = _find_bouncer_dir(Path(cwd))
+    except Exception:
+        found = None
+    if found is not None:
+        lines.append(f"Project root: {_show_path(found.parent)}")
+    return "\n".join(lines)
+
+
 def _build_prompt(
     tool_name: str,
     tool_input: dict,
     cwd: Path,
     config: dict,
     policy_context: str | None = None,
+    shell_cwd: Path | None = None,
 ) -> tuple[str, str]:
+    """`cwd` is where the project (and its policy) is found; `shell_cwd`
+    is where the call runs and relative paths resolve, when that differs
+    (a shell that has cd'd, or the launch-dir fallback)."""
     system_prompt  = _load_system_prompt()
     if policy_context is None:
         policy_context = _build_policy_context(cwd, config)
@@ -121,6 +162,7 @@ def _build_prompt(
     tool_desc      = (f"Tool: {tool_name}\nCommand: {command}"
                       if command
                       else f"Tool: {tool_name}\n{_render_tool_input(tool_input)}")
+    tool_desc      = f"{_where(cwd, shell_cwd)}\n{tool_desc}"
     system_text = "\n\n---\n\n".join([system_prompt, "Policy context:\n" + policy_context])
     return system_text, tool_desc
 
@@ -212,10 +254,12 @@ def _outcome_to_error(
     return f"LLM error: {outcome}"
 
 
-# The four-line reply (DECISION, REASON, POLICY, FACT) runs ~100-170
-# tokens; 80 used to cut it off after the verdict. A cap, not a cost: the
-# model stops when the format is done.
-_REPLY_TOKENS = 256
+# The four-line reply runs ~100-170 tokens. A cap, not a cost: the model
+# stops when the format is done. DECISION now comes last, so a reply cut
+# by the cap has no verdict and is UNSURE; 512 leaves room for a REASON
+# that runs long (at 256, 13 of 2026-11-12's 33 printwatch/3DP denials
+# were cut mid-REASON, several reasoning their way to ALLOW).
+_REPLY_TOKENS = 512
 
 
 def _classifier_extra(provider: str, llm_cfg: dict) -> dict:
@@ -315,6 +359,7 @@ def call_llm(
     config: dict,
     *,
     policy_context: str | None = None,
+    shell_cwd: Path | None = None,
 ) -> tuple[str | None, str, int | None, list[dict] | None]:
     """Classify a tool call. Returns (decision, reason, prompt_chars,
     queue_snapshot), plus a fifth element on a verdict: the explanation
@@ -338,7 +383,8 @@ def call_llm(
                 None, None)
 
     system_text, user_text = _build_prompt(
-        tool_name, tool_input, cwd, config, policy_context=policy_context
+        tool_name, tool_input, cwd, config, policy_context=policy_context,
+        shell_cwd=shell_cwd,
     )
 
     configs = _build_llm_configs(llm_cfg)

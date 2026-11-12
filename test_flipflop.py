@@ -293,13 +293,16 @@ class TestExplanation(_Fixture):
                 for key, value in explain.items():
                     self.assertEqual(row[key], value)
 
-    def test_system_prompt_asks_for_the_fields_after_the_verdict(self):
+    def test_system_prompt_asks_for_the_verdict_last(self):
+        # Reversed 2026-11-12 (docket 1124): verdict-first let the model
+        # commit to DENY, then reason its way to "this read is
+        # permitted" and get cut off. A cut reply now has no verdict and
+        # is UNSURE, which is the honest answer.
         tail = providers_mod.DEFAULT_SYSTEM_PROMPT.rsplit(
-            "nothing else:", 1)[1]
+            "nothing else, in this order.", 1)[1]
         order = [tail.index(k) for k in
-                 ("DECISION:", "REASON:", "POLICY:", "FACT:")]
-        self.assertEqual(order, sorted(order),
-                         "verdict first, so a cut-off reply keeps it")
+                 ("FACT:", "POLICY:", "REASON:", "DECISION:")]
+        self.assertEqual(order, sorted(order), "reason first, verdict last")
 
 
 if __name__ == "__main__":

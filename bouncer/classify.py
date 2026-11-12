@@ -1703,7 +1703,8 @@ def classify_call(
 
     llm_input, out["classified_command"] = _llm_input(tool_input)
     try:
-        result = call_llm(tool_name, llm_input, project_cwd, config)
+        result = call_llm(tool_name, llm_input, project_cwd, config,
+                          shell_cwd=cwd_path)
         decision, reason, prompt_chars, snap = result[:4]
         if len(result) > 4 and isinstance(result[4], dict):
             out["explain"] = result[4]

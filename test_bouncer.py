@@ -155,7 +155,7 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
         stderr_buf = io.StringIO()
         exit_code  = 0
 
-        def _fake_llm(tool_name, tool_input, cwd, config):
+        def _fake_llm(tool_name, tool_input, cwd, config, **_kw):
             if llm_calls is not None:
                 llm_calls.append((tool_name, tool_input, cwd))
             if call_llm_exc is not None:
