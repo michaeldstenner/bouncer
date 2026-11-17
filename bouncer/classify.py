@@ -1400,11 +1400,19 @@ def _shell_writes_protected_path(command: str, cwd: Path) -> bool:
     return False
 
 
+# Every policy-edit refusal ends with the sanctioned route, so an agent
+# that hits the guard mid-task does not send the user to the terminal.
+_PROPOSE_HINT = (
+    " To change another project's policy, write a diff to a file whose "
+    "path does not name the policy, then `bouncer propose <project> "
+    "<diff>` and have the user approve the code; the orchestrator runs "
+    "`bouncer apply <code>`.")
+
 _SHELL_WRITE_REASON = (
     "Bouncer policy and configuration files cannot be modified by an agent "
     "shell command. Reading them is fine: use cat, sed -n, grep, diff or "
     "your file-reading tool. A program that names them is refused because "
-    "bouncer cannot see what it writes.")
+    "bouncer cannot see what it writes." + _PROPOSE_HINT)
 
 # A tool whose name has one of these in it may write the paths it is given.
 _MUTATING_WORDS = (
@@ -1514,7 +1522,7 @@ def _management_denial_reason(
         for value in _string_values(tool_input):
             if _is_protected_bouncer_path(value, cwd):
                 return ("Bouncer policy and configuration files cannot be modified "
-                        "by an agent tool call")
+                        "by an agent tool call." + _PROPOSE_HINT)
     if "patch" in tool_name.lower():
         patch_text = tool_input.get("patchText") or tool_input.get("patch_text") or ""
         for line in str(patch_text).splitlines():
@@ -1525,7 +1533,7 @@ def _management_denial_reason(
                     line[len(prefix):].strip(), cwd
                 ):
                     return ("Bouncer policy and configuration files cannot be modified "
-                            "by an agent patch tool call")
+                            "by an agent patch tool call." + _PROPOSE_HINT)
     return None
 
 

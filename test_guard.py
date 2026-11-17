@@ -535,5 +535,42 @@ class TestOptedOutProject(_Fixture):
         self.assertRefused(f"python3 -c \"open('{self.policy}','w')\"")
 
 
+# ---------------------------------------------------------------------------
+# Every refusal names the sanctioned route
+# ---------------------------------------------------------------------------
+
+class TestRefusalPointsAtPropose(_Fixture):
+    """An agent refused mid-task should reach for `bouncer propose`, not
+    send the user to the terminal. Shell, tool and patch refusals alike."""
+
+    _HINT = ("`bouncer propose <project> <diff>`", "`bouncer apply <code>`")
+
+    def _refusal(self, hook):
+        _, err, code = _classify(hook, config_yaml=_OPTED_OUT)
+        self.assertEqual(code, 2, err)
+        self.assertIn(_REFUSED, err)
+        return err
+
+    def assertHinted(self, err):
+        for part in self._HINT:
+            self.assertIn(part, err)
+
+    def test_shell_refusal(self):
+        self.assertHinted(self._refusal(
+            _bash(f"echo x >> {self.policy}")))
+
+    def test_tool_refusal(self):
+        self.assertHinted(self._refusal(
+            {"tool_name": "Edit",
+             "tool_input": {"file_path": str(self.policy),
+                            "old_string": "old", "new_string": "new"}}))
+
+    def test_patch_tool_refusal(self):
+        patch_text = f"*** Begin Patch\n*** Update File: {self.policy}\n"
+        self.assertHinted(self._refusal(
+            {"tool_name": "apply_patch",
+             "tool_input": {"patchText": patch_text}}))
+
+
 if __name__ == "__main__":
     unittest.main()
