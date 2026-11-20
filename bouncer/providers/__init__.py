@@ -186,7 +186,9 @@ def _parse_explanation(response_text: str) -> dict:
 def _parse_llm_text(response_text: str) -> tuple[str, str]:
     text = response_text.strip()
     if not text:
-        return "UNSURE", "LLM output does not match expected format (empty response)"
+        return "UNSURE", ("no verdict: the classifier's reply was empty, so "
+                          "bouncer did not judge this call. Read the command "
+                          "itself.")
 
     decision, reason = None, None
     for line in text.splitlines():
@@ -199,7 +201,17 @@ def _parse_llm_text(response_text: str) -> tuple[str, str]:
             reason = line.split(":", 1)[1].strip()
 
     if decision is None or reason is None:
-        return "UNSURE", "LLM output does not match expected format"
+        # Shown to the user in an ASK, beside whatever the harness adds
+        # (Claude Code appends the hook's source, "[settings]", and where
+        # hooks are configured). Say plainly that nothing judged the call,
+        # so neither that nor a fragment of the reply reads as a summary.
+        started = any(line.upper().startswith(("FACT:", "POLICY:", "REASON:"))
+                      for line in text.splitlines())
+        why = ("the classifier's reply was cut off before its verdict"
+               if started
+               else "the classifier's reply was not in the expected format")
+        return "UNSURE", (f"no verdict: {why}, so bouncer did not judge "
+                          "this call. Read the command itself.")
 
     return decision, reason
 
@@ -255,11 +267,14 @@ def _outcome_to_error(
 
 
 # The four-line reply runs ~100-170 tokens. A cap, not a cost: the model
-# stops when the format is done. DECISION now comes last, so a reply cut
-# by the cap has no verdict and is UNSURE; 512 leaves room for a REASON
-# that runs long (at 256, 13 of 2026-11-12's 33 printwatch/3DP denials
-# were cut mid-REASON, several reasoning their way to ALLOW).
-_REPLY_TOKENS = 512
+# stops when the format is done. DECISION comes last, so a reply cut by
+# the cap has no verdict and is UNSURE. At 256, 13 of 2026-11-12's 33
+# printwatch/3DP denials were cut mid-REASON. At 512, 7 of 3,218 calls
+# (2026-11-12..20) were cut: on a long chained command with a heredoc the
+# model quotes the whole command as FACT. Replayed at 1024 they finish.
+# Bounding FACT in the prompt also fixed them, but flipped 5 of 8 recent
+# denials to ALLOW, so the prompt stays and the cap moves.
+_REPLY_TOKENS = 1024
 
 
 def _classifier_extra(provider: str, llm_cfg: dict) -> dict:

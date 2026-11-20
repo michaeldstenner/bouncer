@@ -2667,7 +2667,34 @@ class TestParseLlmText(unittest.TestCase):
     def test_malformed_output_falls_back_to_unsure(self):
         decision, reason = _parse_llm_text("pwd is allowed because it is read-only")
         self.assertEqual(decision, "UNSURE")
-        self.assertIn("does not match expected format", reason)
+        self.assertIn("not in the expected format", reason)
+        self.assertIn("did not judge", reason)
+
+    def test_reply_cut_before_verdict_names_no_fragment(self):
+        # 2026-11-20 3DP: FACT echoed a 940-char command, the reply hit the
+        # token cap before DECISION. The ASK must say the call was not
+        # judged, and carry nothing of the reply as a description.
+        cut = ("FACT: `cd 3DP; SHA=$(shasum ...) python3 - <<'EOF' ...`\n"
+               "POLICY: \"Stage print jobs for Printdeck\" | \"settings\"\n"
+               "REASON: The command reads printer state and stag")
+        decision, reason = _parse_llm_text(cut)
+        self.assertEqual(decision, "UNSURE")
+        self.assertIn("cut off before its verdict", reason)
+        self.assertIn("did not judge", reason)
+        for fragment in ("shasum", "Printdeck", "settings", "stag"):
+            self.assertNotIn(fragment, reason)
+
+    def test_empty_reply_is_not_judged(self):
+        decision, reason = _parse_llm_text("  \n")
+        self.assertEqual(decision, "UNSURE")
+        self.assertIn("did not judge", reason)
+
+    def test_reply_cap_leaves_room_for_a_quoted_command(self):
+        # 512 cut replies that quoted a long command as FACT.
+        from bouncer.providers import _classifier_extra
+        extra = _classifier_extra("openrouter", {})
+        self.assertGreaterEqual(extra["max_tokens"], 1024)
+        self.assertGreaterEqual(extra["num_predict"], 1024)
 
 
 class TestCallLlm(unittest.TestCase):
