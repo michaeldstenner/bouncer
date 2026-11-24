@@ -138,6 +138,9 @@ def _classify(hook_input, *, call_llm_result=("ALLOW", "ok", None, None),
         tmp_path = Path(tmp)
         user_dir = tmp_path / "user"
         user_dir.mkdir()
+        if user_config_yaml is not None:
+            (user_dir / "config.yaml").write_text(
+                user_config_yaml, encoding="utf-8")
         esc_dir = Path(escalation_dir) if escalation_dir else tmp_path / "escalation"
         prof_dir = Path(profile_dir) if profile_dir else tmp_path / "profile"
 
@@ -356,6 +359,11 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(config["on_unsure"], "ask")
         self.assertEqual(config["on_unavailable"], "ask")
         self.assertEqual(config["tools"], "all")
+        self.assertEqual(config["fast_path"], {
+            "trusted_roots": [],
+            "read_tools": [],
+            "read_only_git": False,
+        })
         self.assertNotIn("model", config["llm"])  # no default; must be set in user config
 
     def test_merged_config_project_overrides_default(self):
@@ -377,6 +385,32 @@ class TestConfigLoading(unittest.TestCase):
                 config = _merged_config(tmp_path)
         self.assertEqual(config["on_unsure"], "allow")     # project wins
         self.assertEqual(config["on_unavailable"], "deny") # user survives
+
+    def test_fast_path_is_user_only_and_does_not_cross_layer_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            user_cfg = tmp_path / "user_config.yaml"
+            user_cfg.write_text(
+                "fast_path:\n"
+                "  trusted_roots: [~/Code]\n"
+                "  read_only_git: true\n",
+                encoding="utf-8",
+            )
+            _make_bouncer_dir(
+                tmp_path,
+                config_yaml=(
+                    "fast_path:\n"
+                    "  trusted_roots: [/]\n"
+                    "  read_tools: [Read]\n"
+                ),
+            )
+            with patch.object(cfg, "USER_CONFIG_FILE", user_cfg):
+                config = _merged_config(tmp_path)
+        self.assertEqual(config["fast_path"], {
+            "trusted_roots": ["~/Code"],
+            "read_tools": [],
+            "read_only_git": True,
+        })
 
     def test_merged_config_local_overrides_project(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1046,7 +1080,7 @@ class TestInit(unittest.TestCase):
                 installed_hook.read_text(encoding="utf-8"),
             )
 
-    def test_opencode_install_patches_existing_jsonc_config(self):
+    def test_opencode_install_removes_legacy_npm_entries(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             opencode_dir = home / ".config" / "opencode"
@@ -1056,6 +1090,7 @@ class TestInit(unittest.TestCase):
                 '{\n'
                 '  "$schema": "https://opencode.ai/config.json",\n'
                 '  // existing comments are accepted while reading\n'
+                '  "plugin": ["bouncer", ["bouncer", {"replyDelayMs": 10}], "keep"],\n'
                 '  "snapshot": false\n'
                 '}\n',
                 encoding="utf-8",
@@ -1069,7 +1104,7 @@ class TestInit(unittest.TestCase):
 
             self.assertFalse((opencode_dir / "opencode.json").exists())
             data = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["plugin"], ["bouncer"])
+            self.assertEqual(data["plugin"], ["keep"])
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
 
     def test_opencode_config_accepts_jsonc_trailing_commas(self):
@@ -1088,7 +1123,7 @@ class TestInit(unittest.TestCase):
         self.assertEqual(data["plugin"], ["bouncer"])
         self.assertEqual(data["provider"]["local"]["models"], {})
 
-    def test_opencode_install_preserves_jsonc_when_plugin_already_present(self):
+    def test_opencode_install_preserves_config_without_legacy_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             opencode_dir = home / ".config" / "opencode"
@@ -1097,7 +1132,7 @@ class TestInit(unittest.TestCase):
             original = (
                 '{\n'
                 '  // keep this comment\n'
-                '  "plugin": ["bouncer"],\n'
+                '  "plugin": ["keep"],\n'
                 '  "snapshot": false\n'
                 '}\n'
             )
@@ -1112,7 +1147,7 @@ class TestInit(unittest.TestCase):
             self.assertEqual(config_path.read_text(encoding="utf-8"), original)
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
 
-    def test_opencode_install_creates_json_config_when_none_exists(self):
+    def test_opencode_install_does_not_create_config_when_none_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             opencode_dir = home / ".config" / "opencode"
@@ -1124,8 +1159,7 @@ class TestInit(unittest.TestCase):
                 init_mod._install_opencode()
 
             config_path = opencode_dir / "opencode.json"
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["plugin"], ["bouncer"])
+            self.assertFalse(config_path.exists())
             self.assertTrue((opencode_dir / "plugin" / "bouncer.ts").exists())
 
     def test_opencode_install_bails_when_json_and_jsonc_both_exist(self):
@@ -1383,6 +1417,43 @@ class TestClassify(unittest.TestCase):
             call_llm_result=("DENY", "bad", None, None),
         )
         self.assertEqual(code, 0)
+
+    def test_read_only_git_fast_path_bypasses_llm(self):
+        user_config = (
+            "fast_path:\n"
+            "  trusted_roots: [/]\n"
+            "  read_only_git: true\n"
+        )
+        out, _, code = _classify(
+            self._hook(command="git status --short && git diff --stat"),
+            config_yaml="enabled: true\ntools: [Bash]\n",
+            user_config_yaml=user_config,
+            call_llm_result=("DENY", "LLM was called", None, None),
+        )
+        self.assertEqual(code, 0)
+        response = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(response["permissionDecision"], "allow")
+        self.assertIn("read-only Git fast path",
+                      response["permissionDecisionReason"])
+
+    def test_trusted_read_fast_path_bypasses_llm(self):
+        out, _, code = _classify(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/example.txt"},
+            },
+            config_yaml="enabled: true\ntools: [Read]\n",
+            user_config_yaml=(
+                "fast_path:\n"
+                "  trusted_roots: [/]\n"
+                "  read_tools: [Read]\n"
+            ),
+            call_llm_result=("DENY", "LLM was called", None, None),
+        )
+        self.assertEqual(code, 0)
+        response = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(response["permissionDecision"], "allow")
+        self.assertIn("trusted-root Read", response["permissionDecisionReason"])
 
     def test_allow_exits_0_with_permission_grant(self):
         out, _, code = _classify(
@@ -2593,6 +2664,50 @@ class TestLint(unittest.TestCase):
         _, code = _lint(yaml)
         self.assertEqual(code, 0)
 
+    def test_valid_fast_path(self):
+        yaml = (
+            "fast_path:\n"
+            "  trusted_roots: [~/Code]\n"
+            "  read_tools: [Read, Glob, Grep]\n"
+            "  read_only_git: true\n"
+        )
+        out, code = _lint(yaml)
+        self.assertEqual(code, 0)
+        self.assertIn("read_only_git=True", out)
+
+    def test_invalid_fast_path_types(self):
+        cases = (
+            "fast_path: yes\n",
+            "fast_path:\n  trusted_roots: ~/Code\n",
+            "fast_path:\n  read_tools: Read\n",
+            "fast_path:\n  read_tools: [Write]\n",
+            "fast_path:\n  read_only_git: yes-please\n",
+        )
+        for yaml in cases:
+            with self.subTest(yaml=yaml):
+                _, code = _lint(yaml)
+                self.assertEqual(code, 1)
+
+    def test_project_fast_path_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bouncer_dir = Path(tmp) / ".bouncer"
+            bouncer_dir.mkdir()
+            path = bouncer_dir / "config.yaml"
+            path.write_text(
+                "fast_path:\n  trusted_roots: [/]\n",
+                encoding="utf-8",
+            )
+
+            class _A:
+                file = str(path)
+
+            stdout_buf = io.StringIO()
+            with redirect_stdout(stdout_buf):
+                with self.assertRaises(SystemExit) as ctx:
+                    cmd_lint(_A())
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("user-config only", stdout_buf.getvalue())
+
     def test_valid_review_llm_block(self):
         yaml = "review:\n  llm:\n    provider: anthropic\n    model: reviewer\n"
         out, code = _lint(yaml)
@@ -2777,6 +2892,40 @@ class TestCallLlm(unittest.TestCase):
 
 
 class TestCheckCommand(unittest.TestCase):
+    def test_check_reports_fast_path_without_calling_llm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _make_bouncer_dir(
+                tmp_path,
+                config_yaml="tools: [+@all, -@internal]\n",
+            )
+            user_config = tmp_path / "user.yaml"
+            user_config.write_text(
+                (
+                    "fast_path:\n"
+                    f"  trusted_roots: [{tmp_path}]\n"
+                    "  read_only_git: true\n"
+                ),
+                encoding="utf-8",
+            )
+
+            class _A:
+                cmd = "git status --short"
+                llm = False
+
+            stdout_buf = io.StringIO()
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE", user_config),
+                patch("bouncer.commands.check.call_llm") as llm,
+                patch("pathlib.Path.cwd", return_value=tmp_path),
+                redirect_stdout(stdout_buf),
+            ):
+                cmd_check(_A())
+
+        llm.assert_not_called()
+        self.assertIn("ALLOW", stdout_buf.getvalue())
+        self.assertIn("read-only Git fast path", stdout_buf.getvalue())
+
     def test_check_llm_accepts_current_call_llm_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -2948,6 +3097,185 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(result.outcome, "success")
         self.assertEqual(captured["temperature"], 0)
         self.assertIs(type(captured["temperature"]), int)
+
+
+class TestFastPath(unittest.TestCase):
+    def _config(self, root):
+        return {
+            "fast_path": {
+                "trusted_roots": [str(root)],
+                "read_tools": ["Read", "Glob", "Grep"],
+                "read_only_git": True,
+            },
+        }
+
+    def test_read_tools_allow_paths_inside_trusted_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "trusted"
+            root.mkdir()
+            config = self._config(root)
+            cases = (
+                ("Read", {"file_path": str(root / "file.txt")}),
+                ("read", {"filePath": "file.txt"}),
+                ("Glob", {"pattern": "**/*.py", "path": str(root)}),
+                ("Grep", {"pattern": "needle"}),
+            )
+            for tool, tool_input in cases:
+                with self.subTest(tool=tool, tool_input=tool_input):
+                    reason = classify_mod._fast_path_allow_reason(
+                        tool, tool_input, root, config)
+                    self.assertIn("trusted-root", reason)
+
+    def test_read_tools_reject_escape_and_unrecognized_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "trusted"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "escape").symlink_to(outside, target_is_directory=True)
+            config = self._config(root)
+            cases = (
+                ("Read", {"file_path": str(outside / "secret")}),
+                ("Read", {"file_path": str(root / ".." / "outside")}),
+                ("Read", {"file_path": str(root / "escape" / "secret")}),
+                ("Read", {"file_path": str(root / "file"),
+                          "filePath": str(outside / "secret")}),
+                ("Glob", {"pattern": "*.py", "path": str(outside),
+                          "file_path": str(root)}),
+                ("Glob", {"pattern": "../outside/*.py", "path": str(root)}),
+                ("Glob", {"pattern": f"{outside}/*.py", "path": str(root)}),
+                ("Grep", {"pattern": "needle", "path": str(root),
+                          "include": "../outside/*.py"}),
+                ("Fetch", {"path": str(root / "file")}),
+                ("Read", {}),
+            )
+            for tool, tool_input in cases:
+                with self.subTest(tool=tool, tool_input=tool_input):
+                    reason = classify_mod._fast_path_allow_reason(
+                        tool, tool_input, root, config)
+                    self.assertIsNone(reason)
+
+    def test_symlinked_trusted_root_checks_both_path_views(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            physical = base / "physical"
+            physical.mkdir()
+            root = base / "trusted-link"
+            root.symlink_to(physical, target_is_directory=True)
+            reason = classify_mod._fast_path_allow_reason(
+                "Read",
+                {"file_path": str(root / "file.txt")},
+                root,
+                self._config(root),
+            )
+            self.assertIn("trusted-root", reason)
+
+    def test_read_only_git_accepts_narrow_inspection_commands(self):
+        commands = (
+            "git status --short",
+            "git diff --cached",
+            "git log --oneline -10",
+            "git show HEAD:README.md",
+            "git rev-list --count HEAD",
+            "git rev-parse --show-toplevel",
+            "git ls-files -z",
+            "git ls-tree -r HEAD",
+            "git cat-file -p HEAD",
+            "git grep -n needle -- '*.py'",
+            "git remote -v",
+            "git --no-pager log --oneline",
+            "GIT_OPTIONAL_LOCKS=0 git status && git diff --stat",
+            "git status; git log -1",
+            "git status\ngit diff --stat",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(
+                    classify_mod._is_read_only_git_command(command))
+
+    def test_read_only_git_rejects_writes_and_shell_features(self):
+        commands = (
+            "git push origin main",
+            "git status && rm -rf /tmp/x",
+            "git status | cat",
+            "git status > /tmp/status",
+            "git -C /tmp status",
+            "FOO=bar git status",
+            "env git status",
+            "/tmp/git status",
+            "git diff --output=/tmp/patch",
+            "git diff --ext-diff",
+            "git diff --no-index a b",
+            "git grep -Ovim needle",
+            "git grep -nOvim needle",
+            "git grep -nO'sh -c touch /tmp/nope' needle",
+            "git grep --open-files-in-pager=vim needle",
+            "git cat-file --filters HEAD:file",
+            "git remote get-url origin",
+            "git show $(touch /tmp/nope)",
+            "git status `touch /tmp/nope`",
+            "git diff ${X:=--output=/tmp/patch}",
+            "git diff $'--no-index' /etc/hosts /etc/passwd",
+            "git diff *",
+            "git show {HEAD,main}",
+            "git show ~/outside",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertFalse(
+                    classify_mod._is_read_only_git_command(command))
+
+    def test_git_fast_path_requires_trusted_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "trusted"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            reason = classify_mod._fast_path_allow_reason(
+                "Bash", {"command": "git status"}, outside,
+                self._config(root),
+            )
+            self.assertIsNone(reason)
+
+    def test_run_fast_path_logs_allow_without_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            user_dir = root / "user"
+            user_dir.mkdir()
+            _make_bouncer_dir(
+                root,
+                config_yaml="enabled: true\ntools: [Bash]\n",
+            )
+            (user_dir / "config.yaml").write_text(
+                (
+                    "fast_path:\n"
+                    f"  trusted_roots: [{root}]\n"
+                    "  read_only_git: true\n"
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(cfg, "USER_CONFIG_FILE",
+                             user_dir / "config.yaml"),
+                patch.object(cfg, "USER_POLICY_FILE",
+                             user_dir / "policy.md"),
+                patch.object(classify_mod, "call_llm") as llm,
+                patch.object(classify_mod, "log_decision") as log,
+                patch.object(classify_mod, "notify_decision"),
+                patch.object(classify_mod, "note_harness"),
+                patch.object(classify_mod, "_emit_hook_response",
+                             side_effect=SystemExit(0)),
+            ):
+                with self.assertRaises(SystemExit):
+                    classify_mod.run_classify(
+                        "Bash", {"command": "git status"}, str(root),
+                        "session-test",
+                    )
+            llm.assert_not_called()
+            decisions = [call.args[3] for call in log.call_args_list]
+            self.assertEqual(decisions, ["ALLOW"])
 
 
 class TestSkipReason(unittest.TestCase):
@@ -4217,11 +4545,39 @@ class TestPackagedIntegrationAssets(unittest.TestCase):
 
 
 class TestOpencodeReplyAudit(unittest.TestCase):
+    def test_module_exports_only_plugin_functions(self):
+        bun = shutil.which("bun")
+        if not bun:
+            self.skipTest("bun is required to exercise the opencode plugin")
+
+        plugin = (
+            Path(init_mod.__file__).parent.parent
+            / "integrations"
+            / "opencode"
+            / "bouncer_plugin.ts"
+        )
+        script = (
+            f"import * as plugin from '{plugin.as_uri()}';"
+            "console.log(JSON.stringify(Object.keys(plugin)));"
+        )
+        result = subprocess.run(
+            [bun, "-e", script],
+            cwd=plugin.parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(json.loads(result.stdout), ["BouncerPlugin"])
+
     def _run_plugin(
         self,
         decision: str,
         replied: bool = False,
         reply_fails: bool = False,
+        generation: str = "v1",
+        legacy_client: bool = False,
+        reply_returns_error: bool = False,
     ):
         bun = shutil.which("bun")
         if not bun:
@@ -4236,6 +4592,7 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             audit = root / "audit.jsonl"
+            payload = root / "payload.json"
             bindir = root / "bin"
             bindir.mkdir()
             stub = bindir / "bouncer"
@@ -4245,43 +4602,86 @@ class TestOpencodeReplyAudit(unittest.TestCase):
                     "permissionDecisionReason": "test decision",
                 }
             }
-            stub.write_text(
+            stub_text = (
                 "#!/bin/sh\n"
-                f"printf '%s\\n' '{json.dumps(response)}'\n",
-                encoding="utf-8",
+                "cat > \"$BOUNCER_TEST_PAYLOAD\"\n"
+                f"printf '%s\\n' '{json.dumps(response)}'\n"
             )
+            if decision == "deny":
+                stub_text = (
+                    "#!/bin/sh\n"
+                    "cat > \"$BOUNCER_TEST_PAYLOAD\"\n"
+                    "printf '%s\\n' 'test decision' >&2\n"
+                    "exit 2\n"
+                )
+            stub.write_text(stub_text, encoding="utf-8")
             stub.chmod(0o755)
 
             replied_event = ""
             if replied:
+                event = ("permission.replied" if generation == "v1"
+                         else "permission.v2.replied")
                 replied_event = (
                     "await hooks.event({ event: { type: "
-                    "'permission.replied', properties: { "
+                    f"'{event}', properties: {{ "
                     "sessionID: 'session-1', requestID: 'permission-1', "
                     "reply: 'always' } } });"
                 )
-            client_reply = "calls.push(input);"
+            client_reply = "calls.push({ route: 'legacy', input });"
+            if reply_returns_error:
+                client_reply += "return { error: { message: 'already answered' } };"
+            current_v1_reply = "calls.push({ route: 'v1', input });"
+            current_v2_reply = "calls.push({ route: 'v2', input });"
             if reply_fails:
                 client_reply += "throw new Error('already answered');"
+                current_v1_reply += "throw new Error('already answered');"
+                current_v2_reply += "throw new Error('already answered');"
+            request_type = ("permission.asked" if generation == "v1"
+                            else "permission.v2.asked")
+            request = (
+                "{ id: 'permission-1', sessionID: 'session-1', "
+                "permission: 'external_directory', patterns: ['/tmp/*'], "
+                "tool: { callID: 'call-1' } }"
+                if generation == "v1"
+                else
+                "{ id: 'permission-1', sessionID: 'session-1', "
+                "action: 'external_directory', resources: ['/tmp/*'], "
+                "source: { type: 'tool', messageID: 'message-1', "
+                "callID: 'call-1' } }"
+            )
+            current_client = "" if legacy_client else (
+                "clientV2: {"
+                "permission: { reply: async (input) => { "
+                f"{current_v1_reply} }} }},"
+                "v2: { session: { messages: async () => ({ data: { data: [{"
+                "id: 'message-1', type: 'assistant', content: [{ type: 'tool', "
+                "id: 'call-1', name: 'write', state: { input: { path: 'file.txt', "
+                "content: 'classified text' } } }] }] } }), permission: { reply: async (input) => { "
+                f"{current_v2_reply} }} }} }} }}"
+                "},"
+            )
             script = (
                 f"import {{ BouncerPlugin }} from '{plugin.as_uri()}';"
                 "const calls = [];"
+                "const toasts = [];"
                 "const hooks = await BouncerPlugin({"
                 "directory: '/tmp/project',"
                 "client: { postSessionIdPermissionsPermissionId: "
-                f"async (input) => {{ {client_reply} }} }}"
+                f"async (input) => {{ {client_reply} }}, "
+                "tui: { showToast: async (input) => { toasts.push(input); } } "
+                "},"
+                f"{current_client}"
                 "});"
-                "await hooks.event({ event: { type: 'permission.asked', "
-                "properties: { id: 'permission-1', sessionID: 'session-1', "
-                "permission: 'external_directory', patterns: ['/tmp/*'] } "
-                "} });"
+                f"await hooks.event({{ event: {{ type: '{request_type}', "
+                f"properties: {request} }} }});"
                 f"{replied_event}"
-                "console.log(JSON.stringify(calls));"
+                "console.log(JSON.stringify({ calls, toasts }));"
             )
             env = {
                 **os.environ,
                 "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
                 "BOUNCER_OPENCODE_AUDIT_LOG": str(audit),
+                "BOUNCER_TEST_PAYLOAD": str(payload),
             }
             result = subprocess.run(
                 [bun, "-e", script],
@@ -4291,13 +4691,19 @@ class TestOpencodeReplyAudit(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            calls = json.loads(result.stdout)
+            output = json.loads(result.stdout)
             rows = [json.loads(line) for line in audit.read_text().splitlines()]
-            return calls, rows
+            request = json.loads(payload.read_text())
+            return output["calls"], rows, output["toasts"], request
 
     def test_successful_bouncer_reply_is_attributed(self):
-        calls, rows = self._run_plugin("allow")
-        self.assertEqual(calls[0]["body"]["response"], "once")
+        calls, rows, toasts, _ = self._run_plugin("allow")
+        self.assertEqual(calls[0]["route"], "v1")
+        self.assertEqual(calls[0]["input"]["reply"], "once")
+        self.assertEqual(toasts[0]["body"]["title"], "Bouncer reviewing")
+        self.assertIn("No action is needed", toasts[0]["body"]["message"])
+        self.assertEqual(toasts[-1]["body"]["title"],
+                         "Approved by Bouncer")
         resolved = [row for row in rows
                     if row["event"] == "permission_replied"]
         self.assertEqual(resolved[0]["source"], "bouncer")
@@ -4305,26 +4711,76 @@ class TestOpencodeReplyAudit(unittest.TestCase):
         self.assertEqual(resolved[0]["outcome"], "accepted")
 
     def test_abstained_reply_is_attributed_as_not_bouncer(self):
-        calls, rows = self._run_plugin("ask", replied=True)
+        calls, rows, toasts, _ = self._run_plugin("ask", replied=True)
         self.assertEqual(calls, [])
+        self.assertEqual(toasts[-1]["body"]["title"], "Bouncer deferred")
+        self.assertIn("now yours", toasts[-1]["body"]["message"])
         resolved = [row for row in rows
                     if row["event"] == "permission_replied"]
         self.assertEqual(resolved[0]["source"], "not_bouncer")
         self.assertEqual(resolved[0]["response"], "always")
 
     def test_lost_reply_race_is_attributed_as_not_bouncer(self):
-        calls, rows = self._run_plugin(
+        calls, rows, toasts, _ = self._run_plugin(
             "allow",
             replied=True,
             reply_fails=True,
         )
-        self.assertEqual(calls[0]["body"]["response"], "once")
+        self.assertEqual(calls[0]["input"]["reply"], "once")
+        self.assertEqual(toasts[-1]["body"]["title"],
+                         "Bouncer reply not used")
         failed = [row for row in rows
                   if row["event"] == "bouncer_reply_failed"]
         self.assertEqual(failed[0]["outcome"], "not_accepted")
         resolved = [row for row in rows
                     if row["event"] == "permission_replied"]
         self.assertEqual(resolved[0]["source"], "not_bouncer")
+
+    def test_denial_sends_correction_feedback(self):
+        calls, rows, _, _ = self._run_plugin("deny")
+        self.assertEqual(calls[0]["route"], "v1")
+        self.assertEqual(calls[0]["input"]["reply"], "reject")
+        self.assertEqual(calls[0]["input"]["message"], "test decision")
+        classified = [row for row in rows if row["event"] == "classified"]
+        self.assertEqual(classified[0]["decision"], "deny")
+
+    def test_v2_permission_uses_session_owned_reply(self):
+        calls, rows, _, payload = self._run_plugin("deny", generation="v2")
+        self.assertEqual(calls[0]["route"], "v2")
+        self.assertEqual(calls[0]["input"]["sessionID"], "session-1")
+        self.assertEqual(calls[0]["input"]["requestID"], "permission-1")
+        self.assertEqual(calls[0]["input"]["reply"], "reject")
+        self.assertEqual(calls[0]["input"]["message"], "test decision")
+        asked = [row for row in rows if row["event"] == "permission_asked"]
+        self.assertEqual(asked[0]["generation"], "v2")
+        self.assertEqual(payload["tool_name"], "write")
+        self.assertEqual(payload["tool_input"], {
+            "path": "file.txt",
+            "content": "classified text",
+        })
+
+    def test_legacy_client_remains_an_allow_fallback(self):
+        calls, _, _, _ = self._run_plugin("allow", legacy_client=True)
+        self.assertEqual(calls[0]["route"], "legacy")
+        self.assertEqual(calls[0]["input"]["body"]["response"], "once")
+
+    def test_v2_without_current_client_leaves_request_pending(self):
+        calls, rows, toasts, _ = self._run_plugin(
+            "allow", generation="v2", legacy_client=True)
+        self.assertEqual(calls, [])
+        failed = [row for row in rows
+                  if row["event"] == "bouncer_reply_failed"]
+        self.assertEqual(failed[0]["outcome"], "not_accepted")
+        self.assertEqual(toasts[-1]["body"]["title"],
+                         "Bouncer reply not used")
+
+    def test_legacy_client_result_error_is_not_accepted(self):
+        calls, rows, _, _ = self._run_plugin(
+            "allow", legacy_client=True, reply_returns_error=True)
+        self.assertEqual(calls[0]["route"], "legacy")
+        failed = [row for row in rows
+                  if row["event"] == "bouncer_reply_failed"]
+        self.assertEqual(failed[0]["outcome"], "not_accepted")
 
 
 if __name__ == "__main__":

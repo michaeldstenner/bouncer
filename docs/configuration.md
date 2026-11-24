@@ -122,6 +122,61 @@ log:
 **Edit:** `bouncer config` opens `.bouncer/config.yaml` in `$EDITOR`.
 `bouncer config -e` / `-d` enable or disable bouncer without opening the editor.
 
+## Deterministic fast path
+
+`fast_path` allows a small set of requests without consulting the LLM. It is a
+**user-config-only** setting in `~/.config/bouncer/config.yaml`; a project
+cannot broaden trusted roots. It is disabled by default: `trusted_roots` and
+`read_tools` are empty, and `read_only_git` is false.
+
+```yaml
+fast_path:
+  trusted_roots:
+    - ~/Code
+  read_tools: [Read, Glob, Grep]
+  read_only_git: true
+```
+
+The read fast path recognizes only `Read`, `Glob`, and `Grep`, matched without
+case sensitivity. A tool must also be named in `read_tools`. `Read` requires a
+`file_path` or `filePath`; `Glob` and `Grep` use their `path`, or the request's
+working directory when `path` is omitted.
+
+Each read path must stay inside the same configured root in both forms:
+
+- The lexical path after expanding `~`, relative paths, and `..` components.
+- The physical path after resolving symbolic links.
+
+This rejects either `..` or a symlink inside a trusted tree when it resolves
+outside that tree. A trusted root may itself be a symlink; its lexical and
+physical forms are checked together. The check happens before the harness
+opens the path, so this is not a defense against another process racing to
+replace a symlink after classification.
+
+The Git fast path applies only to `Bash` calls whose working directory is
+inside a trusted root. It accepts these built-in inspection subcommands:
+`status`, `diff`, `log`, `show`, `rev-list`, `rev-parse`, `ls-files`,
+`ls-tree`, `cat-file`, `grep`, and exactly `remote -v` or
+`remote --verbose`. Chains are allowed only when every segment passes the same
+check.
+
+The parser rejects pipelines, redirection, command substitution, shell
+wrappers, shell expansion, arbitrary environment assignments, Git directory
+overrides, external diff/filter/editor options, and any mixed or mutating
+command. The only environment assignment accepted is
+`GIT_OPTIONAL_LOCKS=0`; the safe global options are `--no-pager` and
+`--no-optional-locks`.
+
+A trusted root also trusts the Git executable, inherited environment,
+repository configuration, and attributes used there. Git inspection commands
+can consult configured helpers, and `status` may refresh repository metadata.
+The fast path is a permission shortcut for trusted development trees, not a
+process sandbox for hostile repositories.
+
+Hard Bouncer management denials and escalation handling run before this fast
+path. A deterministic allow is logged and notified as `ALLOW`, without a
+`PENDING` LLM row.
+
 ## LLM providers
 
 `model` is required — there is no built-in default. Set it in `~/.config/bouncer/config.yaml`

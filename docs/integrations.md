@@ -294,20 +294,30 @@ Manual `~/.codex/hooks.json`:
 `bouncer init --harness=opencode` does the following:
 
 1. Copies `bouncer/integrations/opencode/bouncer_plugin.ts` to `~/.config/opencode/plugin/bouncer.ts`
-2. Adds `"bouncer"` to the `plugin` list in `~/.config/opencode/opencode.jsonc`
-   if present, otherwise `~/.config/opencode/opencode.json`. If both files
-   exist, bouncer warns and leaves the config unchanged so you can merge them
-   intentionally.
+2. Removes legacy `"bouncer"` npm entries from `~/.config/opencode/opencode.jsonc`
+   or `~/.config/opencode/opencode.json`. Files in the plugin directory are
+   auto-discovered; the npm package named `bouncer` is unrelated. If both
+   config files exist, bouncer warns and leaves them unchanged so you can merge
+   them intentionally.
 
 **Coverage:** opencode's native permission prompts are reviewed through the
-plugin event stream. The plugin also observes `tool.execute.before` so it can
-attach full tool arguments to the later permission event when opencode includes
-the tool call ID. Run `bouncer tools --harness=opencode` for the observed list.
+plugin event stream. The adapter accepts both legacy `permission.asked` and
+current `permission.v2.asked` events, then replies through the matching API.
+The plugin also observes `tool.execute.before` so it can attach full tool
+arguments to the later permission event when opencode includes the tool call
+ID. Native v2 does not run that legacy hook, so the adapter resolves the
+projected tool call by message and call ID before classification. Run
+`bouncer tools --harness=opencode` for the observed list.
 
 **ASK availability:** opencode ASK is available by abstaining from the native
 permission prompt. ALLOW and DENY decisions are answered through opencode's
 permission API; UNSURE, unavailable-with-ask, and `# ESCALATE:` outcomes leave
-the prompt for the user.
+the prompt for the user. DENY replies include bouncer's reason as correction
+feedback, allowing opencode to return the refusal to the model and continue
+without treating it as a bare human rejection. OpenCode releases that expose
+only the deprecated session permission method remain compatible for ALLOW, but
+that method cannot carry correction feedback; DENY continuation requires the
+current permission client.
 
 **Reply attribution:** the plugin writes an independent audit trail to
 `~/.local/share/bouncer/opencode_replies.jsonl`. A `permission_replied` row
@@ -318,24 +328,20 @@ lost the race or otherwise failed. The audit includes opencode's permission ID
 so request, classification, and reply rows can be joined without relying on
 timestamps.
 
-**Reply delay:** by default, bouncer replies as soon as classification
-finishes. To leave a short window for the user to answer first, configure a
-plugin delay. The delay starts when opencode emits the permission request: if
-classification finishes before the delay, bouncer waits out the remainder; if
-classification takes longer, bouncer replies immediately when ready.
+While classification is running, the plugin shows a `Bouncer reviewing` TUI
+toast stating that no action is needed yet. It replaces that toast when the
+review finishes: automatic ALLOW/DENY results identify bouncer as the actor,
+while an ASK or unavailable result says that the decision is now the user's.
+Headless clients simply skip these notices.
 
-```json
-{
-  "plugin": [["bouncer", { "replyDelayMs": 10000 }]]
-}
-```
+By default, bouncer replies as soon as classification finishes.
 
-Manual `~/.config/opencode/opencode.jsonc` or `opencode.json`:
+For manual installation, copy the plugin into the auto-discovered directory;
+do not add `"bouncer"` to opencode's `plugin` config:
 
-```json
-{
-  "plugin": ["bouncer"]
-}
+```sh
+cp bouncer/integrations/opencode/bouncer_plugin.ts \
+  ~/.config/opencode/plugin/bouncer.ts
 ```
 
 ### Activity strip

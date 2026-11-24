@@ -3,13 +3,11 @@
  *
  * Install:
  *   cp bouncer_plugin.ts ~/.config/opencode/plugin/bouncer.ts
- *   # In ~/.config/opencode/opencode.json:
- *   #   { "plugin": ["bouncer"] }
+ *   # Files in this directory are auto-discovered by opencode.
  *
  * Or per-project:
  *   cp bouncer_plugin.ts <project>/.opencode/plugin/bouncer.ts
- *   # In <project>/.opencode/opencode.json:
- *   #   { "plugin": ["bouncer"] }
+ *   # Files in this directory are auto-discovered by opencode.
  *
  * Requires: bouncer on PATH, .bouncer/config.yaml in the project tree.
  * With no .bouncer/config.yaml, bouncer still runs its hard guard;
@@ -18,8 +16,6 @@
  * Bouncer reviews opencode's native permission prompts. ALLOW and DENY are
  * answered after the configured delay; ASK leaves opencode's prompt visible.
  *
- * Optional plugin config:
- *   { "plugin": [["bouncer", { "replyDelayMs": 10000 }]] }
  */
 
 import { execFileSync } from "child_process"
@@ -32,11 +28,70 @@ type OpencodeClient = {
     path: { id: string; permissionID: string }
     body: { response: "once" | "always" | "reject" }
   }): Promise<unknown>
+  tui?: {
+    showToast(input: {
+      body: {
+        title?: string
+        message: string
+        variant: "info" | "success" | "warning" | "error"
+        duration?: number
+      }
+      query?: { directory?: string }
+    }): Promise<unknown>
+  }
+}
+
+type OpencodeClientV2 = {
+  permission: {
+    reply(
+      input: {
+        requestID: string
+        directory?: string
+        reply: "once" | "always" | "reject"
+        message?: string
+      },
+      options?: { throwOnError?: boolean },
+    ): Promise<unknown>
+  }
+  v2: {
+    session: {
+      messages(
+        input: { sessionID: string; limit?: number; order?: "asc" | "desc" },
+        options?: { throwOnError?: boolean },
+      ): Promise<{
+        data: {
+          data: Array<{
+            id: string
+            type: string
+            content?: Array<{
+              type: string
+              id?: string
+              name?: string
+              state?: { input?: string | Record<string, unknown> }
+            }>
+          }>
+        }
+      }>
+      permission: {
+        reply(
+          input: {
+            sessionID: string
+            requestID: string
+            reply: "once" | "always" | "reject"
+            message?: string
+          },
+          options?: { throwOnError?: boolean },
+        ): Promise<unknown>
+      }
+    }
+  }
 }
 
 type PluginInput = {
   client: OpencodeClient
+  clientV2?: OpencodeClientV2
   directory?: string
+  serverUrl?: URL
 }
 
 type PluginOptions = {
@@ -50,7 +105,7 @@ type ToolArgs = {
   time: number
 }
 
-type PermissionRequest = {
+type PermissionRequestV1 = {
   id: string
   sessionID: string
   permission: string
@@ -60,6 +115,30 @@ type PermissionRequest = {
     callID: string
     messageID?: string
   }
+}
+
+type PermissionRequestV2 = {
+  id: string
+  sessionID: string
+  action: string
+  resources: string[]
+  metadata?: Record<string, unknown>
+  source?: {
+    type: "tool"
+    callID: string
+    messageID: string
+  }
+}
+
+type PermissionRequest = {
+  generation: "v1" | "v2"
+  id: string
+  sessionID: string
+  permission: string
+  patterns: string[]
+  metadata?: Record<string, unknown>
+  callID?: string
+  messageID?: string
 }
 
 type PermissionReply = {
@@ -95,7 +174,7 @@ function replyAuditPath() {
   )
 }
 
-export function writeReplyAudit(entry: Record<string, unknown>) {
+function writeReplyAudit(entry: Record<string, unknown>) {
   try {
     const path = replyAuditPath()
     mkdirSync(dirname(path), { recursive: true })
@@ -158,6 +237,90 @@ function permissionToolInput(request: PermissionRequest, cached?: ToolArgs): Rec
   }
 }
 
+function permissionRequest(type: string, properties: unknown): PermissionRequest | undefined {
+  if (type === "permission.asked") {
+    const request = properties as PermissionRequestV1 | undefined
+    if (!request?.id || !request.sessionID || !request.permission) return
+    return {
+      generation: "v1",
+      id: request.id,
+      sessionID: request.sessionID,
+      permission: request.permission,
+      patterns: request.patterns ?? [],
+      metadata: request.metadata,
+      callID: request.tool?.callID,
+      messageID: request.tool?.messageID,
+    }
+  }
+  if (type !== "permission.v2.asked") return
+  const request = properties as PermissionRequestV2 | undefined
+  if (!request?.id || !request.sessionID || !request.action) return
+  return {
+    generation: "v2",
+    id: request.id,
+    sessionID: request.sessionID,
+    permission: request.action,
+    patterns: request.resources ?? [],
+    metadata: request.metadata,
+    callID: request.source?.callID,
+    messageID: request.source?.messageID,
+  }
+}
+
+function parsedInput(input: string | Record<string, unknown> | undefined) {
+  if (!input) return
+  if (typeof input !== "string") return input
+  try {
+    const value = JSON.parse(input)
+    if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+  } catch {
+    return
+  }
+}
+
+async function resolveTool(request: PermissionRequest, cached: ToolArgs | undefined, client?: OpencodeClientV2) {
+  if (cached) return { tool: cached.tool, input: cached.args }
+  if (request.generation === "v2" && request.callID && client) {
+    try {
+      const result = await client.v2.session.messages(
+        { sessionID: request.sessionID, limit: 50, order: "desc" },
+        { throwOnError: true },
+      )
+      const message = request.messageID
+        ? result.data.data.find((item) => item.id === request.messageID)
+        : result.data.data.find((item) => item.type === "assistant")
+      const part = message?.content?.find((item) => item.type === "tool" && item.id === request.callID)
+      const input = parsedInput(part?.state?.input)
+      if (part?.name && input) return { tool: part.name, input }
+    } catch {
+      // The permission event still contains enough information for a conservative fallback.
+    }
+  }
+  return { tool: request.permission, input: permissionToolInput(request) }
+}
+
+async function createCurrentClient(serverUrl: URL | undefined, cwd: string) {
+  if (!serverUrl) return
+  try {
+    const sdk = await import("@opencode-ai/sdk/v2")
+    const serverPassword = process.env.OPENCODE_SERVER_PASSWORD
+    const username = process.env.OPENCODE_SERVER_USERNAME ?? "opencode"
+    return sdk.createOpencodeClient({
+      baseUrl: serverUrl.toString(),
+      directory: cwd,
+      headers: serverPassword
+        ? { Authorization: `Basic ${Buffer.from(`${username}:${serverPassword}`).toString("base64")}` }
+        : undefined,
+    }) as unknown as OpencodeClientV2
+  } catch {
+    return
+  }
+}
+
+function accepted(result: unknown) {
+  return !result || typeof result !== "object" || !("error" in result) || !result.error
+}
+
 function parseJsonDecision(stdout: string): BouncerDecision {
   const text = stdout.trim()
   if (!text) return { decision: "skip", reason: "no bouncer decision" }
@@ -210,14 +373,56 @@ function classify(
 export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOptions) => {
   const configuredDelayMs = delayMs(options)
   const cwd = pluginInput.directory ?? process.cwd()
+  const clientV2 = pluginInput.clientV2 ?? await createCurrentClient(pluginInput.serverUrl, cwd)
+  const showStatus = async (
+    title: string,
+    message: string,
+    variant: "info" | "success" | "warning" | "error",
+    duration: number,
+  ) => {
+    try {
+      await pluginInput.client.tui?.showToast({
+        body: { title, message, variant, duration },
+        query: { directory: cwd },
+      })
+    } catch {
+      // Headless clients and older opencode releases may lack TUI toasts.
+    }
+  }
   const reply = async (input: {
+    generation: "v1" | "v2"
     sessionID: string
     requestID: string
     reply: "once" | "reject"
     message?: string
   }) => {
     try {
-      await pluginInput.client.postSessionIdPermissionsPermissionId({
+      if (input.generation === "v2") {
+        if (!clientV2) return false
+        await clientV2.v2.session.permission.reply(
+          {
+            sessionID: input.sessionID,
+            requestID: input.requestID,
+            reply: input.reply,
+            message: input.message,
+          },
+          { throwOnError: true },
+        )
+        return true
+      }
+      if (clientV2) {
+        await clientV2.permission.reply(
+          {
+            requestID: input.requestID,
+            directory: cwd,
+            reply: input.reply,
+            message: input.message,
+          },
+          { throwOnError: true },
+        )
+        return true
+      }
+      const result = await pluginInput.client.postSessionIdPermissionsPermissionId({
         path: {
           id: input.sessionID,
           permissionID: input.requestID,
@@ -226,7 +431,7 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
           response: input.reply,
         },
       })
-      return true
+      return accepted(result)
     } catch {
       return false
     }
@@ -249,9 +454,9 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
     },
 
     event: async (input: {
-      event: { type: string; properties?: PermissionRequest | PermissionReply }
+      event: { type: string; properties?: PermissionRequestV1 | PermissionRequestV2 | PermissionReply }
     }): Promise<void> => {
-      if (input.event.type === "permission.replied") {
+      if (input.event.type === "permission.replied" || input.event.type === "permission.v2.replied") {
         const response = input.event.properties as PermissionReply | undefined
         const requestID = response?.requestID ?? response?.permissionID
         if (!requestID) return
@@ -273,23 +478,32 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         observedRequests.delete(requestID)
         return
       }
-      if (input.event.type !== "permission.asked") return
-
-      const request = input.event.properties as PermissionRequest | undefined
-      if (!request?.id || !request.sessionID) return
+      const request = permissionRequest(input.event.type, input.event.properties)
+      if (!request) return
       observedRequests.set(request.id, Date.now())
 
-      const cached = request.tool?.callID
-        ? toolArgs.get(key(request.sessionID, request.tool.callID))
+      const cached = request.callID
+        ? toolArgs.get(key(request.sessionID, request.callID))
         : undefined
-      const tool = cached?.tool ?? request.permission
-      const toolInput = permissionToolInput(request, cached)
+      const resolved = await resolveTool(request, cached, clientV2)
+      const tool = resolved.tool
+      const toolInput = resolved.input
+      const target = request.patterns?.[0]
+
+      await showStatus(
+        "Bouncer reviewing",
+        `Analyzing ${tool}${target ? `: ${target}` : ""}. `
+          + "No action is needed yet.",
+        "info",
+        2_500,
+      )
 
       writeReplyAudit({
         event: "permission_asked",
         cwd,
         session_id: request.sessionID,
         permission_id: request.id,
+        generation: request.generation,
         permission: request.permission,
         patterns: request.patterns ?? [],
         tool,
@@ -306,13 +520,22 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         reason: result.reason,
         elapsed_ms: Date.now() - started,
       })
-      if (result.decision === "ask" || result.decision === "skip") return
+      if (result.decision === "ask" || result.decision === "skip") {
+        await showStatus(
+          "Bouncer deferred",
+          "Review complete. This permission decision is now yours.",
+          "warning",
+          2_500,
+        )
+        return
+      }
 
       const remaining = configuredDelayMs - (Date.now() - started)
       if (remaining > 0) await sleep(remaining)
 
       const response = result.decision === "allow" ? "once" : "reject"
       const replyResult = reply({
+        generation: request.generation,
         sessionID: request.sessionID,
         requestID: request.id,
         reply: response,
@@ -325,6 +548,25 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         time: Date.now(),
       })
       const accepted = await replyResult
+      if (accepted) {
+        await showStatus(
+          result.decision === "allow"
+            ? "Approved by Bouncer"
+            : "Denied by Bouncer",
+          result.decision === "allow"
+            ? "OpenCode is continuing."
+            : "The operation was blocked by policy.",
+          result.decision === "allow" ? "success" : "error",
+          2_500,
+        )
+      } else {
+        await showStatus(
+          "Bouncer reply not used",
+          "The permission request is still pending or was answered elsewhere.",
+          "info",
+          2_500,
+        )
+      }
       writeReplyAudit({
         event: accepted ? "permission_replied" : "bouncer_reply_failed",
         source: "bouncer",
@@ -332,6 +574,7 @@ export const BouncerPlugin = async (pluginInput: PluginInput, options?: PluginOp
         cwd,
         session_id: request.sessionID,
         permission_id: request.id,
+        generation: request.generation,
         response,
       })
     },
