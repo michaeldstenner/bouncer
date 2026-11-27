@@ -3295,7 +3295,22 @@ class TestSkipReason(unittest.TestCase):
         self.assertIsNotNone(
             _skip_reason("ToolSearch", {}, {"enabled": True, "tools": "all"})
         )
-        # ...but a non-internal read-only tool is still classified
+        # Claude Code's session tools are plumbing too (2026-11 scrub:
+        # TaskStop judged as stopping the printer, CronDelete as chore
+        # plists) ...
+        for tool in ("TaskStop", "CronDelete", "CronCreate", "SendMessage",
+                     "SubagentHandback", "Skill", "ScheduleWakeup"):
+            self.assertIsNotNone(
+                _skip_reason(tool, {}, {"enabled": True, "tools": "all"}),
+                tool)
+        # ... but a tool that runs a command or reaches outside the session
+        # is still judged
+        for tool in ("Monitor", "Agent", "Workflow", "PushNotification",
+                     "SendUserFile", "RemoteTrigger", "EnterWorktree"):
+            self.assertIsNone(
+                _skip_reason(tool, {}, {"enabled": True, "tools": "all"}),
+                tool)
+        # ...and a non-internal read-only tool is still classified
         self.assertIsNone(
             _skip_reason("Read", {}, {"enabled": True, "tools": "all"})
         )
@@ -3371,10 +3386,12 @@ class TestSkipReason(unittest.TestCase):
         )
 
         # resolve_groups seeds DEFAULT_GROUPS and folds edits
-        self.assertEqual(resolve_groups([])["internal"], frozenset({"ToolSearch"}))
+        from bouncer.config import SESSION_TOOLS
+        self.assertEqual(resolve_groups([])["internal"],
+                         frozenset({"ToolSearch"}) | SESSION_TOOLS)
         self.assertEqual(
             resolve_groups([{"internal": "-ToolSearch"}])["internal"],
-            frozenset(),
+            SESSION_TOOLS,
         )
 
         # tool_intercepted fallback path (directly-built config, no _tools_ops)

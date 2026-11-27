@@ -82,12 +82,28 @@ CONFIG_DEFAULTS: dict = {
 }
 
 # Built-in group memberships, the seed for the per-layer group fold. `internal`
-# is harness "plumbing" — discovery/meta tools the harness natively auto-allows,
-# so skipping them is free. Claude's `ToolSearch` is the canonical member (it
-# lives in Claude Code's read-only tool set); the entry is inert under harnesses
-# that expose no such tool. Editable via a `groups:` block in any config layer.
+# is harness "plumbing": tools that act only on the agent's own session, so
+# skipping them is free. Claude's `ToolSearch` is the canonical member (it
+# lives in Claude Code's read-only tool set). The rest are Claude Code's
+# session tools -- its own background tasks, todo list, scheduled prompts,
+# messages to other local sessions, skill loading and plan/question UI. Judged,
+# Haiku guessed at them (2026-11 scrub: TaskStop read as stopping the printer,
+# CronDelete as touching chore plists). Whatever they lead to -- a stopped
+# task's process was gated when it started, a scheduled prompt's calls and a
+# loaded skill's calls are gated when made -- still hits bouncer. Left gated
+# on purpose: Monitor (runs a command), Agent/Workflow, PushNotification,
+# SendUserFile, RemoteTrigger and the worktree tools, which reach outside
+# the session. Entries are inert under harnesses without such tools.
+# Editable via a `groups:` block in any config layer.
+SESSION_TOOLS = frozenset({
+    "TaskStop", "TaskOutput", "TaskCreate", "TaskGet", "TaskList",
+    "TaskUpdate", "TodoWrite",
+    "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+    "SendMessage", "ListAgents", "SubagentHandback", "ReadNotifications",
+    "Skill", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+})
 DEFAULT_GROUPS: dict[str, frozenset] = {
-    "internal": frozenset({"ToolSearch"}),
+    "internal": frozenset({"ToolSearch"}) | SESSION_TOOLS,
 }
 
 CONFIG_YAML_TEMPLATE = """\

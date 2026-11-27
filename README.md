@@ -142,12 +142,19 @@ The configs layer **user → project `config.yaml` → `config.local.yaml`**, ea
 folding onto the one before (a list of bare names like `[Bash]` is legacy
 shorthand for `[-@all, +Bash]`, i.e. "only Bash").
 
-**`@internal` is harness plumbing** — discovery/meta tools that have no side
-effects and that the harness already auto-allows, so reviewing them only wastes
-an LLM call (and risks a spurious denial). Claude Code's `ToolSearch` — the
-deferred-tool schema loader — is the canonical member. Skipping it is free:
-loading a tool's schema is not the same as calling it, and the actual call still
-hits bouncer's gate on its own.
+**`@internal` is harness plumbing** — tools that act only on the agent's own
+session, so reviewing them only wastes an LLM call (and risks a spurious
+denial). Claude Code's `ToolSearch` — the deferred-tool schema loader — is the
+canonical member. Skipping it is free: loading a tool's schema is not the same
+as calling it, and the actual call still hits bouncer's gate on its own.
+Claude Code's session tools are members too: its background tasks
+(`TaskStop`, `TaskOutput`), todo list (`TodoWrite`, `Task*`), scheduled
+prompts (`Cron*`, `ScheduleWakeup`), messages to other local sessions
+(`SendMessage`, `ListAgents`, `SubagentHandback`, `ReadNotifications`),
+`Skill`, and the plan/question UI. What they lead to is gated where it
+happens. Tools that run a command or reach outside the session (`Monitor`,
+`Agent`, `Workflow`, `PushNotification`, `SendUserFile`, `RemoteTrigger`,
+the worktree tools) stay gated.
 
 Groups are editable with the same `±` algebra, so you can re-scope what counts
 as plumbing:

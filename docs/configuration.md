@@ -314,11 +314,16 @@ them (bouncer abstains and the harness decides); the **last matching op wins**.
 | `[Bash, Write]` | legacy shorthand for `[-@all, +Bash, +Write]` ("only these") |
 | `[]` | intercept nothing |
 
-`@internal` is harness plumbing — discovery/meta tools the harness already
-auto-allows, so classifying them only wastes an LLM call. Claude Code's
-`ToolSearch` (a no-op deferred-tool schema loader) is the default member;
+`@internal` is harness plumbing — tools that act only on the agent's own
+session, so classifying them only wastes an LLM call. Claude Code's
+`ToolSearch` (a no-op deferred-tool schema loader) is the canonical member;
 skipping it is free, because loading a tool's schema is not the same as calling
-it, and the call still hits bouncer's gate on its own.
+it, and the call still hits bouncer's gate on its own. Claude Code's session
+tools are members too (`SESSION_TOOLS` in `bouncer/config.py`): background
+tasks, the todo list, scheduled prompts, messages to other local sessions,
+`Skill`, and the plan/question UI. `Monitor`, `Agent`, `Workflow`,
+`PushNotification`, `SendUserFile`, `RemoteTrigger` and the worktree tools
+reach outside the session and stay gated.
 
 **Layering:** configs fold in order — user → project `config.yaml` →
 `config.local.yaml` — each applying its ops to the set it inherits (seeded with
